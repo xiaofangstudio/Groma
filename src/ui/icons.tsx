@@ -64,6 +64,16 @@ export function IconPlus(props: IconProps) {
   );
 }
 
+export function IconMore(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="3" cy="8" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="8" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="13" cy="8" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function IconFit(props: IconProps) {
   return (
     <svg {...base(props)}>

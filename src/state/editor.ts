@@ -1,6 +1,14 @@
 import { useSyncExternalStore } from 'react';
 import { createDoc } from '../core/doc';
 import { applyCommand, type NodePatch, type SceneCommand } from '../core/commands';
+import {
+  addPage as addPageToDoc,
+  duplicatePage as duplicatePageInDoc,
+  movePage as movePageInDoc,
+  pageContainsNode,
+  removePage as removePageFromDoc,
+  renamePage as renamePageInDoc,
+} from '../core/pages';
 import type { GromaDoc, Guide, NodeType, Rect, SceneNode } from '../core/types';
 import { clampScale, fitRect, zoomAt, type Viewport } from '../core/viewport';
 import { alignDeltas, distributeDeltas, type AlignMode, type DistributeMode } from '../core/align';
@@ -37,6 +45,15 @@ type HistoryEntry =
   | { kind: 'deleteBatch'; items: DeleteItem[] }
   | { kind: 'guides'; pageId: string; before: Guide[]; after: Guide[] }
   | {
+      kind: 'pages';
+      beforeDoc: GromaDoc;
+      afterDoc: GromaDoc;
+      pageIdBefore: string;
+      pageIdAfter: string;
+      selectionBefore: string[];
+      selectionAfter: string[];
+    }
+  | {
       kind: 'structure';
       beforeNodes: Record<string, SceneNode>;
       afterNodes: Record<string, SceneNode>;
@@ -55,6 +72,7 @@ interface EditorState {
   projectId: string | null;
   saveState: SaveState;
   viewport: Viewport;
+  viewports: Record<string, Viewport>;
   viewSize: { w: number; h: number };
   tool: Tool;
   leftOpen: boolean;
@@ -83,6 +101,7 @@ function freshState(): EditorState {
     projectId: null,
     saveState: 'local',
     viewport: { x: 0, y: 0, scale: 1 },
+    viewports: {},
     viewSize: { w: 0, h: 0 },
     tool: 'move',
     leftOpen: true,
@@ -110,6 +129,11 @@ function withSelection(s: EditorState, ids: string[]): EditorState {
   return { ...s, selectedIds: ids, selectedId: ids[0] ?? null };
 }
 
+function withViewport(s: EditorState, viewport: Viewport): EditorState {
+  const next = { ...viewport, scale: clampScale(viewport.scale) };
+  return { ...s, viewport: next, viewports: { ...s.viewports, [s.pageId]: next } };
+}
+
 function reduceMotion(): boolean {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
     ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -126,7 +150,7 @@ function stopViewportAnimation(): void {
 function animateViewportTo(target: Viewport): void {
   stopViewportAnimation();
   if (reduceMotion() || typeof window === 'undefined') {
-    set((s) => ({ ...s, viewport: target }));
+    set((s) => withViewport(s, target));
     return;
   }
   const from = state.viewport;
@@ -135,14 +159,13 @@ function animateViewportTo(target: Viewport): void {
   const step = (now: number) => {
     const progress = Math.min(1, (now - start) / duration);
     const eased = 1 - Math.pow(1 - progress, 3);
-    set((s) => ({
-      ...s,
-      viewport: {
+    set((s) =>
+      withViewport(s, {
         x: from.x + (target.x - from.x) * eased,
         y: from.y + (target.y - from.y) * eased,
         scale: from.scale + (target.scale - from.scale) * eased,
-      },
-    }));
+      }),
+    );
     if (progress < 1) viewportAnimFrame = window.requestAnimationFrame(step);
     else viewportAnimFrame = 0;
   };
@@ -222,6 +245,58 @@ function guideState(s: EditorState, pageId: string, before: Guide[], after: Guid
     past: [...s.past, { kind: 'guides', pageId, before, after } as HistoryEntry].slice(-200),
     future: [],
   };
+}
+
+function fitPageState(s: EditorState): EditorState {
+  if (s.viewSize.w <= 0 || s.viewSize.h <= 0) return { ...s, needsFit: true };
+  return { ...s, viewport: computeFit(s), needsFit: false };
+}
+
+/** 每页记住自己的缩放与平移；没有记录时才适配画板。 */
+function pageViewportState(s: EditorState, pageId: string): EditorState {
+  const saved = s.viewports[pageId];
+  const clean = { ...s, pageId, needsFit: false };
+  if (saved) return { ...clean, viewport: { ...saved } };
+  return fitPageState(clean);
+}
+
+function pageHistoryState(
+  s: EditorState,
+  afterDoc: GromaDoc,
+  pageIdAfter: string,
+  selectionAfter: string[],
+): EditorState {
+  const entry: HistoryEntry = {
+    kind: 'pages',
+    beforeDoc: s.doc,
+    afterDoc,
+    pageIdBefore: s.pageId,
+    pageIdAfter,
+    selectionBefore: s.selectedIds,
+    selectionAfter,
+  };
+  let next: EditorState = {
+    ...withSelection(s, selectionAfter),
+    doc: afterDoc,
+    pageId: pageIdAfter,
+    past: [...s.past, entry].slice(-200),
+    future: [],
+  };
+  if (pageIdAfter !== s.pageId) next = pageViewportState(next, pageIdAfter);
+  return next;
+}
+
+function pageIdAfterEntry(
+  entry: HistoryEntry,
+  direction: 'undo' | 'redo',
+  current: string,
+): string {
+  if (entry.kind !== 'pages') return current;
+  return direction === 'undo' ? entry.pageIdBefore : entry.pageIdAfter;
+}
+
+function selectionOnPage(doc: GromaDoc, pageId: string, ids: string[]): string[] {
+  return ids.filter((id) => pageContainsNode(doc, pageId, id));
 }
 
 function patchItems(
@@ -364,6 +439,9 @@ function applyEntry(doc: GromaDoc, entry: HistoryEntry, direction: 'undo' | 'red
   if (entry.kind === 'guides') {
     return withGuides(doc, entry.pageId, direction === 'undo' ? entry.before : entry.after);
   }
+  if (entry.kind === 'pages') {
+    return direction === 'undo' ? entry.beforeDoc : entry.afterDoc;
+  }
   return doc;
 }
 
@@ -385,23 +463,24 @@ function selectionAfterEntry(
       : [];
   }
   if (entry.kind === 'structure') return direction === 'undo' ? entry.selectionBefore : entry.selectionAfter;
+  if (entry.kind === 'pages') return direction === 'undo' ? entry.selectionBefore : entry.selectionAfter;
   return current;
 }
 
 export const editor = {
   setViewport(v: Viewport) {
     stopViewportAnimation();
-    set((s) => ({ ...s, viewport: { ...v, scale: clampScale(v.scale) } }));
+    set((s) => withViewport(s, v));
   },
 
   panBy(dx: number, dy: number) {
     stopViewportAnimation();
-    set((s) => ({ ...s, viewport: { ...s.viewport, x: s.viewport.x + dx, y: s.viewport.y + dy } }));
+    set((s) => withViewport(s, { ...s.viewport, x: s.viewport.x + dx, y: s.viewport.y + dy }));
   },
 
   zoomAtPoint(sx: number, sy: number, factor: number) {
     stopViewportAnimation();
-    set((s) => ({ ...s, viewport: zoomAt(s.viewport, sx, sy, factor) }));
+    set((s) => withViewport(s, zoomAt(s.viewport, sx, sy, factor)));
   },
 
   setZoomPercent(percent: number, sx?: number, sy?: number) {
@@ -410,7 +489,7 @@ export const editor = {
       const target = clampScale(percent / 100);
       const ax = sx ?? s.viewSize.w / 2;
       const ay = sy ?? s.viewSize.h / 2;
-      return { ...s, viewport: zoomAt(s.viewport, ax, ay, target / s.viewport.scale) };
+      return withViewport(s, zoomAt(s.viewport, ax, ay, target / s.viewport.scale));
     });
   },
 
@@ -428,8 +507,10 @@ export const editor = {
       if (s.viewSize.w === w && s.viewSize.h === h && !s.needsFit) return s;
       const next = { ...s, viewSize: { w, h } };
       if (s.needsFit && w > 0 && h > 0) {
-        next.viewport = computeFit(next);
+        const viewport = computeFit(next);
+        next.viewport = viewport;
         next.needsFit = false;
+        next.viewports = { ...next.viewports, [s.pageId]: viewport };
       }
       return next;
     });
@@ -537,6 +618,7 @@ export const editor = {
         projectId,
         saveState: 'saved',
         needsFit: true,
+        viewports: {},
         past: [],
         future: [],
       };
@@ -546,6 +628,77 @@ export const editor = {
       }
       return next;
     });
+  },
+
+  setPage(pageId: string) {
+    stopViewportAnimation();
+    set((s) => {
+      if (s.pageId === pageId || !s.doc.pages.some((page) => page.id === pageId)) return s;
+      return pageViewportState({ ...withSelection(s, []), pageId }, pageId);
+    });
+  },
+
+  addPage(): string {
+    stopViewportAnimation();
+    let created = '';
+    set((s) => {
+      const result = addPageToDoc(s.doc, () => newNodeId('page'));
+      created = result.page.id;
+      return pageHistoryState(s, result.doc, created, []);
+    });
+    return created;
+  },
+
+  renamePage(pageId: string, name: string): boolean {
+    stopViewportAnimation();
+    let changed = false;
+    set((s) => {
+      const doc = renamePageInDoc(s.doc, pageId, name);
+      if (!doc) return s;
+      changed = true;
+      return pageHistoryState(s, doc, s.pageId, selectionOnPage(doc, s.pageId, s.selectedIds));
+    });
+    return changed;
+  },
+
+  movePage(pageId: string, toIndex: number): boolean {
+    stopViewportAnimation();
+    let changed = false;
+    set((s) => {
+      const doc = movePageInDoc(s.doc, pageId, toIndex);
+      if (!doc) return s;
+      changed = true;
+      return pageHistoryState(s, doc, s.pageId, selectionOnPage(doc, s.pageId, s.selectedIds));
+    });
+    return changed;
+  },
+
+  duplicatePage(pageId: string): string | null {
+    stopViewportAnimation();
+    let created: string | null = null;
+    set((s) => {
+      const result = duplicatePageInDoc(s.doc, pageId, (type) => newNodeId(type));
+      if (!result) return s;
+      const pageIdAfter = result.page.id;
+      created = pageIdAfter;
+      return pageHistoryState(s, result.doc, pageIdAfter, []);
+    });
+    return created;
+  },
+
+  deletePage(pageId: string): boolean {
+    stopViewportAnimation();
+    let removed = false;
+    set((s) => {
+      const result = removePageFromDoc(s.doc, pageId);
+      if (!result) return s;
+      removed = true;
+      const deletingCurrent = s.pageId === pageId;
+      const pageIdAfter = deletingCurrent ? result.nextPageId : s.pageId;
+      const selectionAfter = deletingCurrent ? [] : selectionOnPage(result.doc, pageIdAfter, s.selectedIds);
+      return pageHistoryState(s, result.doc, pageIdAfter, selectionAfter);
+    });
+    return removed;
   },
 
   applyPatch(id: string, patch: NodePatch) {
@@ -853,34 +1006,46 @@ export const editor = {
   },
 
   undo() {
+    stopViewportAnimation();
     set((s) => {
       const entry = s.past[s.past.length - 1];
       if (!entry) return s;
       const doc = applyEntry(s.doc, entry, 'undo');
+      const pageId = pageIdAfterEntry(entry, 'undo', s.pageId);
+      const safePageId = doc.pages.some((page) => page.id === pageId) ? pageId : doc.pages[0].id;
       const preferred = selectionAfterEntry(entry, 'undo', s.selectedIds);
-      const ids = validSelection(doc, preferred ?? s.selectedIds);
-      return {
+      const ids = selectionOnPage(doc, safePageId, validSelection(doc, preferred ?? s.selectedIds));
+      let next: EditorState = {
         ...withSelection(s, ids),
         doc,
+        pageId: safePageId,
         past: s.past.slice(0, -1),
         future: [...s.future, entry],
       };
+      if (safePageId !== s.pageId) next = pageViewportState(next, safePageId);
+      return next;
     });
   },
 
   redo() {
+    stopViewportAnimation();
     set((s) => {
       const entry = s.future[s.future.length - 1];
       if (!entry) return s;
       const doc = applyEntry(s.doc, entry, 'redo');
+      const pageId = pageIdAfterEntry(entry, 'redo', s.pageId);
+      const safePageId = doc.pages.some((page) => page.id === pageId) ? pageId : doc.pages[0].id;
       const preferred = selectionAfterEntry(entry, 'redo', s.selectedIds);
-      const ids = validSelection(doc, preferred ?? s.selectedIds);
-      return {
+      const ids = selectionOnPage(doc, safePageId, validSelection(doc, preferred ?? s.selectedIds));
+      let next: EditorState = {
         ...withSelection(s, ids),
         doc,
+        pageId: safePageId,
         past: [...s.past, entry].slice(-200),
         future: s.future.slice(0, -1),
       };
+      if (safePageId !== s.pageId) next = pageViewportState(next, safePageId);
+      return next;
     });
   },
 
@@ -898,6 +1063,7 @@ export const editor = {
         projectId: null,
         saveState: 'local',
         needsFit: true,
+        viewports: {},
         past: [],
         future: [],
       };

@@ -6,11 +6,15 @@ param(
   [switch]$Welcome,
   [string]$Click = "",
   [string]$Click2 = "",
+  [string]$Click3 = "",
+  [string]$Click4 = "",
   [string]$ShiftClick = "",
   [string]$Drag = "",
   [switch]$HoldDrag,
   [string]$Key = "",
+  [string]$Text = "",
   [switch]$Enter,
+  [string]$Actions = "",
   [int]$WaitMs = 3200,
   [int]$PostWaitMs = 900,
   [int]$WinWidth = 0,
@@ -230,11 +234,54 @@ function Send-Enter([IntPtr]$Target) {
 
 function Send-Key([IntPtr]$Target, [string]$Text) {
   if ($Text.Length -eq 0) { return }
-  $vk = [int][char]::ToUpperInvariant($Text[0])
+  $vk = switch ($Text.Substring(0, 1)) {
+    '=' { 0xBB }
+    '+' { 0xBB }
+    '-' { 0xBD }
+    default { [int][char]::ToUpperInvariant($Text[0]) }
+  }
   $scan = [IntPtr]::new(($vk -shl 16))
   [GromaShot]::PostMessage($Target, 0x0100, [IntPtr]::new($vk), $scan) | Out-Null
   Start-Sleep -Milliseconds 80
   [GromaShot]::PostMessage($Target, 0x0101, [IntPtr]::new($vk), ([IntPtr]::new(0xC0000001 -bor ($vk -shl 16)))) | Out-Null
+  Start-Sleep -Milliseconds 300
+}
+
+function Send-Text([IntPtr]$Target, [string]$Value) {
+  foreach ($ch in $Value.ToCharArray()) {
+    [GromaShot]::PostMessage($Target, 0x0102, [IntPtr]::new([int][char]$ch), [IntPtr]::new(1)) | Out-Null
+    Start-Sleep -Milliseconds 40
+  }
+  Start-Sleep -Milliseconds 250
+}
+
+function Send-Chord([IntPtr]$Target, [string]$Text) {
+  $map = @{
+    'alt' = @(0x12, 0x38, $false)
+    'shift' = @(0x10, 0x2A, $false)
+    'ctrl' = @(0x11, 0x1D, $false)
+    'up' = @(0x26, 0x48, $true)
+    'down' = @(0x28, 0x50, $true)
+    'left' = @(0x25, 0x4B, $true)
+    'right' = @(0x27, 0x4D, $true)
+  }
+  $keys = @()
+  foreach ($name in $Text.Split('+')) {
+    $entry = $map[$name.Trim().ToLowerInvariant()]
+    if ($entry) { $keys += ,$entry }
+  }
+  if ($keys.Count -eq 0) { return }
+  foreach ($key in $keys) {
+    $ext = if ($key[2]) { 0x01000000 } else { 0 }
+    [GromaShot]::PostMessage($Target, 0x0100, [IntPtr]::new($key[0]), [IntPtr]::new(0x00000001 -bor ($key[1] -shl 16) -bor $ext)) | Out-Null
+    Start-Sleep -Milliseconds 50
+  }
+  for ($i = $keys.Count - 1; $i -ge 0; $i--) {
+    $key = $keys[$i]
+    $ext = if ($key[2]) { 0x01000000 } else { 0 }
+    [GromaShot]::PostMessage($Target, 0x0101, [IntPtr]::new($key[0]), [IntPtr]::new(0xC0000001 -bor ($key[1] -shl 16) -bor $ext)) | Out-Null
+    Start-Sleep -Milliseconds 50
+  }
   Start-Sleep -Milliseconds 300
 }
 
@@ -305,6 +352,17 @@ try {
     $parts = $Click2.Split(',')
     if ($parts.Count -eq 2) { Send-Click $hwnd $inputHwnd ([int]$parts[0]) ([int]$parts[1]) }
   }
+  if ($Click3) {
+    $parts = $Click3.Split(',')
+    if ($parts.Count -eq 2) { Send-Click $hwnd $inputHwnd ([int]$parts[0]) ([int]$parts[1]) }
+  }
+  if ($Text) {
+    Send-Text $inputHwnd $Text
+  }
+  if ($Click4) {
+    $parts = $Click4.Split(',')
+    if ($parts.Count -eq 2) { Send-Click $hwnd $inputHwnd ([int]$parts[0]) ([int]$parts[1]) }
+  }
   if ($Enter) {
     Start-Sleep -Milliseconds 700
     Send-Enter $inputHwnd
@@ -314,6 +372,32 @@ try {
     if ($parts.Count -eq 4) {
       Send-Drag $hwnd $inputHwnd ([int]$parts[0]) ([int]$parts[1]) ([int]$parts[2]) ([int]$parts[3]) ([bool]$HoldDrag)
       if (-not $HoldDrag) { Start-Sleep -Milliseconds 1000 }
+    }
+  }
+  if ($Actions) {
+    foreach ($action in $Actions.Split(';')) {
+      $parts = $action.Split(':', 2)
+      if ($parts.Count -ne 2) { continue }
+      $kind = $parts[0].Trim().ToLowerInvariant()
+      $vals = $parts[1].Split(',')
+      if ($kind -eq 'click' -and $vals.Count -eq 2) {
+        Send-Click $hwnd $inputHwnd ([int]$vals[0]) ([int]$vals[1])
+      } elseif ($kind -eq 'drag' -and $vals.Count -eq 4) {
+        Send-Drag $hwnd $inputHwnd ([int]$vals[0]) ([int]$vals[1]) ([int]$vals[2]) ([int]$vals[3]) $false
+        Start-Sleep -Milliseconds 600
+      } elseif ($kind -eq 'holddrag' -and $vals.Count -eq 4) {
+        Send-Drag $hwnd $inputHwnd ([int]$vals[0]) ([int]$vals[1]) ([int]$vals[2]) ([int]$vals[3]) $true
+      } elseif ($kind -eq 'spacedrag' -and $vals.Count -eq 4) {
+        [GromaShot]::PostMessage($inputHwnd, 0x0100, [IntPtr]::new(0x20), [IntPtr]::new(0x00390001)) | Out-Null
+        Start-Sleep -Milliseconds 120
+        Send-Drag $hwnd $inputHwnd ([int]$vals[0]) ([int]$vals[1]) ([int]$vals[2]) ([int]$vals[3]) $false
+        [GromaShot]::PostMessage($inputHwnd, 0x0101, [IntPtr]::new(0x20), [IntPtr]::new(0xC0390001)) | Out-Null
+        Start-Sleep -Milliseconds 600
+      } elseif ($kind -eq 'key' -and $vals.Count -eq 1) {
+        Send-Key $inputHwnd $vals[0]
+      } elseif ($kind -eq 'combo' -and $vals.Count -eq 1) {
+        Send-Chord $inputHwnd $vals[0]
+      }
     }
   }
   Start-Sleep -Milliseconds $PostWaitMs

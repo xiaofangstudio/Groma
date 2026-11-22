@@ -5,6 +5,8 @@
 > 已剔除：Figma AI（First Draft）、Figma Make、FigJam AI、AI 生图、MCP 智能体、AI 代码补全等一切 AI 能力
 >
 > 用途：Groma 功能分期的功能底本（见仓库根 README 第四节）。Groma 红线（无 AI、无账号云协作、不做壳产品）在此文档之上再裁剪。
+>
+> **执行版已更新**：开工与交付以 `docs/Figma能力矩阵.md` 为准；本文保留全量蒸馏与背景，不直接作为刀序或验收单。
 
 ## 0. 产品矩阵
 

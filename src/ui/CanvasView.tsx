@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { RULER, drawEditor, drawRulers, type DrawStats } from '../render/draw';
 import { screenToWorld } from '../core/viewport';
+import { hitTestGuide, guideScreenPosition } from '../core/guides';
 import {
   absolutePosition,
   absoluteRect,
@@ -165,20 +166,7 @@ export function CanvasView() {
 
   function guideAt(p: { x: number; y: number }, current = getState()): { index: number; guide: Guide } | null {
     if (current.tool !== 'move') return null;
-    const list = pageGuides(current);
-    const v = current.viewport;
-    const tolerance = 4;
-    for (let index = 0; index < list.length; index += 1) {
-      const guide = list[index];
-      if (guide.axis === 'x') {
-        const sx = RULER + guide.position * v.scale + v.x;
-        if (Math.abs(p.x - sx) <= tolerance) return { index, guide };
-      } else {
-        const sy = RULER + guide.position * v.scale + v.y;
-        if (Math.abs(p.y - sy) <= tolerance) return { index, guide };
-      }
-    }
-    return null;
+    return hitTestGuide(pageGuides(current), p, current.viewport);
   }
 
   function startGuideDrag(
@@ -942,8 +930,7 @@ export function CanvasView() {
         const dragging = guideDraft?.mode === 'move' && guideDraft.index === index;
         const deleting = dragging && guideDraft?.deleting;
         if (dragging && !deleting) return null;
-        const px = RULER + guide.position * viewport.scale + viewport.x;
-        const py = RULER + guide.position * viewport.scale + viewport.y;
+        const screen = guideScreenPosition(guide, viewport);
         return (
           <div
             key={`manual-${index}-${guide.axis}-${guide.position}`}
@@ -951,8 +938,8 @@ export function CanvasView() {
             aria-hidden="true"
             style={
               guide.axis === 'x'
-                ? { left: px, top: RULER, height: Math.max(1, viewSize.h - RULER) }
-                : { left: RULER, top: py, width: Math.max(1, viewSize.w - RULER) }
+                ? { left: RULER + screen, top: RULER, height: Math.max(1, viewSize.h - RULER) }
+                : { left: RULER, top: RULER + screen, width: Math.max(1, viewSize.w - RULER) }
             }
           />
         );

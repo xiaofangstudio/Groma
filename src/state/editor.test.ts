@@ -226,4 +226,126 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[a]).toBeTruthy();
     expect(getState().doc.nodes[b]).toBeTruthy();
   });
+
+  it('新建页面会切页、清空选区并进入撤销历史', () => {
+    const firstPage = getState().pageId;
+    const page2 = editor.addPage();
+    const afterAdd = getState();
+    expect(afterAdd.pageId).toBe(page2);
+    expect(afterAdd.doc.pages).toHaveLength(2);
+    expect(afterAdd.selectedIds).toEqual([]);
+    const root2 = afterAdd.doc.nodes[afterAdd.doc.pages[1].rootId];
+    expect(root2.type).toBe('page');
+    expect(root2.children).toEqual([]);
+
+    editor.undo();
+    expect(getState().pageId).toBe(firstPage);
+    expect(getState().doc.pages).toHaveLength(1);
+
+    editor.redo();
+    expect(getState().pageId).toBe(page2);
+    expect(getState().doc.pages).toHaveLength(2);
+  });
+
+  it('页面改名同步根节点名，可撤销重做', () => {
+    const pageId = getState().pageId;
+    expect(editor.renamePage(pageId, '封面')).toBe(true);
+    expect(getState().doc.pages[0].name).toBe('封面');
+    expect(getState().doc.nodes[getState().doc.pages[0].rootId].name).toBe('封面');
+    expect(editor.renamePage(pageId, '封面')).toBe(false);
+
+    editor.undo();
+    expect(getState().doc.pages[0].name).toBe('页面 1');
+    editor.redo();
+    expect(getState().doc.pages[0].name).toBe('封面');
+  });
+
+  it('复制页面会切到副本，复制整棵页面树并可撤销', () => {
+    const page2 = editor.addPage();
+    const root2 = getState().doc.nodes[getState().doc.pages[1].rootId];
+    const frame2 = editor.addNode({ type: 'frame', parentId: root2.id, x: 0, y: 0, w: 300, h: 200 });
+    editor.select(frame2);
+    const clonePage = editor.duplicatePage(page2);
+    expect(clonePage).not.toBeNull();
+    if (!clonePage) return;
+
+    const afterClone = getState();
+    expect(afterClone.pageId).toBe(clonePage);
+    expect(afterClone.doc.pages).toHaveLength(3);
+    expect(afterClone.doc.pages[2].rootId).not.toBe(root2.id);
+    const cloneRoot = afterClone.doc.nodes[afterClone.doc.pages[2].rootId];
+    expect(cloneRoot.children).toHaveLength(1);
+    expect(afterClone.doc.nodes[cloneRoot.children[0]].type).toBe('frame');
+    expect(afterClone.selectedIds).toEqual([]);
+
+    editor.undo();
+    expect(getState().pageId).toBe(page2);
+    expect(getState().doc.pages).toHaveLength(2);
+    editor.redo();
+    expect(getState().pageId).toBe(clonePage);
+    expect(getState().doc.pages).toHaveLength(3);
+  });
+
+  it('删除当前页会切到相邻页、清空选区，撤销可恢复页面与选区', () => {
+    const page1 = getState().pageId;
+    const page2 = editor.addPage();
+    const root2 = getState().doc.nodes[getState().doc.pages[1].rootId];
+    const frame2 = editor.addNode({ type: 'frame', parentId: root2.id, x: 0, y: 0, w: 300, h: 200 });
+    editor.select(frame2);
+
+    expect(editor.deletePage(page2)).toBe(true);
+    expect(getState().pageId).toBe(page1);
+    expect(getState().selectedIds).toEqual([]);
+    expect(getState().doc.pages).toHaveLength(1);
+
+    editor.undo();
+    expect(getState().pageId).toBe(page2);
+    expect(getState().doc.pages).toHaveLength(2);
+    expect(getState().doc.nodes[frame2]).toBeTruthy();
+    expect(getState().selectedIds).toEqual([frame2]);
+
+    expect(editor.deletePage(getState().pageId)).toBe(true);
+    expect(editor.deletePage(getState().pageId)).toBe(false);
+  });
+
+  it('拖动页面排序可撤销重做，当前页不因排序改变', () => {
+    editor.addPage();
+    const page3 = editor.addPage();
+    expect(editor.movePage(page3, 0)).toBe(true);
+    expect(getState().doc.pages.map((page) => page.name)).toEqual(['页面 3', '页面 1', '页面 2']);
+    expect(getState().pageId).toBe(page3);
+
+    editor.undo();
+    expect(getState().doc.pages.map((page) => page.name)).toEqual(['页面 1', '页面 2', '页面 3']);
+    expect(getState().pageId).toBe(page3);
+    editor.redo();
+    expect(getState().doc.pages.map((page) => page.name)).toEqual(['页面 3', '页面 1', '页面 2']);
+    expect(editor.movePage(page3, 0)).toBe(false);
+  });
+
+  it('每一页记住自己的缩放与平移，切页后再切回仍恢复', () => {
+    editor.setCanvasSize(1000, 800);
+    const page1 = getState().pageId;
+    editor.setViewport({ x: 12, y: 34, scale: 2 });
+    const page2 = editor.addPage();
+    editor.setViewport({ x: 56, y: 78, scale: 1.5 });
+
+    editor.setPage(page1);
+    expect(getState().viewport).toEqual({ x: 12, y: 34, scale: 2 });
+    editor.setPage(page2);
+    expect(getState().viewport).toEqual({ x: 56, y: 78, scale: 1.5 });
+  });
+
+  it('删除页后切到相邻页恢复它的视口，撤销删除也恢复被删页视口', () => {
+    editor.setCanvasSize(1000, 800);
+    editor.setViewport({ x: 11, y: 22, scale: 1.25 });
+    const page2 = editor.addPage();
+    editor.setViewport({ x: 33, y: 44, scale: 2.5 });
+
+    expect(editor.deletePage(page2)).toBe(true);
+    expect(getState().viewport).toEqual({ x: 11, y: 22, scale: 1.25 });
+    editor.undo();
+    expect(getState().pageId).toBe(page2);
+    expect(getState().viewport).toEqual({ x: 33, y: 44, scale: 2.5 });
+  });
 });
