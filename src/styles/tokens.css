@@ -1,0 +1,77 @@
+:root {
+  --bg-app: #F8F7F4;
+  --bg-canvas: #E9E8E4;
+  --bg-panel: #FFFFFF;
+  --bg-sunken: #F1EFE9;
+  --bg-hover: #EDEAE2;
+  --bg-active: #E4E0D5;
+
+  --brand: #F2B705;
+  --brand-soft: #FDF3D3;
+  --brand-press: #D9A404;
+
+  --ink: #221C00;
+  --ink-body: #454033;
+  --ink-muted: #6D685E;
+  --ink-dim: #A19B8E;
+
+  --line: #DCD8CF;
+  --line-strong: #C9C4B8;
+  --danger: #C2412D;
+
+  --r-xs: 6px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+
+  --font-ui: "Inter", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  --fs-10: 10px;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-20: 20px;
+  --fs-26: 26px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  --h-topbar: 40px;
+  --h-status: 26px;
+  --h-control: 34px;
+  --h-field: 30px;
+
+  --dur-120: 120ms;
+  --dur-180: 180ms;
+  --dur-280: 280ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --shadow-card: 0 12px 40px rgba(34, 28, 0, 0.12), 0 2px 8px rgba(34, 28, 0, 0.06);
+
+  --left-w: 216px;
+  --right-w: 260px;
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --left-w: 240px;
+    --right-w: 300px;
+  }
+}
+
+@media (min-width: 1600px) {
+  :root {
+    --left-w: 264px;
+    --right-w: 320px;
+  }
+}

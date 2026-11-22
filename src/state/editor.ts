@@ -1,0 +1,915 @@
+import { useSyncExternalStore } from 'react';
+import { createDoc } from '../core/doc';
+import { applyCommand, type NodePatch, type SceneCommand } from '../core/commands';
+import type { GromaDoc, Guide, NodeType, Rect, SceneNode } from '../core/types';
+import { clampScale, fitRect, zoomAt, type Viewport } from '../core/viewport';
+import { alignDeltas, distributeDeltas, type AlignMode, type DistributeMode } from '../core/align';
+import { topLevelSelection } from '../core/geometry';
+
+export type Tool = 'move' | 'hand' | 'frame' | 'rect' | 'ellipse' | 'text';
+export type SaveState = 'local' | 'saving' | 'saved' | 'error';
+
+interface PatchItem {
+  id: string;
+  before: SceneNode;
+  after: SceneNode;
+}
+
+interface AddItem {
+  node: SceneNode;
+  parentId: string;
+  index: number;
+  subtree: Record<string, SceneNode>;
+}
+
+interface DeleteItem {
+  parentId: string;
+  index: number;
+  subtree: Record<string, SceneNode>;
+}
+
+type HistoryEntry =
+  | { kind: 'patch'; id: string; before: SceneNode; after: SceneNode }
+  | { kind: 'batch'; items: PatchItem[] }
+  | { kind: 'add'; node: SceneNode; parentId: string; index: number; subtree?: Record<string, SceneNode> }
+  | { kind: 'addBatch'; items: AddItem[] }
+  | { kind: 'delete'; parentId: string; index: number; subtree: Record<string, SceneNode> }
+  | { kind: 'deleteBatch'; items: DeleteItem[] }
+  | { kind: 'guides'; pageId: string; before: Guide[]; after: Guide[] }
+  | {
+      kind: 'structure';
+      beforeNodes: Record<string, SceneNode>;
+      afterNodes: Record<string, SceneNode>;
+      undoRemove: string[];
+      redoRemove: string[];
+      selectionBefore: string[];
+      selectionAfter: string[];
+    };
+
+interface EditorState {
+  doc: GromaDoc;
+  pageId: string;
+  /** 兼容旧界面：主选中节点，等于 selectedIds[0] */
+  selectedId: string | null;
+  selectedIds: string[];
+  projectId: string | null;
+  saveState: SaveState;
+  viewport: Viewport;
+  viewSize: { w: number; h: number };
+  tool: Tool;
+  leftOpen: boolean;
+  rightOpen: boolean;
+  needsFit: boolean;
+  past: HistoryEntry[];
+  future: HistoryEntry[];
+}
+
+interface Transaction {
+  items: Record<string, SceneNode>;
+}
+
+let state: EditorState;
+let transaction: Transaction | null = null;
+let idSeq = 0;
+let viewportAnimFrame = 0;
+
+function freshState(): EditorState {
+  const doc = createDoc();
+  return {
+    doc,
+    pageId: doc.pages[0].id,
+    selectedId: null,
+    selectedIds: [],
+    projectId: null,
+    saveState: 'local',
+    viewport: { x: 0, y: 0, scale: 1 },
+    viewSize: { w: 0, h: 0 },
+    tool: 'move',
+    leftOpen: true,
+    rightOpen: true,
+    needsFit: true,
+    past: [],
+    future: [],
+  };
+}
+
+state = freshState();
+
+const listeners = new Set<() => void>();
+
+function emit() {
+  for (const l of listeners) l();
+}
+
+function set(updater: (s: EditorState) => EditorState) {
+  state = updater(state);
+  emit();
+}
+
+function withSelection(s: EditorState, ids: string[]): EditorState {
+  return { ...s, selectedIds: ids, selectedId: ids[0] ?? null };
+}
+
+function reduceMotion(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    : false;
+}
+
+function stopViewportAnimation(): void {
+  if (!viewportAnimFrame) return;
+  window.cancelAnimationFrame(viewportAnimFrame);
+  viewportAnimFrame = 0;
+}
+
+/** `Shift+1/2` 与适配按钮走 180ms 缓出；滚轮、拖动仍即时跟手。 */
+function animateViewportTo(target: Viewport): void {
+  stopViewportAnimation();
+  if (reduceMotion() || typeof window === 'undefined') {
+    set((s) => ({ ...s, viewport: target }));
+    return;
+  }
+  const from = state.viewport;
+  const start = performance.now();
+  const duration = 180;
+  const step = (now: number) => {
+    const progress = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    set((s) => ({
+      ...s,
+      viewport: {
+        x: from.x + (target.x - from.x) * eased,
+        y: from.y + (target.y - from.y) * eased,
+        scale: from.scale + (target.scale - from.scale) * eased,
+      },
+    }));
+    if (progress < 1) viewportAnimFrame = window.requestAnimationFrame(step);
+    else viewportAnimFrame = 0;
+  };
+  viewportAnimFrame = window.requestAnimationFrame(step);
+}
+
+function validSelection(doc: GromaDoc, ids: string[]): string[] {
+  return ids.filter((id) => {
+    const node = doc.nodes[id];
+    return Boolean(node && node.type !== 'page');
+  });
+}
+
+export function getState(): EditorState {
+  return state;
+}
+
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function useEditor(): EditorState {
+  return useSyncExternalStore(subscribe, getState, getState);
+}
+
+function pageRoot(doc: GromaDoc, pageId: string): SceneNode | null {
+  const page = doc.pages.find((p) => p.id === pageId);
+  if (!page) return null;
+  return doc.nodes[page.rootId] ?? null;
+}
+
+function frameBounds(doc: GromaDoc, pageId: string, selectedId: string | null): Rect {
+  if (selectedId) {
+    const node = doc.nodes[selectedId];
+    if (node && node.type === 'frame') return { x: node.x, y: node.y, w: node.w, h: node.h };
+  }
+  const root = pageRoot(doc, pageId);
+  const frames = (root?.children ?? []).map((id) => doc.nodes[id]).filter((n) => n && n.type === 'frame');
+  if (frames.length === 0) return { x: 0, y: 0, w: 1440, h: 900 };
+  if (frames.length === 1) {
+    const f = frames[0];
+    return { x: f.x, y: f.y, w: f.w, h: f.h };
+  }
+  const minX = Math.min(...frames.map((f) => f.x));
+  const minY = Math.min(...frames.map((f) => f.y));
+  const maxX = Math.max(...frames.map((f) => f.x + f.w));
+  const maxY = Math.max(...frames.map((f) => f.y + f.h));
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+function computeFit(s: EditorState): Viewport {
+  const bounds = frameBounds(s.doc, s.pageId, s.selectedId);
+  return fitRect(bounds, s.viewSize.w, s.viewSize.h);
+}
+
+function newNodeId(type: NodeType): string {
+  idSeq += 1;
+  return `${type}-${Date.now().toString(36)}-${idSeq}`;
+}
+
+function run(doc: GromaDoc, command: SceneCommand): GromaDoc {
+  return applyCommand(doc, command).doc;
+}
+
+function withGuides(doc: GromaDoc, pageId: string, guides: Guide[]): GromaDoc {
+  return {
+    ...doc,
+    pages: doc.pages.map((page) => (page.id === pageId ? { ...page, guides } : page)),
+  };
+}
+
+function guideState(s: EditorState, pageId: string, before: Guide[], after: Guide[]): EditorState {
+  return {
+    ...s,
+    doc: withGuides(s.doc, pageId, after),
+    past: [...s.past, { kind: 'guides', pageId, before, after } as HistoryEntry].slice(-200),
+    future: [],
+  };
+}
+
+function patchItems(
+  doc: GromaDoc,
+  patches: Array<{ id: string; patch: NodePatch }>,
+): { doc: GromaDoc; items: PatchItem[] } {
+  let next = doc;
+  const items: PatchItem[] = [];
+  for (const { id, patch } of patches) {
+    try {
+      const result = applyCommand(next, { type: 'patch', id, patch });
+      if (!result.before || !result.after) continue;
+      if (JSON.stringify(result.before) !== JSON.stringify(result.after)) {
+        items.push({ id, before: result.before, after: result.after });
+      }
+      next = result.doc;
+    } catch {
+      // 单个节点补丁失败不应让整批操作停在中途
+    }
+  }
+  return { doc: next, items };
+}
+
+function applyEntry(doc: GromaDoc, entry: HistoryEntry, direction: 'undo' | 'redo'): GromaDoc {
+  if (entry.kind === 'patch') {
+    const target = direction === 'undo' ? entry.before : entry.after;
+    try {
+      return run(doc, { type: 'patch', id: entry.id, patch: target });
+    } catch {
+      return doc;
+    }
+  }
+  if (entry.kind === 'batch') {
+    let next = doc;
+    for (const item of entry.items) {
+      try {
+        next = run(next, {
+          type: 'patch',
+          id: item.id,
+          patch: direction === 'undo' ? item.before : item.after,
+        });
+      } catch {
+        // 保留其余可恢复项
+      }
+    }
+    return next;
+  }
+  if (entry.kind === 'add') {
+    if (direction === 'undo') {
+      try {
+        return run(doc, { type: 'remove', id: entry.node.id });
+      } catch {
+        return doc;
+      }
+    }
+    try {
+      return run(doc, {
+        type: 'restore',
+        parentId: entry.parentId,
+        index: entry.index,
+        subtree: entry.subtree ?? { [entry.node.id]: entry.node },
+      });
+    } catch {
+      return doc;
+    }
+  }
+  if (entry.kind === 'addBatch') {
+    let next = doc;
+    if (direction === 'undo') {
+      for (const item of entry.items) {
+        try {
+          next = run(next, { type: 'remove', id: item.node.id });
+        } catch {
+          // 已删除的克隆不影响其它项
+        }
+      }
+      return next;
+    }
+    for (const item of entry.items) {
+      try {
+        next = run(next, {
+          type: 'restore',
+          parentId: item.parentId,
+          index: item.index,
+          subtree: item.subtree,
+        });
+      } catch {
+        // 继续恢复其它项
+      }
+    }
+    return next;
+  }
+  if (entry.kind === 'delete') {
+    if (direction === 'undo') {
+      try {
+        return run(doc, { type: 'restore', parentId: entry.parentId, index: entry.index, subtree: entry.subtree });
+      } catch {
+        return doc;
+      }
+    }
+    const root = Object.values(entry.subtree).find((node) => node.parentId === entry.parentId);
+    if (!root) return doc;
+    try {
+      return run(doc, { type: 'remove', id: root.id });
+    } catch {
+      return doc;
+    }
+  }
+  if (entry.kind === 'deleteBatch') {
+    let next = doc;
+    if (direction === 'undo') {
+      const ordered = [...entry.items].reverse();
+      for (const item of ordered) {
+        try {
+          next = run(next, { type: 'restore', parentId: item.parentId, index: item.index, subtree: item.subtree });
+        } catch {
+          // 跳过已恢复项
+        }
+      }
+      return next;
+    }
+    for (const item of entry.items) {
+      const root = Object.values(item.subtree).find((node) => node.parentId === item.parentId);
+      if (!root) continue;
+      try {
+        next = run(next, { type: 'remove', id: root.id });
+      } catch {
+        // 继续删除其它项
+      }
+    }
+    return next;
+  }
+  if (entry.kind === 'structure') {
+    const nodes = { ...doc.nodes };
+    for (const id of direction === 'undo' ? entry.undoRemove : entry.redoRemove) delete nodes[id];
+    const source = direction === 'undo' ? entry.beforeNodes : entry.afterNodes;
+    for (const [id, node] of Object.entries(source)) nodes[id] = node;
+    return { ...doc, nodes };
+  }
+  if (entry.kind === 'guides') {
+    return withGuides(doc, entry.pageId, direction === 'undo' ? entry.before : entry.after);
+  }
+  return doc;
+}
+
+function selectionAfterEntry(
+  entry: HistoryEntry,
+  direction: 'undo' | 'redo',
+  current: string[],
+): string[] | null {
+  if (entry.kind === 'add') return direction === 'undo' ? [] : [entry.node.id];
+  if (entry.kind === 'addBatch') return direction === 'undo' ? [] : entry.items.map((item) => item.node.id);
+  if (entry.kind === 'delete') {
+    return direction === 'undo'
+      ? [Object.values(entry.subtree).find((node) => node.parentId === entry.parentId)?.id ?? '']
+      : [];
+  }
+  if (entry.kind === 'deleteBatch') {
+    return direction === 'undo'
+      ? entry.items.map((item) => Object.values(item.subtree).find((node) => node.parentId === item.parentId)?.id ?? '')
+      : [];
+  }
+  if (entry.kind === 'structure') return direction === 'undo' ? entry.selectionBefore : entry.selectionAfter;
+  return current;
+}
+
+export const editor = {
+  setViewport(v: Viewport) {
+    stopViewportAnimation();
+    set((s) => ({ ...s, viewport: { ...v, scale: clampScale(v.scale) } }));
+  },
+
+  panBy(dx: number, dy: number) {
+    stopViewportAnimation();
+    set((s) => ({ ...s, viewport: { ...s.viewport, x: s.viewport.x + dx, y: s.viewport.y + dy } }));
+  },
+
+  zoomAtPoint(sx: number, sy: number, factor: number) {
+    stopViewportAnimation();
+    set((s) => ({ ...s, viewport: zoomAt(s.viewport, sx, sy, factor) }));
+  },
+
+  setZoomPercent(percent: number, sx?: number, sy?: number) {
+    stopViewportAnimation();
+    set((s) => {
+      const target = clampScale(percent / 100);
+      const ax = sx ?? s.viewSize.w / 2;
+      const ay = sy ?? s.viewSize.h / 2;
+      return { ...s, viewport: zoomAt(s.viewport, ax, ay, target / s.viewport.scale) };
+    });
+  },
+
+  fitAll() {
+    stopViewportAnimation();
+    if (state.viewSize.w <= 0) return;
+    const target = computeFit(state);
+    set((s) => ({ ...s, needsFit: false }));
+    animateViewportTo(target);
+  },
+
+  setCanvasSize(w: number, h: number) {
+    stopViewportAnimation();
+    set((s) => {
+      if (s.viewSize.w === w && s.viewSize.h === h && !s.needsFit) return s;
+      const next = { ...s, viewSize: { w, h } };
+      if (s.needsFit && w > 0 && h > 0) {
+        next.viewport = computeFit(next);
+        next.needsFit = false;
+      }
+      return next;
+    });
+  },
+
+  addGuide(axis: Guide['axis'], position: number) {
+    set((s) => {
+      const page = s.doc.pages.find((item) => item.id === s.pageId) ?? s.doc.pages[0];
+      if (!page || !Number.isFinite(position)) return s;
+      const before = page.guides ?? [];
+      const value = Math.round(position);
+      if (before.some((guide) => guide.axis === axis && Math.abs(guide.position - value) < 1)) return s;
+      const after: Guide[] = [...before, { axis, position: value }];
+      return guideState(s, page.id, before, after);
+    });
+  },
+
+  moveGuide(index: number, position: number) {
+    set((s) => {
+      const page = s.doc.pages.find((item) => item.id === s.pageId) ?? s.doc.pages[0];
+      const before = page?.guides ?? [];
+      if (!page || !Number.isInteger(index) || index < 0 || index >= before.length || !Number.isFinite(position)) return s;
+      const value = Math.round(position);
+      const current = before[index];
+      if (!current || current.position === value) return s;
+      const after = before.slice();
+      after[index] = { ...current, position: value };
+      return guideState(s, page.id, before, after);
+    });
+  },
+
+  removeGuide(index: number) {
+    set((s) => {
+      const page = s.doc.pages.find((item) => item.id === s.pageId) ?? s.doc.pages[0];
+      const before = page?.guides ?? [];
+      if (!page || !Number.isInteger(index) || index < 0 || index >= before.length) return s;
+      const after = before.filter((_, guideIndex) => guideIndex !== index);
+      return guideState(s, page.id, before, after);
+    });
+  },
+
+  select(id: string | null, additive = false) {
+    set((s) => {
+      if (id === null) return withSelection(s, []);
+      const node = s.doc.nodes[id];
+      if (!node) return s;
+      if (!additive || node.type === 'page') return withSelection(s, [id]);
+      if (s.selectedIds.includes(id)) {
+        return withSelection(s, s.selectedIds.filter((selected) => selected !== id));
+      }
+      return withSelection(s, [...s.selectedIds, id]);
+    });
+  },
+
+  selectMany(ids: string[]) {
+    set((s) => withSelection(s, validSelection(s.doc, [...new Set(ids)])));
+  },
+
+  clearSelection() {
+    set((s) => (s.selectedIds.length === 0 ? s : withSelection(s, [])));
+  },
+
+  toggleSelected(id: string) {
+    editor.select(id, true);
+  },
+
+  setTool(tool: Tool) {
+    set((s) => (s.tool === tool ? s : { ...s, tool }));
+  },
+
+  toggleLeft() {
+    set((s) => ({ ...s, leftOpen: !s.leftOpen }));
+  },
+
+  toggleRight() {
+    set((s) => ({ ...s, rightOpen: !s.rightOpen }));
+  },
+
+  renameDoc(name: string) {
+    set((s) => ({ ...s, doc: { ...s.doc, name } }));
+  },
+
+  setProjectId(projectId: string | null) {
+    set((s) => ({
+      ...s,
+      projectId,
+      saveState: projectId ? 'saving' : 'local',
+    }));
+  },
+
+  setSaveState(saveState: SaveState) {
+    set((s) => (s.saveState === saveState ? s : { ...s, saveState }));
+  },
+
+  loadDoc(doc: GromaDoc, projectId: string) {
+    stopViewportAnimation();
+    transaction = null;
+    set((s) => {
+      const next: EditorState = {
+        ...s,
+        doc,
+        pageId: doc.pages[0].id,
+        selectedId: null,
+        selectedIds: [],
+        projectId,
+        saveState: 'saved',
+        needsFit: true,
+        past: [],
+        future: [],
+      };
+      if (s.viewSize.w > 0 && s.viewSize.h > 0) {
+        next.viewport = computeFit(next);
+        next.needsFit = false;
+      }
+      return next;
+    });
+  },
+
+  applyPatch(id: string, patch: NodePatch) {
+    set((s) => {
+      const result = patchItems(s.doc, [{ id, patch }]);
+      if (result.items.length === 0) return { ...s, doc: result.doc };
+      return {
+        ...s,
+        doc: result.doc,
+        past: [...s.past, { kind: 'batch', items: result.items } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+  },
+
+  addNode(input: {
+    type: 'frame' | 'rect' | 'ellipse' | 'text';
+    parentId: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    name?: string;
+    fill?: string;
+  }): string {
+    const id = newNodeId(input.type);
+    set((s) => {
+      const parent = s.doc.nodes[input.parentId];
+      if (!parent) return s;
+      const sameType = parent.children
+        .map((cid) => s.doc.nodes[cid])
+        .filter((n) => n && n.type === input.type).length;
+      const typeName =
+        input.type === 'frame' ? '画板' : input.type === 'rect' ? '矩形' : input.type === 'ellipse' ? '椭圆' : '文本';
+      const fill =
+        input.type === 'frame' || input.type === 'rect' || input.type === 'ellipse'
+          ? [{ type: 'solid' as const, color: input.fill ?? (input.type === 'frame' ? '#FFFFFF' : '#D9D9D9'), opacity: 1 }]
+          : [{ type: 'solid' as const, color: input.fill ?? '#221C00', opacity: 1 }];
+      const node: SceneNode = {
+        id,
+        type: input.type,
+        name: input.name ?? `${typeName} ${sameType + 1}`,
+        parentId: parent.id,
+        children: [],
+        x: input.x,
+        y: input.y,
+        w: Math.max(1, input.w),
+        h: Math.max(1, input.h),
+        rotation: 0,
+        opacity: 1,
+        visible: true,
+        locked: false,
+        clipContent: input.type === 'frame',
+        fills: fill,
+        cornerRadius: 0,
+        ...(input.type === 'text' ? { text: '文本', fontSize: 24, fontWeight: 600 } : {}),
+      };
+      const result = applyCommand(s.doc, { type: 'insert', parentId: parent.id, node });
+      const past = [
+        ...s.past,
+        {
+          kind: 'add',
+          node,
+          parentId: parent.id,
+          index: result.index ?? parent.children.length,
+          subtree: { [id]: node },
+        } as HistoryEntry,
+      ].slice(-200);
+      return { ...withSelection(s, [id]), doc: result.doc, past, future: [] };
+    });
+    return id;
+  },
+
+  beginTransaction(input: string | string[]) {
+    if (transaction) editor.endTransaction();
+    const ids = Array.isArray(input) ? input : [input];
+    const items: Record<string, SceneNode> = {};
+    for (const id of topLevelSelection(state.doc, ids)) {
+      const node = state.doc.nodes[id];
+      if (node) items[id] = node;
+    }
+    transaction = Object.keys(items).length > 0 ? { items } : null;
+  },
+
+  updateSilent(id: string, patch: NodePatch) {
+    set((s) => {
+      try {
+        return { ...s, doc: run(s.doc, { type: 'patch', id, patch }) };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  updateManySilent(patches: Array<{ id: string; patch: NodePatch }>) {
+    set((s) => {
+      if (patches.length === 0) return s;
+      return { ...s, doc: patchItems(s.doc, patches).doc };
+    });
+  },
+
+  endTransaction() {
+    const tx = transaction;
+    transaction = null;
+    if (!tx) return;
+    const items: PatchItem[] = [];
+    for (const [id, before] of Object.entries(tx.items)) {
+      const after = state.doc.nodes[id];
+      if (!after) continue;
+      if (JSON.stringify(before) !== JSON.stringify(after)) items.push({ id, before, after });
+    }
+    if (items.length === 0) return;
+    set((s) => ({
+      ...s,
+      past: [
+        ...s.past,
+        items.length === 1
+          ? ({ kind: 'patch', ...items[0] } as HistoryEntry)
+          : ({ kind: 'batch', items } as HistoryEntry),
+      ].slice(-200),
+      future: [],
+    }));
+  },
+
+  cancelTransaction() {
+    const tx = transaction;
+    transaction = null;
+    if (!tx) return;
+    set((s) => {
+      let next = s.doc;
+      for (const [id, before] of Object.entries(tx.items)) {
+        try {
+          next = run(next, { type: 'patch', id, patch: before });
+        } catch {
+          // 单个节点恢复失败不影响其它节点
+        }
+      }
+      return { ...s, doc: next };
+    });
+  },
+
+  deleteSelected() {
+    set((s) => {
+      const ids = topLevelSelection(s.doc, s.selectedIds);
+      let next = s.doc;
+      const items: DeleteItem[] = [];
+      for (const id of ids) {
+        try {
+          const result = applyCommand(next, { type: 'remove', id });
+          if (!result.parentId || result.index === undefined || !result.subtree) continue;
+          items.push({ parentId: result.parentId, index: result.index, subtree: result.subtree });
+          next = result.doc;
+        } catch {
+          // 跳过不可删除节点
+        }
+      }
+      if (items.length === 0) return s;
+      const past = [...s.past, { kind: 'deleteBatch', items } as HistoryEntry].slice(-200);
+      return { ...withSelection(s, []), doc: next, past, future: [] };
+    });
+  },
+
+  duplicateSelected() {
+    set((s) => {
+      const ids = topLevelSelection(s.doc, s.selectedIds);
+      let next = s.doc;
+      const items: AddItem[] = [];
+      for (const id of ids) {
+        try {
+          const result = applyCommand(next, {
+            type: 'clone',
+            id,
+            makeId: newNodeId,
+            dx: 12,
+            dy: 12,
+            nameSuffix: ' 副本',
+          });
+          if (!result.node || !result.parentId || result.index === undefined || !result.subtree) continue;
+          items.push({ node: result.node, parentId: result.parentId, index: result.index, subtree: result.subtree });
+          next = result.doc;
+        } catch {
+          // 跳过不可复制节点
+        }
+      }
+      if (items.length === 0) return s;
+      const selected = items.map((item) => item.node.id);
+      const past = [...s.past, { kind: 'addBatch', items } as HistoryEntry].slice(-200);
+      return { ...withSelection(s, selected), doc: next, past, future: [] };
+    });
+  },
+
+  nudgeSelected(dx: number, dy: number) {
+    set((s) => {
+      const ids = topLevelSelection(s.doc, s.selectedIds);
+      const patches = ids.map((id) => {
+        const node = s.doc.nodes[id];
+        return { id, patch: { x: (node?.x ?? 0) + dx, y: (node?.y ?? 0) + dy } };
+      });
+      const result = patchItems(s.doc, patches);
+      if (result.items.length === 0) return s;
+      return {
+        ...s,
+        doc: result.doc,
+        past: [...s.past, { kind: 'batch', items: result.items } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+  },
+
+  alignSelection(mode: AlignMode) {
+    set((s) => {
+      const deltas = alignDeltas(s.doc, s.selectedIds, mode);
+      if (deltas.length === 0) return s;
+      const result = patchItems(
+        s.doc,
+        deltas.map(({ id, dx, dy }) => {
+          const node = s.doc.nodes[id];
+          return { id, patch: { x: (node?.x ?? 0) + dx, y: (node?.y ?? 0) + dy } };
+        }),
+      );
+      if (result.items.length === 0) return s;
+      return {
+        ...s,
+        doc: result.doc,
+        past: [...s.past, { kind: 'batch', items: result.items } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+  },
+
+  distributeSelection(mode: DistributeMode) {
+    set((s) => {
+      const deltas = distributeDeltas(s.doc, s.selectedIds, mode);
+      if (deltas.length === 0) return s;
+      const result = patchItems(
+        s.doc,
+        deltas.map(({ id, dx, dy }) => {
+          const node = s.doc.nodes[id];
+          return { id, patch: { x: (node?.x ?? 0) + dx, y: (node?.y ?? 0) + dy } };
+        }),
+      );
+      if (result.items.length === 0) return s;
+      return {
+        ...s,
+        doc: result.doc,
+        past: [...s.past, { kind: 'batch', items: result.items } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+  },
+
+  groupSelected() {
+    set((s) => {
+      if (s.selectedIds.length < 2) return s;
+      try {
+        const result = applyCommand(s.doc, {
+          type: 'group',
+          ids: s.selectedIds,
+          makeId: newNodeId,
+        });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: result.undoRemove ?? [],
+          redoRemove: result.redoRemove ?? [],
+          selectionBefore: s.selectedIds,
+          selectionAfter: [result.node.id],
+        };
+        return { ...withSelection(s, [result.node.id]), doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  ungroupSelected() {
+    set((s) => {
+      if (s.selectedIds.length !== 1) return s;
+      const node = s.doc.nodes[s.selectedIds[0]];
+      if (!node || node.type !== 'group') return s;
+      try {
+        const result = applyCommand(s.doc, { type: 'ungroup', id: node.id });
+        if (!result.childIds || !result.beforeNodes || !result.afterNodes || !result.parentId) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: result.undoRemove ?? [],
+          redoRemove: result.redoRemove ?? [node.id],
+          selectionBefore: [node.id],
+          selectionAfter: result.childIds,
+        };
+        return {
+          ...withSelection(s, result.childIds),
+          doc: result.doc,
+          past: [...s.past, entry].slice(-200),
+          future: [],
+        };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  undo() {
+    set((s) => {
+      const entry = s.past[s.past.length - 1];
+      if (!entry) return s;
+      const doc = applyEntry(s.doc, entry, 'undo');
+      const preferred = selectionAfterEntry(entry, 'undo', s.selectedIds);
+      const ids = validSelection(doc, preferred ?? s.selectedIds);
+      return {
+        ...withSelection(s, ids),
+        doc,
+        past: s.past.slice(0, -1),
+        future: [...s.future, entry],
+      };
+    });
+  },
+
+  redo() {
+    set((s) => {
+      const entry = s.future[s.future.length - 1];
+      if (!entry) return s;
+      const doc = applyEntry(s.doc, entry, 'redo');
+      const preferred = selectionAfterEntry(entry, 'redo', s.selectedIds);
+      const ids = validSelection(doc, preferred ?? s.selectedIds);
+      return {
+        ...withSelection(s, ids),
+        doc,
+        past: [...s.past, entry].slice(-200),
+        future: s.future.slice(0, -1),
+      };
+    });
+  },
+
+  newDoc(name = '未命名设计', width = 1440, height = 900, frameName?: string) {
+    stopViewportAnimation();
+    const doc = createDoc(name, width, height, frameName);
+    transaction = null;
+    set((s) => {
+      const next: EditorState = {
+        ...s,
+        doc,
+        pageId: doc.pages[0].id,
+        selectedId: null,
+        selectedIds: [],
+        projectId: null,
+        saveState: 'local',
+        needsFit: true,
+        past: [],
+        future: [],
+      };
+      if (s.viewSize.w > 0 && s.viewSize.h > 0) {
+        next.viewport = computeFit(next);
+        next.needsFit = false;
+      }
+      return next;
+    });
+  },
+};
+
+export function selectedNode(s: EditorState): SceneNode | null {
+  return s.selectedId ? (s.doc.nodes[s.selectedId] ?? null) : null;
+}

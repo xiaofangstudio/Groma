@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Groma">
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="#F2B705"/>
+  <g fill="none" stroke="#181203" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 394 V256 H394"/>
+    <path d="M630 256 H768 V394"/>
+    <path d="M256 630 V768 H394"/>
+    <path d="M630 768 H768 V630"/>
+  </g>
+  <rect x="448" y="448" width="128" height="128" rx="32" fill="#2F6BFF"/>
+</svg>
