@@ -19,6 +19,8 @@ param(
   [int]$PostWaitMs = 900,
   [int]$WinWidth = 0,
   [int]$WinHeight = 0,
+  [string]$CdpScript = "",
+  [int]$CdpPort = 0,
   [switch]$NoDesktop
 )
 
@@ -234,11 +236,25 @@ function Send-Enter([IntPtr]$Target) {
 
 function Send-Key([IntPtr]$Target, [string]$Text) {
   if ($Text.Length -eq 0) { return }
-  $vk = switch ($Text.Substring(0, 1)) {
-    '=' { 0xBB }
-    '+' { 0xBB }
-    '-' { 0xBD }
-    default { [int][char]::ToUpperInvariant($Text[0]) }
+  $named = @{
+    'esc' = 0x1B
+    'escape' = 0x1B
+    'enter' = 0x0D
+    'tab' = 0x09
+    'backspace' = 0x08
+    'delete' = 0x2E
+    'space' = 0x20
+  }
+  $lower = $Text.ToLowerInvariant()
+  if ($named.ContainsKey($lower)) {
+    $vk = $named[$lower]
+  } else {
+    $vk = switch ($Text.Substring(0, 1)) {
+      '=' { 0xBB }
+      '+' { 0xBB }
+      '-' { 0xBD }
+      default { [int][char]::ToUpperInvariant($Text[0]) }
+    }
   }
   $scan = [IntPtr]::new(($vk -shl 16))
   [GromaShot]::PostMessage($Target, 0x0100, [IntPtr]::new($vk), $scan) | Out-Null
@@ -267,7 +283,12 @@ function Send-Chord([IntPtr]$Target, [string]$Text) {
   }
   $keys = @()
   foreach ($name in $Text.Split('+')) {
-    $entry = $map[$name.Trim().ToLowerInvariant()]
+    $trimmed = $name.Trim()
+    $entry = $map[$trimmed.ToLowerInvariant()]
+    if (-not $entry -and $trimmed.Length -eq 1) {
+      $vk = [int][char]::ToUpperInvariant($trimmed[0])
+      $entry = @($vk, 0, $false)
+    }
     if ($entry) { $keys += ,$entry }
   }
   if ($keys.Count -eq 0) { return }
@@ -287,6 +308,9 @@ function Send-Chord([IntPtr]$Target, [string]$Text) {
 
 Get-Process groma -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 200
+if ($CdpPort -gt 0) {
+  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$CdpPort"
+}
 
 $desktop = [IntPtr]::Zero
 $proc = $null
@@ -393,12 +417,19 @@ try {
         Send-Drag $hwnd $inputHwnd ([int]$vals[0]) ([int]$vals[1]) ([int]$vals[2]) ([int]$vals[3]) $false
         [GromaShot]::PostMessage($inputHwnd, 0x0101, [IntPtr]::new(0x20), [IntPtr]::new(0xC0390001)) | Out-Null
         Start-Sleep -Milliseconds 600
+      } elseif ($kind -eq 'text' -and $vals.Count -eq 1) {
+        Start-Sleep -Milliseconds 120
+        Send-Text $inputHwnd $vals[0]
       } elseif ($kind -eq 'key' -and $vals.Count -eq 1) {
         Send-Key $inputHwnd $vals[0]
       } elseif ($kind -eq 'combo' -and $vals.Count -eq 1) {
         Send-Chord $inputHwnd $vals[0]
       }
     }
+  }
+  if ($CdpScript) {
+    if ($CdpPort -gt 0) { $env:CDP_PORT = "$CdpPort" }
+    & node $CdpScript
   }
   Start-Sleep -Milliseconds $PostWaitMs
   $ok = Capture-Window $hwnd $Out

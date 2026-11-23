@@ -5,6 +5,7 @@ import { hitTestGuide, guideScreenPosition } from '../core/guides';
 import {
   absolutePosition,
   absoluteRect,
+  deepestFrameOrSection,
   deepestFrame,
   hitTest,
   hitTestDeep,
@@ -58,7 +59,7 @@ interface ResizeDrag {
 
 interface DrawDrag {
   pointerId: number;
-  tool: 'frame' | 'rect' | 'ellipse';
+  tool: 'frame' | 'section' | 'rect' | 'ellipse';
   startWorld: { x: number; y: number };
   currentWorld: { x: number; y: number };
   parent: SceneNode;
@@ -567,9 +568,13 @@ export function CanvasView() {
       return;
     }
 
-    if (current.tool === 'frame' || current.tool === 'rect' || current.tool === 'ellipse') {
+    if (current.tool === 'frame' || current.tool === 'section' || current.tool === 'rect' || current.tool === 'ellipse') {
       const parent =
-        current.tool === 'frame' ? root : deepestFrame(current.doc, statePage, world.x, world.y) ?? root;
+        current.tool === 'frame'
+          ? deepestFrameOrSection(current.doc, statePage, world.x, world.y) ?? root
+          : current.tool === 'section'
+            ? root
+            : deepestFrame(current.doc, statePage, world.x, world.y) ?? root;
       const parentAbs = parent.type === 'page' ? { x: 0, y: 0 } : absolutePosition(current.doc, parent.id);
       drawRef.current = {
         pointerId: e.pointerId,
@@ -804,8 +809,8 @@ export function CanvasView() {
       let h = Math.abs(cw.y - draft.startWorld.y);
 
       if (w < 3 || h < 3) {
-        w = draft.tool === 'frame' ? 1440 : 120;
-        h = draft.tool === 'frame' ? 900 : 80;
+        w = draft.tool === 'frame' ? 1440 : draft.tool === 'section' ? 800 : 120;
+        h = draft.tool === 'frame' ? 900 : draft.tool === 'section' ? 600 : 80;
         sx = draft.startWorld.x;
         sy = draft.startWorld.y;
       }

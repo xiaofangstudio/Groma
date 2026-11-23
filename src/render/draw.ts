@@ -32,6 +32,10 @@ export interface DrawStats {
 interface InternalDrawOptions {
   interactive: boolean;
   stats: DrawStats;
+  /** 缩略图只画到有限层，34×22 下更深的细节不可见。 */
+  maxDepth?: number;
+  /** 缩略图跳过投影后小于该像素尺寸的节点。 */
+  minPixelSize?: number;
 }
 
 function newStats(): DrawStats {
@@ -60,6 +64,53 @@ function fillColor(node: SceneNode): string {
   return fill.color;
 }
 
+function drawSection(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  node: SceneNode,
+  ox: number,
+  oy: number,
+  v: Viewport,
+  opts: InternalDrawOptions,
+  bounds?: WorldBounds | null,
+  depth = 0,
+) {
+  const x = (ox + node.x) * v.scale + v.x;
+  const y = (oy + node.y) * v.scale + v.y;
+  const w = node.w * v.scale;
+  const h = node.h * v.scale;
+  const radius = node.cornerRadius * v.scale;
+
+  ctx.save();
+  ctx.globalAlpha = node.opacity;
+  if (node.fills.length > 0) {
+    ctx.fillStyle = fillColor(node);
+    roundRect(ctx, x, y, w, h, radius);
+    ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(76, 70, 60, 0.34)';
+  ctx.lineWidth = 1;
+  roundRect(ctx, x, y, w, h, radius);
+  ctx.stroke();
+
+  if (v.scale >= 0.15 && w > 24) {
+    ctx.globalAlpha = 1;
+    ctx.font = '600 12px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+    ctx.fillStyle = '#6D685E';
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.fillText(node.name, x, y - 7);
+  }
+
+  if (depth < (opts.maxDepth ?? Infinity)) {
+    for (const childId of node.children) {
+      const child = doc.nodes[childId];
+      if (child) drawNode(ctx, doc, child, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
+    }
+  }
+  ctx.restore();
+}
+
 function drawFrame(
   ctx: CanvasRenderingContext2D,
   doc: GromaDoc,
@@ -69,6 +120,7 @@ function drawFrame(
   v: Viewport,
   opts: InternalDrawOptions,
   bounds?: WorldBounds | null,
+  depth = 0,
 ) {
   const x = (ox + node.x) * v.scale + v.x;
   const y = (oy + node.y) * v.scale + v.y;
@@ -109,9 +161,11 @@ function drawFrame(
     roundRect(ctx, x, y, w, h, radius);
     ctx.clip();
   }
-  for (const childId of node.children) {
-    const child = doc.nodes[childId];
-    if (child) drawNode(ctx, doc, child, ox + node.x, oy + node.y, v, opts, bounds);
+  if (depth < (opts.maxDepth ?? Infinity)) {
+    for (const childId of node.children) {
+      const child = doc.nodes[childId];
+      if (child) drawNode(ctx, doc, child, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
+    }
   }
   ctx.restore();
 }
@@ -165,6 +219,7 @@ function drawNode(
   v: Viewport,
   opts: InternalDrawOptions,
   bounds?: WorldBounds | null,
+  depth = 0,
 ) {
   if (!node.visible) {
     opts.stats.nodesCulled += 1;
@@ -174,15 +229,25 @@ function drawNode(
     opts.stats.nodesCulled += 1;
     return;
   }
+  const min = opts.minPixelSize;
+  if (min && node.type !== 'page' && node.type !== 'group') {
+    const px = Math.max(node.w * v.scale, node.h * v.scale);
+    if (px > 0 && px < min) {
+      opts.stats.nodesCulled += 1;
+      return;
+    }
+  }
   opts.stats.nodesDrawn += 1;
   if (node.type === 'frame') {
-    drawFrame(ctx, doc, node, ox, oy, v, opts, bounds);
+    drawFrame(ctx, doc, node, ox, oy, v, opts, bounds, depth);
+  } else if (node.type === 'section') {
+    drawSection(ctx, doc, node, ox, oy, v, opts, bounds, depth);
   } else if (node.type === 'rect' || node.type === 'ellipse' || node.type === 'text') {
     drawShape(ctx, node, ox, oy, v);
-  } else {
+  } else if (depth < (opts.maxDepth ?? Infinity)) {
     for (const childId of node.children) {
       const child = doc.nodes[childId];
-      if (child) drawNode(ctx, doc, child, ox + node.x, oy + node.y, v, opts, bounds);
+      if (child) drawNode(ctx, doc, child, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
     }
   }
 }
@@ -399,17 +464,19 @@ export interface FrameExport {
 }
 
 /**
- * 把单个画板渲染成 PNG。与编辑器画布共用同一套绘制函数，
+ * 把单个画板/区块渲染成位图。与编辑器画布共用同一套绘制函数，
  * 保证屏幕上看到的和导出结果不会两套逻辑。
  */
-export function renderFramePng(
+function renderFrameRaster(
   doc: GromaDoc,
   frameId: string,
   scale: number,
   transparent: boolean,
+  mime: 'image/png' | 'image/jpeg',
+  quality = 0.92,
 ): FrameExport | null {
   const frame = doc.nodes[frameId];
-  if (!frame || frame.type !== 'frame') return null;
+  if (!frame || (frame.type !== 'frame' && frame.type !== 'section')) return null;
   const safeScale = Math.max(0.5, Math.min(4, scale));
   const width = Math.max(1, Math.round(frame.w * safeScale));
   const height = Math.max(1, Math.round(frame.h * safeScale));
@@ -423,7 +490,8 @@ export function renderFramePng(
   ctx.setTransform(safeScale, 0, 0, safeScale, 0, 0);
   ctx.globalAlpha = frame.opacity;
 
-  if (!transparent) {
+  const opaque = !transparent || mime === 'image/jpeg';
+  if (opaque) {
     const bg = fillColor(frame);
     ctx.fillStyle = bg === 'transparent' ? '#FFFFFF' : bg;
     roundRect(ctx, 0, 0, frame.w, frame.h, frame.cornerRadius);
@@ -441,9 +509,106 @@ export function renderFramePng(
   ctx.restore();
 
   return {
-    dataUrl: canvas.toDataURL('image/png'),
+    dataUrl: mime === 'image/jpeg' ? canvas.toDataURL('image/jpeg', quality) : canvas.toDataURL('image/png'),
     width: frame.w,
     height: frame.h,
     scale: safeScale,
   };
+}
+
+export function renderFramePng(
+  doc: GromaDoc,
+  frameId: string,
+  scale: number,
+  transparent: boolean,
+): FrameExport | null {
+  return renderFrameRaster(doc, frameId, scale, transparent, 'image/png');
+}
+
+export function renderFrameJpg(
+  doc: GromaDoc,
+  frameId: string,
+  scale: number,
+  transparent: boolean,
+): FrameExport | null {
+  return renderFrameRaster(doc, frameId, scale, transparent, 'image/jpeg');
+}
+
+/**
+ * 把整页内容画进页列表的小缩略图。复用同一套 drawNode，
+ * 但抑制画板阴影和名称，保证 34×22 的尺寸下仍能看清版面。
+ */
+export function drawPageThumbnail(
+  canvas: HTMLCanvasElement,
+  doc: GromaDoc,
+  page: Page,
+  cssW: number,
+  cssH: number,
+  dpr = window.devicePixelRatio || 1,
+): DrawStats {
+  const stats = newStats();
+  const width = Math.max(1, Math.round(cssW * dpr));
+  const height = Math.max(1, Math.round(cssH * dpr));
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return stats;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  ctx.fillStyle = page.background || '#E9E8E4';
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  const root = doc.nodes[page.rootId];
+  if (!root || root.children.length === 0) {
+    ctx.fillStyle = 'rgba(109, 104, 94, 0.42)';
+    ctx.font = '8px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('空', cssW / 2, cssH / 2 + 0.5);
+    return stats;
+  }
+
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const childId of root.children) {
+    const child = doc.nodes[childId];
+    if (!child || !child.visible) continue;
+    const rect = absoluteRect(doc, child.id);
+    if (rect.w <= 0 || rect.h <= 0) continue;
+    left = Math.min(left, rect.x);
+    top = Math.min(top, rect.y);
+    right = Math.max(right, rect.x + rect.w);
+    bottom = Math.max(bottom, rect.y + rect.h);
+  }
+  if (!Number.isFinite(left) || !Number.isFinite(top)) {
+    ctx.fillStyle = 'rgba(109, 104, 94, 0.42)';
+    ctx.font = '8px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('空', cssW / 2, cssH / 2 + 0.5);
+    return stats;
+  }
+
+  const contentW = Math.max(1, right - left);
+  const contentH = Math.max(1, bottom - top);
+  const pad = 2;
+  const scale = Math.min((cssW - pad * 2) / contentW, (cssH - pad * 2) / contentH, 10);
+  const tx = (cssW - contentW * scale) / 2 - left * scale;
+  const ty = (cssH - contentH * scale) / 2 - top * scale;
+  // 34×22 的缩略图不需要画整棵深树：限制层数并跳过亚像素节点，
+  // 避免一次拖动时缩略图和主画布同时做整页绘制。
+  const opts: InternalDrawOptions = {
+    interactive: true,
+    stats,
+    maxDepth: 3,
+    minPixelSize: 0.5,
+  };
+  for (const childId of root.children) {
+    const child = doc.nodes[childId];
+    if (child) drawNode(ctx, doc, child, 0, 0, { x: tx, y: ty, scale }, opts);
+  }
+  return stats;
 }

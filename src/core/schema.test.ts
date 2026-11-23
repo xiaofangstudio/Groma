@@ -31,6 +31,27 @@ describe('场景校验', () => {
     expect(firstError(bad)).toContain('页结构非法');
   });
 
+  it('接受区块节点并校验其容器字段', () => {
+    const doc = brokenDoc();
+    const root = doc.nodes[doc.pages[0].rootId];
+    const section: SceneNode = {
+      ...doc.nodes[root.children[0]],
+      id: 'section-x',
+      type: 'section',
+      name: '区块 1',
+      parentId: root.id,
+      children: [],
+      fills: [],
+      clipContent: false,
+    };
+    root.children.push('section-x');
+    doc.nodes['section-x'] = section;
+    expect(validateDoc(doc).ok).toBe(true);
+
+    section.children = ['ghost'];
+    expect(firstError(doc)).toContain('不存在的子节点');
+  });
+
   it('拒绝不存在的子节点引用', () => {
     const doc = brokenDoc();
     const root = doc.nodes[doc.pages[0].rootId];

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createDoc } from '../core/doc';
 import { fitRect } from '../core/viewport';
-import { drawEditor } from '../render/draw';
+import { drawEditor, drawPageThumbnail } from '../render/draw';
 import type { GromaDoc, Page, SceneNode } from '../core/types';
 
 function makeDoc(): { doc: GromaDoc; page: Page } {
@@ -81,6 +81,7 @@ function makeContext() {
   };
   const methods = [
     'setTransform',
+    'clearRect',
     'fillRect',
     'save',
     'restore',
@@ -135,5 +136,21 @@ describe('渲染基准', () => {
 
     const zoomed = drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 2 }, view, []);
     expect(zoomed.nodesCulled).toBeGreaterThan(300);
+
+    // 页缩略图不应该为了 34×22 把 5000 个亚像素节点全画一遍。
+    const thumbCanvas = {
+      width: 0,
+      height: 0,
+      getContext: () => ctx,
+    } as unknown as HTMLCanvasElement;
+    const thumbStats = drawPageThumbnail(thumbCanvas, doc, page, 34, 22, 1);
+    expect(thumbStats.nodesDrawn).toBeGreaterThanOrEqual(50);
+    expect(thumbStats.nodesDrawn).toBeLessThan(100);
+    expect(thumbStats.nodesCulled).toBeGreaterThanOrEqual(5000);
+
+    const thumbStart = performance.now();
+    for (let i = 0; i < 30; i += 1) drawPageThumbnail(thumbCanvas, doc, page, 34, 22, 1);
+    const thumbAverage = (performance.now() - thumbStart) / 30;
+    console.log(`[thumb] 34×22 平均 ${thumbAverage.toFixed(2)}ms · 节点 ${thumbStats.nodesDrawn}/${total}`);
   });
 });

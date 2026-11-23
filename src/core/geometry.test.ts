@@ -4,6 +4,7 @@ import {
   absolutePosition,
   absoluteRect,
   deepestFrame,
+  deepestFrameOrSection,
   hitTest,
   hitTestDeep,
   marqueeSelection,
@@ -90,6 +91,29 @@ describe('geometry', () => {
     const frame = doc.nodes[root.children[0]];
     expect(deepestFrame(doc, page, 100, 100)?.id).toBe(frame.id);
     expect(deepestFrame(doc, page, -100, -100)).toBeNull();
+  });
+
+  it('新画板可以挂到区块，区块不会被当作普通图形父级', () => {
+    const doc = createDoc();
+    const page = doc.pages[0];
+    const root = doc.nodes[page.rootId];
+    const section: SceneNode = {
+      ...makeGroup('section-1', root.id, 1000, 1000, 900, 700, ['inner-frame']),
+      type: 'section',
+      name: '区块 1',
+    };
+    const inner: SceneNode = {
+      ...makeChild('inner-frame', section.id, 100, 100, 400, 300),
+      type: 'frame',
+      clipContent: true,
+    };
+    root.children.push(section.id);
+    doc.nodes[section.id] = section;
+    doc.nodes[inner.id] = inner;
+
+    expect(deepestFrame(doc, page, 1200, 1200)).toBeNull();
+    expect(deepestFrameOrSection(doc, page, 1200, 1200)?.id).toBe(inner.id);
+    expect(deepestFrameOrSection(doc, page, 1050, 1050)?.id).toBe(section.id);
   });
 
   it('框选完整框住分组时选分组，只压到一部分时选真正命中的子节点', () => {

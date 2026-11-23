@@ -48,6 +48,15 @@ export function IconRedo(props: IconProps) {
   );
 }
 
+export function IconHistory(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3.2 8a4.8 4.8 0 1 0 1.4-3.4" />
+      <path d="M3 2.9v2.4h2.4M8 5.2v3l2.1 1.3" />
+    </svg>
+  );
+}
+
 export function IconMinus(props: IconProps) {
   return (
     <svg {...base(props)}>
@@ -121,6 +130,15 @@ export function IconFrame(props: IconProps) {
   return (
     <svg {...base(props)}>
       <path d="M4.5 2v12M11.5 2v12M2 4.5h12M2 11.5h12" />
+    </svg>
+  );
+}
+
+export function IconSection(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="2.4" y="4.2" width="11.2" height="9.4" rx="1" strokeDasharray="3 2" />
+      <path d="M3.4 2.4h4.2" />
     </svg>
   );
 }

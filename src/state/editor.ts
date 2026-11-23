@@ -11,10 +11,11 @@ import {
 } from '../core/pages';
 import type { GromaDoc, Guide, NodeType, Rect, SceneNode } from '../core/types';
 import { clampScale, fitRect, zoomAt, type Viewport } from '../core/viewport';
+import type { ProjectUiState } from './project-ui';
 import { alignDeltas, distributeDeltas, type AlignMode, type DistributeMode } from '../core/align';
-import { topLevelSelection } from '../core/geometry';
+import { absoluteRect, topLevelSelection } from '../core/geometry';
 
-export type Tool = 'move' | 'hand' | 'frame' | 'rect' | 'ellipse' | 'text';
+export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text';
 export type SaveState = 'local' | 'saving' | 'saved' | 'error';
 
 interface PatchItem {
@@ -201,10 +202,14 @@ function pageRoot(doc: GromaDoc, pageId: string): SceneNode | null {
 function frameBounds(doc: GromaDoc, pageId: string, selectedId: string | null): Rect {
   if (selectedId) {
     const node = doc.nodes[selectedId];
-    if (node && node.type === 'frame') return { x: node.x, y: node.y, w: node.w, h: node.h };
+    if (node && (node.type === 'frame' || node.type === 'section')) {
+      return absoluteRect(doc, selectedId);
+    }
   }
   const root = pageRoot(doc, pageId);
-  const frames = (root?.children ?? []).map((id) => doc.nodes[id]).filter((n) => n && n.type === 'frame');
+  const frames = (root?.children ?? [])
+    .map((id) => doc.nodes[id])
+    .filter((n) => n && (n.type === 'frame' || n.type === 'section'));
   if (frames.length === 0) return { x: 0, y: 0, w: 1440, h: 900 };
   if (frames.length === 1) {
     const f = frames[0];
@@ -605,26 +610,40 @@ export const editor = {
     set((s) => (s.saveState === saveState ? s : { ...s, saveState }));
   },
 
-  loadDoc(doc: GromaDoc, projectId: string) {
+  loadDoc(doc: GromaDoc, projectId: string, ui?: ProjectUiState) {
     stopViewportAnimation();
     transaction = null;
+    const savedPage = ui?.pageId && doc.pages.some((page) => page.id === ui.pageId) ? ui.pageId : doc.pages[0].id;
+    const savedViewports: Record<string, Viewport> = {};
+    if (ui?.viewports) {
+      for (const page of doc.pages) {
+        const viewport = ui.viewports[page.id];
+        if (!viewport) continue;
+        if (!Number.isFinite(viewport.x) || !Number.isFinite(viewport.y) || !Number.isFinite(viewport.scale)) continue;
+        savedViewports[page.id] = { x: viewport.x, y: viewport.y, scale: clampScale(viewport.scale) };
+      }
+    }
     set((s) => {
       const next: EditorState = {
         ...s,
         doc,
-        pageId: doc.pages[0].id,
+        pageId: savedPage,
         selectedId: null,
         selectedIds: [],
         projectId,
         saveState: 'saved',
-        needsFit: true,
-        viewports: {},
+        needsFit: !savedViewports[savedPage],
+        viewports: savedViewports,
         past: [],
         future: [],
       };
-      if (s.viewSize.w > 0 && s.viewSize.h > 0) {
+      const restored = savedViewports[savedPage];
+      if (restored) {
+        next.viewport = restored;
+      } else if (s.viewSize.w > 0 && s.viewSize.h > 0) {
         next.viewport = computeFit(next);
         next.needsFit = false;
+        next.viewports = { ...next.viewports, [savedPage]: next.viewport };
       }
       return next;
     });
@@ -715,7 +734,7 @@ export const editor = {
   },
 
   addNode(input: {
-    type: 'frame' | 'rect' | 'ellipse' | 'text';
+    type: 'frame' | 'section' | 'rect' | 'ellipse' | 'text';
     parentId: string;
     x: number;
     y: number;
@@ -732,11 +751,21 @@ export const editor = {
         .map((cid) => s.doc.nodes[cid])
         .filter((n) => n && n.type === input.type).length;
       const typeName =
-        input.type === 'frame' ? '画板' : input.type === 'rect' ? '矩形' : input.type === 'ellipse' ? '椭圆' : '文本';
+        input.type === 'frame'
+          ? '画板'
+          : input.type === 'section'
+            ? '区块'
+            : input.type === 'rect'
+              ? '矩形'
+              : input.type === 'ellipse'
+                ? '椭圆'
+                : '文本';
       const fill =
         input.type === 'frame' || input.type === 'rect' || input.type === 'ellipse'
           ? [{ type: 'solid' as const, color: input.fill ?? (input.type === 'frame' ? '#FFFFFF' : '#D9D9D9'), opacity: 1 }]
-          : [{ type: 'solid' as const, color: input.fill ?? '#221C00', opacity: 1 }];
+          : input.type === 'section'
+            ? []
+            : [{ type: 'solid' as const, color: input.fill ?? '#221C00', opacity: 1 }];
       const node: SceneNode = {
         id,
         type: input.type,

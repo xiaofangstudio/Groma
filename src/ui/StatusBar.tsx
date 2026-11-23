@@ -30,7 +30,7 @@ export function StatusBar() {
             <span className="status-sep" />
             <span className="status-page">已选 {s.selectedIds.length} 个图层</span>
           </>
-        ) : selected && (selected.type === 'frame' || selected.type === 'group') ? (
+        ) : selected && (selected.type === 'frame' || selected.type === 'section' || selected.type === 'group') ? (
           <>
             <span className="status-sep" />
             <span className="status-page">{selected.name}</span>

@@ -18,6 +18,7 @@ import {
   IconGroup,
   IconPage,
   IconRect,
+  IconSection,
   IconText,
   IconUngroup,
 } from './icons';
@@ -174,6 +175,7 @@ function TextField({ value, disabled, onCommit }: { value: string; disabled?: bo
 
 function typeLabel(type: SceneNode['type']): string {
   if (type === 'frame') return '画板';
+  if (type === 'section') return '区块';
   if (type === 'rect') return '矩形';
   if (type === 'ellipse') return '椭圆';
   if (type === 'text') return '文本';
@@ -183,6 +185,7 @@ function typeLabel(type: SceneNode['type']): string {
 
 function TypeIcon({ type, size = 14 }: { type: SceneNode['type']; size?: number }) {
   if (type === 'frame') return <IconFrame size={size} />;
+  if (type === 'section') return <IconSection size={size} />;
   if (type === 'rect') return <IconRect size={size} />;
   if (type === 'ellipse') return <IconEllipse size={size} />;
   if (type === 'text') return <IconText size={size} />;
@@ -339,8 +342,11 @@ function ShapeInspector({ node }: { node: SceneNode }) {
 
       <section className="ins-section">
         <h3 className="ins-title">填充</h3>
+        {node.type === 'section' && !fill && (
+          <p className="ins-note">区块默认透明；选择颜色后会写入填充。</p>
+        )}
         <ColorField
-          color={fill?.color ?? (isText ? '#221C00' : '#D9D9D9')}
+          color={fill?.color ?? (isText ? '#221C00' : node.type === 'section' ? '#FFFFFF' : '#D9D9D9')}
           disabled={node.locked}
           onCommit={(hex) =>
             editor.applyPatch(node.id, {

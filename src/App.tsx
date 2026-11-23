@@ -5,6 +5,7 @@ import { Welcome } from './ui/Welcome';
 import { EditorShell } from './ui/EditorShell';
 import { editor } from './state/editor';
 import { createProject, isDesktop, listProjects, loadProject, type ProjectEntry } from './io/project';
+import { loadProjectUi } from './state/project-ui';
 
 type Phase = 'splash' | 'welcome' | 'editor';
 
@@ -72,7 +73,7 @@ export default function App() {
     setError(null);
     try {
       const doc = await loadProject(id);
-      editor.loadDoc(doc, id);
+      editor.loadDoc(doc, id, loadProjectUi(id));
       setPhase('editor');
     } catch (err) {
       setError(`打开工程失败：${err instanceof Error ? err.message : String(err)}`);
@@ -95,7 +96,7 @@ export default function App() {
           loadProject(id)
             .then((doc) => {
               if (!alive) return;
-              editor.loadDoc(doc, id);
+              editor.loadDoc(doc, id, loadProjectUi(id));
               setPhase('editor');
             })
             .catch((err) => {

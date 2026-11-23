@@ -103,6 +103,10 @@ export function hitTest(doc: GromaDoc, page: Page, px: number, py: number): Scen
   return outermostGroup ?? deep;
 }
 
+function isFrameContainer(node: SceneNode, allowSection: boolean): boolean {
+  return node.type === 'frame' || (allowSection && node.type === 'section');
+}
+
 function walkFrames(
   doc: GromaDoc,
   node: SceneNode,
@@ -110,6 +114,7 @@ function walkFrames(
   oy: number,
   px: number,
   py: number,
+  allowSection = false,
 ): SceneNode | null {
   if (!node.visible || node.locked) return null;
   const ax = ox + node.x;
@@ -117,8 +122,8 @@ function walkFrames(
   if (px < ax || py < ay || px > ax + node.w || py > ay + node.h) return null;
   for (let i = node.children.length - 1; i >= 0; i -= 1) {
     const child = doc.nodes[node.children[i]];
-    if (!child || child.type !== 'frame' || !child.visible || child.locked) continue;
-    const deeper = walkFrames(doc, child, ax, ay, px, py);
+    if (!child || !isFrameContainer(child, allowSection) || !child.visible || child.locked) continue;
+    const deeper = walkFrames(doc, child, ax, ay, px, py, allowSection);
     if (deeper) return deeper;
     const cx = ax + child.x;
     const cy = ay + child.y;
@@ -127,18 +132,33 @@ function walkFrames(
   return null;
 }
 
-/** 取最深的一个可用画板，作为新图形的父节点；没有则返回 null（挂到页面根） */
-export function deepestFrame(doc: GromaDoc, page: Page, px: number, py: number): SceneNode | null {
+function deepestContainer(
+  doc: GromaDoc,
+  page: Page,
+  px: number,
+  py: number,
+  allowSection: boolean,
+): SceneNode | null {
   const root = doc.nodes[page.rootId];
   if (!root) return null;
   for (let i = root.children.length - 1; i >= 0; i -= 1) {
     const child = doc.nodes[root.children[i]];
-    if (!child || child.type !== 'frame' || !child.visible || child.locked) continue;
-    const deeper = walkFrames(doc, child, 0, 0, px, py);
+    if (!child || !isFrameContainer(child, allowSection) || !child.visible || child.locked) continue;
+    const deeper = walkFrames(doc, child, 0, 0, px, py, allowSection);
     if (deeper) return deeper;
     if (px >= child.x && py >= child.y && px <= child.x + child.w && py <= child.y + child.h) return child;
   }
   return null;
+}
+
+/** 取最深的一个可用画板，作为新图形的父节点；没有则返回 null（挂到页面根） */
+export function deepestFrame(doc: GromaDoc, page: Page, px: number, py: number): SceneNode | null {
+  return deepestContainer(doc, page, px, py, false);
+}
+
+/** 新画板可以挂进 Section；section 本身不嵌套 section，只取最深 frame 或 section。 */
+export function deepestFrameOrSection(doc: GromaDoc, page: Page, px: number, py: number): SceneNode | null {
+  return deepestContainer(doc, page, px, py, true);
 }
 
 export function isPointInsideFrame(doc: GromaDoc, frame: SceneNode, px: number, py: number): boolean {

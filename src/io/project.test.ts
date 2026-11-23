@@ -43,4 +43,11 @@ describe('保存队列', () => {
     resolvers[1](undefined);
     await p2;
   });
+
+  it('手动存版本前的保存可以跳过额外快照', async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await saveProject('manual-test', createDoc('手动'), false);
+    const args = vi.mocked(invoke).mock.calls[0][1] as { snapshotBefore: boolean };
+    expect(args.snapshotBefore).toBe(false);
+  });
 });

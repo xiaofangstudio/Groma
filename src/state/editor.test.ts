@@ -24,6 +24,25 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[id].x).toBe(10);
   });
 
+  it('区块节点可容纳画板，删除整块可撤销', () => {
+    const section = editor.addNode({ type: 'section', parentId: rootId(), x: 40, y: 60, w: 1200, h: 800 });
+    const frame = editor.addNode({ type: 'frame', parentId: section, x: 80, y: 80, w: 480, h: 320 });
+    const s = getState();
+    expect(s.doc.nodes[section].type).toBe('section');
+    expect(s.doc.nodes[section].fills).toEqual([]);
+    expect(s.doc.nodes[section].children).toContain(frame);
+    expect(s.doc.nodes[frame].parentId).toBe(section);
+
+    editor.select(section);
+    editor.deleteSelected();
+    expect(getState().doc.nodes[section]).toBeUndefined();
+    expect(getState().doc.nodes[frame]).toBeUndefined();
+
+    editor.undo();
+    expect(getState().doc.nodes[section]).toBeTruthy();
+    expect(getState().doc.nodes[frame].parentId).toBe(section);
+  });
+
   it('拖动事务只产生一条撤销记录', () => {
     const id = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
     const beforeCount = getState().past.length;
@@ -334,6 +353,34 @@ describe('editor 命令与历史', () => {
     expect(getState().viewport).toEqual({ x: 12, y: 34, scale: 2 });
     editor.setPage(page2);
     expect(getState().viewport).toEqual({ x: 56, y: 78, scale: 1.5 });
+  });
+
+  it('loadDoc 恢复上次当前页与页级视口，非法页回退第一页', () => {
+    editor.setCanvasSize(1000, 800);
+    const page1 = getState().pageId;
+    editor.setViewport({ x: 12, y: 34, scale: 2 });
+    const page2 = editor.addPage();
+    editor.setViewport({ x: 56, y: 78, scale: 1.5 });
+    const doc = getState().doc;
+
+    editor.loadDoc(doc, 'project-ui', {
+      pageId: page2,
+      viewports: {
+        [page1]: { x: 12, y: 34, scale: 2 },
+        [page2]: { x: 56, y: 78, scale: 1.5 },
+      },
+    });
+    expect(getState().pageId).toBe(page2);
+    expect(getState().viewport).toEqual({ x: 56, y: 78, scale: 1.5 });
+    expect(getState().needsFit).toBe(false);
+
+    editor.setPage(page1);
+    expect(getState().viewport).toEqual({ x: 12, y: 34, scale: 2 });
+
+    editor.loadDoc(doc, 'project-ui', { pageId: '不存在', viewports: {} });
+    expect(getState().pageId).toBe(page1);
+    expect(getState().selectedIds).toEqual([]);
+    expect(getState().needsFit).toBe(false);
   });
 
   it('删除页后切到相邻页恢复它的视口，撤销删除也恢复被删页视口', () => {

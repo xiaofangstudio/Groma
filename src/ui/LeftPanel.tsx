@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
 import { childrenOf } from '../core/doc';
+import { searchPageNodes, type NodeSearchHit } from '../core/search';
 import type { GromaDoc, Page, SceneNode } from '../core/types';
+import { PageThumbnail } from './PageThumbnail';
 import {
   IconChevronLeft,
   IconChevronRight,
@@ -15,12 +17,15 @@ import {
   IconPage,
   IconPlus,
   IconRect,
+  IconSearch,
+  IconSection,
   IconText,
   IconUnlock,
 } from './icons';
 
 function NodeIcon({ type }: { type: SceneNode['type'] }) {
   if (type === 'frame') return <IconFrame size={14} />;
+  if (type === 'section') return <IconSection size={14} />;
   if (type === 'rect') return <IconRect size={14} />;
   if (type === 'ellipse') return <IconEllipse size={14} />;
   if (type === 'text') return <IconText size={14} />;
@@ -116,12 +121,21 @@ function LayerNode({
   );
 }
 
+function countType(doc: GromaDoc, id: string, type: SceneNode['type']): number {
+  const node = doc.nodes[id];
+  if (!node) return 0;
+  let total = node.type === type ? 1 : 0;
+  for (const childId of node.children) total += countType(doc, childId, type);
+  return total;
+}
+
 export function LeftPanel() {
   const s = useEditor();
   const page = s.doc.pages.find((p) => p.id === s.pageId) ?? s.doc.pages[0];
   const root = s.doc.nodes[page.rootId];
   const top = root ? childrenOf(s.doc, root.id) : [];
-  const frames = top.filter((n) => n.type === 'frame');
+  const frameCount = countType(s.doc, page.rootId, 'frame');
+  const sectionCount = countType(s.doc, page.rootId, 'section');
   const total = Object.keys(s.doc.nodes).length - s.doc.pages.length;
   const selectedIds = new Set(s.selectedIds);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -130,16 +144,46 @@ export function LeftPanel() {
   const [menu, setMenu] = useState<{ pageId: string; x: number; y: number } | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropLine, setDropLine] = useState<{ y: number; left: number; width: number } | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const pageRows = useRef(new Map<string, HTMLDivElement>());
   const pageListRef = useRef<HTMLDivElement>(null);
   const suppressClickRef = useRef<string | null>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const renameInput = useRef<HTMLInputElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
+  const searchPopRef = useRef<HTMLDivElement>(null);
   const cancelRenameRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
+  const searchResults = useMemo(
+    () => (searchOpen ? searchPageNodes(s.doc, searchQuery, 30) : []),
+    [searchOpen, searchQuery, s.doc],
+  );
+  const queryActive = searchQuery.trim().length > 0;
+
   function focusPage(pageId: string) {
     requestAnimationFrame(() => pageRows.current.get(pageId)?.focus());
+  }
+
+  function openSearch() {
+    setMenu(null);
+    setSearchOpen(true);
+  }
+
+  function closeSearch(restoreFocus = true) {
+    setSearchOpen(false);
+    setSearchQuery('');
+    if (restoreFocus) requestAnimationFrame(() => searchButtonRef.current?.focus());
+  }
+
+  function goToSearchHit(hit: NodeSearchHit) {
+    setSearchOpen(false);
+    setSearchQuery('');
+    if (hit.pageId !== s.pageId) editor.setPage(hit.pageId);
+    editor.select(hit.nodeId);
+    focusPage(hit.pageId);
   }
 
   function beginRename(target: Page) {
@@ -171,6 +215,7 @@ export function LeftPanel() {
   }
 
   function openMenu(pageId: string, x: number, y: number) {
+    setSearchOpen(false);
     const width = 156;
     const height = 160;
     setMenu({
@@ -302,6 +347,53 @@ export function LeftPanel() {
     row?.scrollIntoView({ block: 'nearest' });
   }, [s.pageId]);
 
+  useEffect(() => {
+    if (!searchOpen) return;
+    const input = searchInput.current;
+    input?.focus();
+    input?.select();
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (!s.leftOpen && searchOpen) setSearchOpen(false);
+  }, [s.leftOpen, searchOpen]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Node)) return;
+      if (searchPopRef.current?.contains(e.target) || searchButtonRef.current?.contains(e.target)) return;
+      closeSearch(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closeSearch(true);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [searchOpen]);
+
+  useEffect(() => {
+    const onShortcut = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'f') return;
+      e.preventDefault();
+      if (!s.leftOpen) editor.toggleLeft();
+      setMenu(null);
+      setSearchOpen(true);
+      requestAnimationFrame(() => {
+        searchInput.current?.focus();
+        searchInput.current?.select();
+      });
+    };
+    window.addEventListener('keydown', onShortcut);
+    return () => window.removeEventListener('keydown', onShortcut);
+  }, [s.leftOpen]);
+
   useEffect(() => () => dragCleanupRef.current?.(), []);
 
   useEffect(() => {
@@ -360,6 +452,16 @@ export function LeftPanel() {
         <span className="page-total">{s.doc.pages.length}</span>
         <div className="panel-head-actions">
           <button
+            ref={searchButtonRef}
+            className={`icon-btn${searchOpen ? ' is-active' : ''}`}
+            title="搜索图层（Ctrl+F）"
+            aria-label="搜索图层"
+            aria-expanded={searchOpen}
+            onClick={() => (searchOpen ? closeSearch(true) : openSearch())}
+          >
+            <IconSearch size={14} />
+          </button>
+          <button
             className="icon-btn"
             title="新建页面"
             aria-label="新建页面"
@@ -376,12 +478,71 @@ export function LeftPanel() {
         </div>
       </div>
 
+      {searchOpen && (
+        <div
+          ref={searchPopRef}
+          className="page-search"
+          role="dialog"
+          aria-label="跨页面图层搜索"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              closeSearch(true);
+            }
+          }}
+        >
+          <div className="page-search-head">
+            <IconSearch size={13} />
+            <input
+              ref={searchInput}
+              className="page-search-input"
+              value={searchQuery}
+              placeholder="搜索图层名"
+              aria-label="搜索图层名"
+              spellCheck={false}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <div className="page-search-results" role="listbox" aria-label="搜索结果">
+            {!queryActive ? (
+              <div className="page-search-hint">输入图层名称，跨页面查找</div>
+            ) : searchResults.length === 0 ? (
+              <div className="page-search-hint">没有匹配的图层</div>
+            ) : (
+              searchResults.map((hit) => (
+                <button
+                  key={`${hit.pageId}:${hit.nodeId}`}
+                  className="page-search-row"
+                  role="option"
+                  aria-selected={hit.pageId === s.pageId && hit.nodeId === s.selectedId}
+                  title={`${hit.pageName} / ${hit.path} / ${hit.nodeName}`}
+                  onClick={() => goToSearchHit(hit)}
+                >
+                  <NodeIcon type={hit.nodeType} />
+                  <span className="page-search-main">
+                    <span className="page-search-name">{hit.nodeName}</span>
+                    <span className="page-search-path">{hit.path}</span>
+                  </span>
+                  <span className="page-search-page">{hit.pageName}</span>
+                </button>
+              ))
+            )}
+          </div>
+          <div className="page-search-foot">
+            {queryActive ? <span>{searchResults.length} 个结果</span> : <span>跨页面</span>}
+            <span className="page-search-kbd">
+              <kbd>Esc</kbd> 关闭
+            </span>
+          </div>
+        </div>
+      )}
+
       <div
         ref={pageListRef}
         className={`page-list${draggingId ? ' is-dragging' : ''}`}
         aria-label="页面列表"
       >
-        {s.doc.pages.map((item) => {
+        {s.doc.pages.map((item, pageIndex) => {
           const current = item.id === s.pageId;
           const count = s.doc.nodes[item.rootId]?.children.length ?? 0;
           const editing = renameId === item.id;
@@ -440,7 +601,7 @@ export function LeftPanel() {
                 }
               }}
             >
-              <IconPage size={14} />
+              <PageThumbnail doc={s.doc} page={item} active={current} index={pageIndex} />
               {editing ? (
                 <input
                   ref={renameInput}
@@ -517,7 +678,9 @@ export function LeftPanel() {
       </div>
 
       <div className="panel-foot">
-        <span>{frames.length} 个画板</span>
+        <span>
+          {frameCount} 个画板{sectionCount > 0 ? ` · ${sectionCount} 个区块` : ''}
+        </span>
         <span className="panel-foot-dim">{total} 个图层</span>
       </div>
 

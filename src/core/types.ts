@@ -1,4 +1,4 @@
-export type NodeType = 'page' | 'frame' | 'rect' | 'ellipse' | 'text' | 'group';
+export type NodeType = 'page' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'group';
 
 export type GuideAxis = 'x' | 'y';
 

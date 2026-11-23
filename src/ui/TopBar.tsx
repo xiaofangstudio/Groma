@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
 import { renameProject } from '../io/project';
 import { ExportDialog } from './ExportDialog';
+import { VersionHistory } from './VersionHistory';
 import {
   IconCursor,
   IconEllipse,
@@ -9,10 +10,12 @@ import {
   IconFit,
   IconFrame,
   IconHand,
+  IconHistory,
   IconMinus,
   IconPlus,
   IconRect,
   IconRedo,
+  IconSection,
   IconText,
   IconUndo,
 } from './icons';
@@ -21,7 +24,8 @@ export function TopBar() {
   const s = useEditor();
   const [name, setName] = useState(s.doc.name);
   const [exportOpen, setExportOpen] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [versionOpen, setVersionOpen] = useState(false);
+  const [toast, setToast] = useState<{ title: string; detail: string } | null>(null);
 
   useEffect(() => {
     setName(s.doc.name);
@@ -88,6 +92,14 @@ export function TopBar() {
             <IconFrame size={15} />
           </button>
           <button
+            className={`tool-btn${s.tool === 'section' ? ' is-active' : ''}`}
+            title="区块工具 S"
+            aria-label="区块工具"
+            onClick={() => editor.setTool('section')}
+          >
+            <IconSection size={15} />
+          </button>
+          <button
             className={`tool-btn${s.tool === 'rect' ? ' is-active' : ''}`}
             title="矩形工具 R"
             aria-label="矩形工具"
@@ -142,7 +154,17 @@ export function TopBar() {
         </div>
 
         <div className="topbar-right">
-          <button className="export-btn" title="导出 PNG" onClick={() => setExportOpen(true)}>
+          <button
+            className="version-btn"
+            title="版本历史"
+            aria-label="版本历史"
+            disabled={!s.projectId}
+            onClick={() => setVersionOpen(true)}
+          >
+            <IconHistory size={14} />
+            <span>版本</span>
+          </button>
+          <button className="export-btn" title="导出 PNG / JPG / SVG" onClick={() => setExportOpen(true)}>
             <IconExport size={14} />
             <span>导出</span>
           </button>
@@ -165,18 +187,20 @@ export function TopBar() {
       {exportOpen && (
         <ExportDialog
           onClose={() => setExportOpen(false)}
-          onDone={(path) => {
+          onDone={(title, detail) => {
             setExportOpen(false);
-            setToast(path);
+            setToast({ title, detail });
           }}
         />
       )}
 
+      {versionOpen && <VersionHistory onClose={() => setVersionOpen(false)} />}
+
       {toast && (
         <div className="toast" role="status">
           <span className="toast-dot" />
-          <strong>PNG 已导出</strong>
-          <span className="toast-path" title={toast}>{toast}</span>
+          <strong>{toast.title}</strong>
+          <span className="toast-path" title={toast.detail}>{toast.detail}</span>
         </div>
       )}
     </>

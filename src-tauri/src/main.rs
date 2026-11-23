@@ -15,6 +15,13 @@ struct ProjectEntry {
     bytes: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SnapshotEntry {
+    timestamp: u64,
+    bytes: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ProjectMeta {
@@ -81,14 +88,14 @@ fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn snapshot(dir: &Path) -> Result<(), String> {
+fn snapshot_at(dir: &Path, timestamp: u64) -> Result<(), String> {
     let scene = dir.join("scene.json");
     if !scene.exists() {
         return Ok(());
     }
     let snap_dir = dir.join("snapshots");
     fs::create_dir_all(&snap_dir).map_err(|e| format!("无法创建快照目录：{e}"))?;
-    let name = format!("{}.json", now_ms());
+    let name = format!("{}.json", timestamp);
     fs::copy(&scene, snap_dir.join(&name)).map_err(|e| format!("写快照失败：{e}"))?;
     let mut files: Vec<PathBuf> = fs::read_dir(&snap_dir)
         .map_err(|e| format!("读取快照目录失败：{e}"))?
@@ -103,6 +110,10 @@ fn snapshot(dir: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn snapshot(dir: &Path) -> Result<(), String> {
+    snapshot_at(dir, now_ms())
 }
 
 #[tauri::command]
@@ -134,7 +145,7 @@ fn groma_create_project(name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn groma_save_project(id: String, scene_json: String) -> Result<(), String> {
+fn groma_save_project(id: String, scene_json: String, snapshot_before: Option<bool>) -> Result<(), String> {
     let dir = project_dir(&id)?;
     if !dir.exists() {
         return Err("工程不存在".to_string());
@@ -145,7 +156,14 @@ fn groma_save_project(id: String, scene_json: String) -> Result<(), String> {
         return Err("场景 JSON 必须是对象".to_string());
     }
 
-    snapshot(&dir)?;
+    // 内容没变就不再留新快照：恢复版本后紧接着的一次自动保存、以及重复保存，
+    // 不应该把同一份场景再记一遍版本。
+    let unchanged = fs::read_to_string(dir.join("scene.json"))
+        .map(|current| current == scene_json)
+        .unwrap_or(false);
+    if snapshot_before.unwrap_or(true) && !unchanged {
+        snapshot(&dir)?;
+    }
     write_atomic(&dir.join("scene.json"), &scene_json)?;
 
     let meta_path = dir.join("project.json");
@@ -173,6 +191,92 @@ fn groma_load_project(id: String) -> Result<String, String> {
         return Err("工程还没有场景文件".to_string());
     }
     fs::read_to_string(scene).map_err(|e| format!("读取工程失败：{e}"))
+}
+
+fn snapshot_path(dir: &Path, timestamp: u64) -> Result<PathBuf, String> {
+    let path = dir.join("snapshots").join(format!("{timestamp}.json"));
+    if !path.is_file() {
+        return Err("这个版本不存在或已被清理".to_string());
+    }
+    Ok(path)
+}
+
+fn read_snapshot(dir: &Path, timestamp: u64) -> Result<String, String> {
+    let path = snapshot_path(dir, timestamp)?;
+    let text = fs::read_to_string(path).map_err(|e| format!("读取版本失败：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("版本 JSON 损坏：{e}"))?;
+    if !value.is_object() {
+        return Err("版本内容不是场景对象".to_string());
+    }
+    Ok(text)
+}
+
+#[tauri::command]
+fn groma_list_snapshots(id: String) -> Result<Vec<SnapshotEntry>, String> {
+    let dir = project_dir(&id)?;
+    let snap_dir = dir.join("snapshots");
+    if !snap_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&snap_dir).map_err(|e| format!("读取版本目录失败：{e}"))? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let timestamp = match path.file_stem().and_then(|x| x.to_str()).and_then(|x| x.parse::<u64>().ok()) {
+            Some(value) => value,
+            None => continue,
+        };
+        let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        out.push(SnapshotEntry { timestamp, bytes });
+    }
+    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(out)
+}
+
+#[tauri::command]
+fn groma_create_snapshot(id: String) -> Result<SnapshotEntry, String> {
+    let dir = project_dir(&id)?;
+    if !dir.join("scene.json").exists() {
+        return Err("工程还没有可保存的内容".to_string());
+    }
+    let timestamp = now_ms();
+    snapshot_at(&dir, timestamp)?;
+    let bytes = fs::metadata(dir.join("snapshots").join(format!("{timestamp}.json")))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    Ok(SnapshotEntry { timestamp, bytes })
+}
+
+#[tauri::command]
+fn groma_load_snapshot(id: String, timestamp: u64) -> Result<String, String> {
+    let dir = project_dir(&id)?;
+    read_snapshot(&dir, timestamp)
+}
+
+#[tauri::command]
+fn groma_restore_snapshot(id: String, timestamp: u64) -> Result<String, String> {
+    let dir = project_dir(&id)?;
+    let text = read_snapshot(&dir, timestamp)?;
+    // 恢复前把当前场景也留一份，回滚本身可以再回滚。
+    snapshot(&dir)?;
+    write_atomic(&dir.join("scene.json"), &text)?;
+    let meta_path = dir.join("project.json");
+    if let Ok(meta_text) = fs::read_to_string(&meta_path) {
+        if let Ok(mut meta) = serde_json::from_str::<ProjectMeta>(&meta_text) {
+            meta.updated_at = now_ms();
+            if let Ok(meta_json) = serde_json::to_string_pretty(&meta) {
+                let _ = write_atomic(&meta_path, &meta_json);
+            }
+        }
+    }
+    Ok(text)
 }
 
 #[tauri::command]
@@ -274,6 +378,62 @@ fn groma_export_png(id: String, suggested_name: String, data_url: String) -> Res
     Ok(path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn groma_export_file(
+    id: String,
+    suggested_name: String,
+    extension: String,
+    payload: String,
+) -> Result<String, String> {
+    let dir = project_dir(&id)?;
+    if !dir.exists() {
+        return Err("工程不存在".to_string());
+    }
+    let ext = match extension.as_str() {
+        "png" => "png",
+        "jpg" | "jpeg" => "jpg",
+        "svg" => "svg",
+        _ => return Err("不支持的导出格式".to_string()),
+    };
+    let bytes = if ext == "svg" {
+        if payload.len() > 32_000_000 {
+            return Err("SVG 内容过大".to_string());
+        }
+        payload.into_bytes()
+    } else {
+        let prefix = if ext == "png" {
+            "data:image/png;base64,"
+        } else {
+            "data:image/jpeg;base64,"
+        };
+        let encoded = payload
+            .strip_prefix(prefix)
+            .ok_or_else(|| format!("导出数据不是 {ext}"))?;
+        if encoded.len() > 64_000_000 {
+            return Err("导出图片过大".to_string());
+        }
+        STANDARD
+            .decode(encoded)
+            .map_err(|e| format!("{ext} 数据损坏：{e}"))?
+    };
+    if bytes.len() > 48_000_000 {
+        return Err("导出文件超过 48MB".to_string());
+    }
+
+    let exports = dir.join("exports");
+    fs::create_dir_all(&exports).map_err(|e| format!("无法创建导出目录：{e}"))?;
+    let base = sanitize_name(&suggested_name);
+    let mut file_name = format!("{base}.{ext}");
+    let mut n = 2;
+    while exports.join(&file_name).exists() {
+        file_name = format!("{base}-{n}.{ext}");
+        n += 1;
+    }
+    let path = exports.join(&file_name);
+    fs::write(&path, &bytes).map_err(|e| format!("写入 {ext} 失败：{e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LaunchInfo {
@@ -318,7 +478,12 @@ fn main() {
             groma_load_project,
             groma_list_projects,
             groma_rename_project,
-            groma_export_png
+            groma_export_png,
+            groma_export_file,
+            groma_list_snapshots,
+            groma_create_snapshot,
+            groma_load_snapshot,
+            groma_restore_snapshot
         ])
         .run(tauri::generate_context!())
         .expect("Groma 启动失败");

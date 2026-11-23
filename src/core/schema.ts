@@ -1,6 +1,6 @@
 import type { GromaDoc, Guide, NodeType, Page, Paint, SceneNode } from './types';
 
-const NODE_TYPES: NodeType[] = ['page', 'frame', 'rect', 'ellipse', 'text', 'group'];
+const NODE_TYPES: NodeType[] = ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'group'];
 const NODE_TYPE_SET = new Set<string>(NODE_TYPES);
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 

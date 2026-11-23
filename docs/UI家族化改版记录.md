@@ -1,6 +1,6 @@
 # Groma UI 家族化改版记录
 
-日期：2026-11-22 07:26（Asia/Shanghai）
+初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-23 20:12（A08 导出 / 紧凑弹窗 / 截图自检）
 
 ## 这一轮为什么不是「美化」
 
@@ -214,7 +214,146 @@ Groma 这一轮只做三件事：把首屏变成真正能开始工作的页面�
 **这轮边界**
 
 - 视口记忆只在本次会话内存中，尚未写进 `scene.json`；重开工程仍回到第一页与默认视口。
-- 页面缩略图、跨页搜索未做，矩阵 A02 仍不标全量完成。
+- 页面缩略图、跨页搜索与“关掉重开仍回上次页/视口”**已于 2026-11-23 补**，见下一段；本节仅记录 11-22 当日边界，不代表当前版本。
 - `Alt+↑/↓` 已接入代码，但虚拟桌面的 `PostMessage` 不能可靠合成 Alt 按下状态，未单独用合成键实拍；鼠标拖到的顶部与底部落点均已实拍。
 - 没有新增“页面模板”“跨页组件”或缩略图占位；没有假按钮。
+
+## 多页面第三批：缩略图、跨页搜索与页级视口持久化（2026-11-23 13:40）
+
+这一轮把 A02 剩下的三条缺口补齐，仍然复用左栏 Pages 区，不加常驻面板，也不做“搜索中心”。
+
+- 页行缩略图：`drawPageThumbnail()` 复用画布同一套 `drawNode`，按页面顶层子节点的 `absoluteRect` 求内容包围盒后等比适配，画板不画阴影和名称；34×22 CSS px、DPR 2；空页面只画极淡“空”字。当前页编辑时在 100ms 尾部合并后重绘，非当前页保留上次画面，避免拖动时重画所有页。
+- 跨页搜索：页头搜索图标打开左栏内的瞬态浮层，按页面顺序深度优先搜图层名称；结果显示图层图标、图层名、父级路径、页面名。点击结果先切页再选中节点，焦点回到页行；`Esc` 关闭并恢复搜索按钮焦点，点击外部也关闭。浮层不抢画布，不新增搜索页。
+- 页级视口持久化：`src/state/project-ui.ts` 以 `groma:project-ui:v1:<projectId>` 写入当前页 id 与各页视口；读取时校验 JSON、页 id 和视口数值，坏数据直接忽略。打开工程与 `--open` 启动都恢复，`EditorShell` 120ms 防抖保存并在 `beforeunload` 冲刷。
+- 顺手修掉“打开工程就多一个版本”的自动保存误触发：`savedDocRef` / `savedProjectRef` 守卫让首次挂载若 doc 与 projectId 都是初始值就跳过；真实编辑后照常保存；新工程从 `projectId=null` 到 id 到位仍保存一次。
+
+**自检拦下的真实问题**
+
+- `search.test.ts` 一开始两条失败，报“节点不存在：test-2”。不是搜索函数错，是测试夹具继续在旧 `doc` 上 `applyCommand`，而新页在 `addPage()` 返回的新 `doc` 里；改用 `second.doc` 后 4 条全绿。
+- 缩略图性能：第一版每次 doc 变化都重画所有页；改为只有 `active` 当前页跟随 doc 变化、非当前页保持缓存，并在 2026-11-23 补丁中加 100ms 尾部合并与 8ms/页首次错峰，连续拖动期间不再和主画布抢帧。
+- 搜索浮层关闭后的焦点：`Esc` 关闭时把焦点还给搜索按钮，真实窗口能看到焦点环；没有把“按 Esc 后焦点回到搜索按钮”写成空话。
+- 自动保存误触发：打开 `未命名设计-15` 前后快照数 5→5；修复前会无端写一份同内容版本。
+
+**验收**
+
+- 单元测试：搜索 4 条、界面记忆 2 条、`editor.loadDoc` 恢复 1 条；完整 `npm run gate` 为 16 个测试文件、84 条测试全绿（含新增 `project.test.ts` 的 `snapshotBefore=false` 传参断言）。
+- 真实窗口：`shots/thumb-base.png` 页行首次出现真实缩略图；`thumb-live-rect.png` / `thumb-crop.png` 画矩形后缩略图同步出现灰块；`thumb-active-check.png` 当前页重绘优化后仍同步；`search-open.png` 浮层聚焦；`search-query.png` 搜 `1440` 命中画板；`search-select.png` 点击结果选中；`search-crosspage.png` 从页面 3 搜回页面 1；`search-two-pages.png` 复制页后出现两条跨页结果；`search-click-first.png` 点第一条切回页面 1；`search-esc.png` Esc 关闭后按钮焦点环；`persist-page-before.png` / `persist-page-reopen.png` 关掉重开仍回页面 3、标尺位移保持。
+- 交付指纹：`npm run gate` PASS（16 个测试文件、84 条测试；MCP selftest 通过）；最终 EXE 3,232 KB，2026-11-23 13:58:48。
+
+**这轮边界**
+
+- 搜索浮层支持点击、`Esc`、外部关闭，不支持上下键选择结果；代码有 `Ctrl+F` 入口，但虚拟桌面 `PostMessage` 合成 `Ctrl` 不可靠，未把 `Ctrl+F` 实拍写成通过。
+- 非当前页缩略图在切页后才重画，不保证后台页面的实时刷新；这是性能取舍，不是“实时全量缩略图”。
+- 页级视口存在 WebView 的 `localStorage`，与工程目录分开；换机器或清 WebView 数据会丢失视图记忆，但工程内容不受影响。
+- 页面缩略图不是 Figma 的页面封面，不提供自定义封面；不做页面模板。
+
+## A05 版本历史浏览与回滚（2026-11-23 13:58）
+
+版本历史不是新开一个工作区，而是顶栏一个“版本”按钮 → 一个只读弹窗；预览不改当前工程，恢复必须二次确认。
+
+- 后端：Rust 新增 `groma_list_snapshots` / `groma_create_snapshot` / `groma_load_snapshot` / `groma_restore_snapshot`；快照仍在 `<工程>/snapshots/<毫秒时间戳>.json`，每个工程最多保留 20 份，超出删最旧。
+- 恢复：前端先 `saveProject(projectId, doc, false)` 把内存里的最新改动落盘，再由 Rust 把当前 `scene.json` 快照一份，最后写回选中版本；因此“恢复”本身还能再回滚，刚改完还没等到 600ms 自动保存的编辑也不会丢。读取与恢复都要求快照是 JSON 对象。
+- 手动存版本：先 `saveProject(projectId, doc, false)` 落当前场景但不额外快照，再 `createSnapshot` 生成一条；`groma_save_project` 新增可选 `snapshot_before`，默认 true，普通自动保存/`Ctrl+S` 仍先留底。
+- 去重：`groma_save_project` 发现新 scene 与当前 `scene.json` 完全一致时跳过留快照。恢复版本后紧接着的一次自动保存不会把同一份内容再记一个版本；普通“只打开工程”也不会凭空多版本（`EditorShell` 的 `savedDocRef/savedProjectRef` 守卫）。
+- 前端：`VersionHistory.tsx` 是 820×620 上限的响应式弹窗；左侧版本列表（最新在上，显示时间与体积），右侧页面预览（复用 `drawPageThumbnail`）、页面数/图层数/大小；多页快照可切页预览；顶部“存一个版本”，底部“恢复到此版本”二次确认；`Esc`/背景关闭，关闭按钮 `autoFocus`。
+
+**自检拦下的真实问题**
+
+- 打开工程即自动保存：修复前只打开 `未命名设计-15` 就多一个快照；守卫后打开前后 5→5。
+- 手动存版本双份：第一次实拍点“存一个版本”列表 5→9，一次点击产生多条；原因是 `saveProject` 自身快照 + `createSnapshot` 再快照。加 `snapshot_before=false` 后新 EXE 实测快照文件 9→10，只增一条。
+- 恢复后自动保存重复：新 EXE 实测恢复一次让快照 10→12；后端加“内容相同不留快照”后重建 EXE，恢复一次只 12→13（只增加恢复前留底这一条），不再把恢复后的同内容自动保存记成版本。
+- 最小窗口：1040×680 首版预览画布过高，压住“页面 1”标题与元信息；改为预览区进网格 `1fr` 行、画布 `max-width/max-height:100%` 居中约束，重建后复验。
+
+**验收**
+
+- 单元测试：新增界面记忆 2 条、`editor.loadDoc` 恢复 1 条、`project.ts` 保存参数 1 条；完整 `npm run gate` 为 16 个测试文件、84 条测试全绿。
+- 真实窗口：`version-topbar.png` 顶栏“版本”入口；`version-open.png` 快照列表 + 页面预览；`version-confirm.png` 二次确认文案；`version-restored.png` 恢复最老 630 B 快照后工程从 3 页回到 1 页；`version-noop-open.png` 打开工程快照数 5→5；`version-manual-one.png` 新 EXE 手动存版本后列表 10 条、文件数 9→10；`version-restore-no-dup.png` 恢复最新版后画布单页、文件数 12→13，证明恢复后的自动保存不再重复留版本；`version-restore-3pages-final.png` 选 13:36:29 的 3 页快照恢复，画布回到 3 页（页面 2/3 空态可见）、文件数 13→14（只增加恢复前留底）；`version-compact.png` 1040×680 版本弹窗，预览标题/元信息不再被画布压住；`version-open-final.png` 1400×900 最终弹窗，13 个版本打开工程仍为 13；`version-final-restore.png` 最终 EXE 在复制自检工程（20 份快照上限）上恢复最新版，画布显示 6 图层设计，确认恢复前落盘链路无回归；`version-final-modal.png` 最终 EXE 打满 20 份的自检工程，打开后仍为 20→20，弹窗显示 20 个版本与 6 图层预览。
+- 交付指纹：`npm run gate` PASS（16 个测试文件、84 条测试；MCP selftest 通过）；EXE 3,232 KB，2026-11-23 13:58:48。
+
+**这轮边界**
+
+- 只有时间列表，没有命名版本、逐帧对比、分支合并；不能给版本写备注。
+- 版本列表没有自定义上下键导航与焦点陷阱；Tab 可遍历，`Esc` 可关，关闭后焦点由浏览器默认回收，未单独做“恢复后回到版本按钮”的焦点管理。
+- 恢复不是编辑历史的一步，不能 `Ctrl+Z` 撤销；靠“恢复前留底”再恢复回去。
+- 快照是整份 `scene.json` 副本，不做压缩/增量；20 份上限是磁盘保护，不是无限历史。
+- 自动保存仍靠 600ms 去抖，关闭窗口前的最后 600ms 改动仍可能丢；崩溃恢复入口未做。
+- 快照文件名只到毫秒，列表显示到秒；同一秒内多个版本会出现相同时间文案（本次已把正常路径的同内容重复快照去掉，但恢复留底与旧版本仍可能同秒）。
+
+## 渲染补丁：页缩略图不再抢帧（2026-11-23 19:01）
+
+用户反馈“只该渲染一个地方，但基本同时渲染”，这句话被解释为页缩略图与主画布同帧绘制；没有把它当成 Tauri/WebView2 双 surface 的已确认结论。
+
+- `PageThumbnail` 从同步 effect 改为 100ms 尾部合并；首次挂载按页序号 8ms 错峰（最多 160ms）；连续拖动时只保留最后一次，停手约 100ms 后画。
+- `drawPageThumbnail` 增加缩略图专用上限：最多 3 层、跳过投影后小于 0.5px 的节点，同时返回 `DrawStats`；页面内容包围盒与底色仍保留。
+- `LeftPanel` 页列表 map 传入 `pageIndex`，错峰以页序为准，不按 React 渲染顺序猜。
+- 基准：5000 节点场景共 5,051 个节点，缩略图只画 50 个画板，其余 5,001 个节点不进入绘制；mock context 平均 0.37ms/次（全量 gate 并行时 0.41ms）。这不是 GPU 帧率，只证明缩略图的 JS 遍历已从整页降到顶层框。
+- 真实窗口：`shots/thumb-delay-final.png` 在最终 EXE 画板内画 239×179 矩形，等 1200ms 后页缩略图出现灰块；`shots/thumb-delay-crop.png` 为放大裁切。确认 active 页没有停在旧图。
+- 交付指纹：`npm run gate` PASS（16 个测试文件、84 条测试；MCP selftest 通过）；前端 `index-B0_9leUO.js` 347.69 kB；EXE 3,233 KB，2026-11-23 19:01:34。
+- 边界：非当前页缩略图仍不后台实时刷新；0.37ms 是 mock 成本，不代表 60fps；WebGPU 未接，`draw.ts` 仍是 Canvas 2D 集中入口，后续可作为栅格化后端替换点。
+
+## A03 Section 基础链路（2026-11-23 19:12）
+
+Section 不是“换皮画板”，是页面下的一层透明容器：有名称、边框、可选填充，不裁剪子图层；子 Frame 可随 Section 移动，导出时只导出区块内容。
+
+- 类型：`NodeType` 增加 `'section'`，schema 同步接受；section 默认无填充、`clipContent=false`；旧工程不受影响，新工程写入 `type:"section"`。
+- 创建：顶栏新增“区块工具 S”，画布拖拽创建；单击默认 800×600；图层树显示区块图标，顶层区块可折叠；右栏显示“区块”名称/尺寸/填充/透明度。
+- 挂载：`deepestFrameOrSection()` 只在新建画板时允许把 Frame 挂进 Section；普通矩形/椭圆仍只挂画板或页面，避免图形被误塞进区块。Section 本身只从页面根创建，不做无限嵌套。
+- 渲染：`drawSection` 画细边框 + 左上角名称 + 可选填充，不裁剪子节点；名称在 `scale < 0.15` 时隐藏，避免 34×22 缩略图被文字糊满。
+- 导出：`renderFramePng` 接受 frame 或 section；Section 导出裁到 Section 边界，只画子节点，不画区块标签/边框；`pickFrame` 选中区块时导出整块，选中子 Frame 时仍导出 Frame。
+- 删除：整块 Section 删除会连同子 Frame 进入同一条撤销记录；撤销恢复子树（editor 测试覆盖）。
+
+**验收**
+
+- `shots/section-final.png`：最终 EXE 用 `S` 拖出“区块 1”，右栏显示区块属性，状态栏“1 个画板 · 1 个区块”。
+- `shots/section-frame-final.png`：按 `F` 在区块空白处画“画板 1”，图层树出现“区块 1 → 画板 1”嵌套，状态栏“2 个画板 · 1 个区块”。
+- `shots/section-export-final.png`：选中区块打开导出，弹窗显示“区块 · 区块 1”，1× 1290×693 / 2× 2580×1386。
+- `shots/section-export-child.png`：区块内含子画板时导出完成，Toast 显示 `区块 1@2x.png`；`shots/section-exported-content.png` 是复制出来的实际导出文件（2580×1386、73,804 B），图内只保留子画板边框，没有区块标签。
+- `shots/section-compact-final.png`：1040×680 物理窗口（约 693 CSS px）顶栏新增区块工具后仍不挤：品牌字标在窄窗隐藏，版本/导出只留图标，工程名、6 个工具、缩略图与右栏都可读。
+- `shots/section-reopen-final.png`：最终 EXE 关闭重开工程，区块与子画板仍在，图层树默认折叠但画布内容完整。
+- 门禁：`npm run gate` PASS，16 个测试文件 / 87 条测试；前端 `index-rChFs5ZL.js` 349.70 kB；EXE 3,233 KB，2026-11-23 19:23:09。
+
+**这轮边界**
+
+- 区块只在页面根创建，不能嵌套区块；已有画板不能通过图层树拖进区块，只能在区块空白处新建画板。
+- 区块标签不可点击选中，点区块内空白区域或图层行选中；子画板在区块内仍按自己的坐标/裁剪规则绘制。
+- 没有 Section 专属背景色/封面/说明字段，背景走通用填充；没有 Section 专属右键菜单。
+- A03 Section 自身只实拍了 PNG 1×/2×；A08 已支持 JPG/SVG 与本页批量，但 Section 的 JPG/SVG 和批量组合未单独实拍。
+
+## A08 导出：PNG / JPG / SVG 与本页批量（2026-11-23 20:12）
+
+导出不是把三个后缀塞进旧弹窗：光栅与矢量共用同一套节点遍历规则，弹窗只负责格式、范围、倍率与状态。批量是逐个写文件并复用同一套命名/去重逻辑，不是“先假装成功再补文件”。
+
+**工程链路**
+
+- `src/render/draw.ts`：抽出 `renderFrameRaster()`，`renderFramePng()` 与 `renderFrameJpg()` 共用画布绘制；JPG 强制填白（不透明）、质量 0.92；PNG 保留透明背景与 1×/2×；目标仍是 Frame 或 Section，Section 裁到区块边界、不带标签和边框。
+- `src/render/svg.ts`：新增纯函数 `renderFrameSvg()`，以目标左上角归零坐标输出；支持 rect / ellipse / text / frame / section / group、填充、透明度、圆角、Frame 裁剪、多行 `tspan`；文本做 XML 转义；Section 导出不输出区块名称与边框；SVG 不支持倍率，弹窗隐藏倍数区。
+- `src/io/project.ts`：新增 `exportFile(id, suggestedName, format, payload)`，统一 PNG/JPG/SVG 的写入入口，保留 `exportPng()` 兼容旧调用。
+- `src-tauri/src/main.rs`：新增 `groma_export_file`，扩展名白名单 png/jpg/jpeg/svg；PNG/JPG 校验 data URL 前缀并 base64 解码，SVG 按文本写入；限制 64MB 输入 / 48MB 文件；同名自动加序号，不覆盖旧文件。
+- `ExportDialog.tsx`：格式三选一、范围“当前选中 / 本页全部 (N)”、批量按钮显示“导出 N 个”；JPG 禁用透明并强制白底；SVG 隐藏倍数；批量逐个导出；Toast 从纯字符串改为 `{title, detail}`，JPG/SVG/批量各自显示真实结果与目录。
+- 紧凑弹窗：卡片改为纵向 flex，正文 `.export-body` 可滚动、操作区固定在底部；`max-height:760px` 下压缩间距、格式与倍数卡改单行；导出按钮不再被 1040×680 窗口裁掉。
+- 顶栏“版本”按钮原本误复用 `.export-btn` 类名，已拆成 `.version-btn`；CSS 组合选择器、禁用态、窄屏规则同步，视觉不变。
+
+**截图自检拦下的问题**
+
+- 1040×680 首版弹窗底部按钮被裁；只加 `max-height` 后仍出现滚动且操作区不可见，改为正文滚动 + 固定操作区后复验完整。
+- 批量弹窗首次截图带着上一笔 SVG 导出的旧 Toast；改为在新启动的虚拟桌面应用里截图，最终画面干净。
+- 批量时倍数卡写“2 个”含义不清，改为“逐块输出”；范围“当前画板”改为“当前选中”；副标题写“本页 2 个画板/区块”；提示缩短，避免“号。”孤行。
+- 全窗口 JPG Toast 有一次 `PrintWindow` 采集被裁/放大，没有直接发给用户；改用 `shot.ps1` 的虚拟桌面 + CDP 链路重截，自检 Toast 路径与画面后才保留。
+- 这一轮把截图流程固定为：截图 → 自己先看 → 发现问题先修 → 重截 → 确认无问题再发。
+
+**验收**
+
+- 单元测试：`svg.test.ts` 新增 3 条；`npm run gate` PASS，17 个测试文件 / 90 条测试。
+- 构建：`index-CmtcMuiV.css` 52.34 kB、`index-BV-fZg9y.js` 355.25 kB；EXE 3,239 KB，2026-11-23 20:12:41。
+- 真实导出：`桌面 1440@2x.jpg` 2880×1800 / 71,481 B；`桌面 1440.svg` 1,016 B；`桌面 1440@2x.png` 2880×1800 / 155,040 B；批量第二块 `画板 2@2x.png` 1200×800 / 37,596 B。SVG 用 Edge 打开，形状、颜色、文字、位置正常。
+- UI：`shots/export-batch-final.png` 1440 批量导出弹窗，本页全部选中、无旧 Toast；`shots/export-compact-final.png` 1040×680 紧凑弹窗，格式/范围/倍数/提示/取消/导出按钮均完整；`shots/export-jpg-toast-final.png` 最终 EXE 的 JPG Toast，路径与白底导出正常；`shots/svg-preview.png` 是实际 SVG 导出文件的浏览器预览。
+- 自检结论：以上四张图逐张看过；批量与紧凑弹窗无裁切、无溢出；Toast 无残留、路径不是假路径；SVG 预览无缺字/错位。
+
+**这轮边界**
+
+- 批量是逐个文件写 `exports`，不打包 ZIP；没有“选择保存目录 / 文件对话框”，没有 JPG 质量滑杆。
+- SVG 只覆盖当前基础节点（rect / ellipse / text / frame / section / group），不支持图片填充、阴影、混合模式、蒙版、组件实例；Frame 子边框是近似绘制，不是完整 CSS / 滤镜级保真。
+- 批量失败时逐个 Toast 汇总，不做“部分成功”文件清单；重名自动编号，用户不能指定基名。
+- Section 的 JPG/SVG 与批量组合未单独实拍；当前实拍覆盖普通 Frame 的 JPG/SVG 和 PNG 批量。
+
 

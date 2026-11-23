@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+<rect x="0" y="0" width="1440" height="900" fill="#FFFFFF" /><clipPath id="groma-clip-export"><rect x="0" y="0" width="1440" height="900" rx="0" /></clipPath><g clip-path="url(#groma-clip-export)"><rect x="140" y="160" width="320" height="200" rx="20" fill="#F2B705" fill-opacity="1" />
+<ellipse cx="620" cy="260" rx="100" ry="100" fill="#221C00" fill-opacity="1" />
+<text x="140" y="400" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="96" font-weight="700" fill="#221C00" fill-opacity="1" dominant-baseline="text-before-edge"><tspan x="140">Groma</tspan></text>
+<text x="144" y="520" font-family="Segoe UI, Microsoft YaHei UI, sans-serif" font-size="26" font-weight="500" fill="#6D685E" fill-opacity="1" dominant-baseline="text-before-edge"><tspan x="144">本地优先的界面设计工作台</tspan></text>
+<rect x="140" y="630" width="520" height="10" rx="5" fill="#221C00" fill-opacity="1" /></g>
+</svg>

@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { editor, getState, useEditor } from '../state/editor';
 import { saveProject } from '../io/project';
+import { saveProjectUi } from '../state/project-ui';
 import { TopBar } from './TopBar';
 import { LeftPanel } from './LeftPanel';
 import { RightPanel } from './RightPanel';
@@ -15,16 +16,24 @@ function isTyping(target: EventTarget | null): boolean {
 export function EditorShell() {
   const s = useEditor();
   const { doc, projectId } = s;
+  const savedDocRef = useRef(doc);
+  const savedProjectRef = useRef(projectId);
 
-  // 自动保存：改动停下 600ms 后落盘，写前由 Rust 侧做快照
+  // 自动保存：改动停下 600ms 后落盘，写前由 Rust 侧做快照。
+  // 打开工程时 doc 与工程 id 都是初始值，直接跳过，避免“只打开一下就多一个版本”。
   useEffect(() => {
     if (!projectId) return;
+    if (savedDocRef.current === doc && savedProjectRef.current === projectId) return;
     let alive = true;
     editor.setSaveState('saving');
     const timer = window.setTimeout(() => {
       saveProject(projectId, doc)
         .then(() => {
-          if (alive) editor.setSaveState('saved');
+          if (alive) {
+            savedDocRef.current = doc;
+            savedProjectRef.current = projectId;
+            editor.setSaveState('saved');
+          }
         })
         .catch(() => {
           if (alive) editor.setSaveState('error');
@@ -35,6 +44,26 @@ export function EditorShell() {
       window.clearTimeout(timer);
     };
   }, [doc, projectId]);
+
+  // 当前页与各页视口是界面状态，不写进设计文件；按工程记在本地，重开接着用。
+  useEffect(() => {
+    if (!projectId) return;
+    const timer = window.setTimeout(() => {
+      saveProjectUi(projectId, { pageId: s.pageId, viewports: s.viewports });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [projectId, s.pageId, s.viewports]);
+
+  useEffect(() => {
+    const flush = () => {
+      const current = getState();
+      if (current.projectId) {
+        saveProjectUi(current.projectId, { pageId: current.pageId, viewports: current.viewports });
+      }
+    };
+    window.addEventListener('beforeunload', flush);
+    return () => window.removeEventListener('beforeunload', flush);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -105,6 +134,7 @@ export function EditorShell() {
 
       if (key === 'v') editor.setTool('move');
       else if (key === 'f') editor.setTool('frame');
+      else if (key === 's') editor.setTool('section');
       else if (key === 'r') editor.setTool('rect');
       else if (key === 'o') editor.setTool('ellipse');
       else if (key === 't') editor.setTool('text');
