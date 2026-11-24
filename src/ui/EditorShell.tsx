@@ -137,6 +137,12 @@ export function EditorShell() {
       else if (key === 's') editor.setTool('section');
       else if (key === 'r') editor.setTool('rect');
       else if (key === 'o') editor.setTool('ellipse');
+      else if (key === 'l') editor.setTool('line');
+      else if (key === 'a') editor.setTool('arrow');
+      else if (key === 'g') editor.setTool('polygon');
+      else if (key === 'y') editor.setTool('star');
+      else if (key === 'p') editor.setTool('pen');
+      else if (key === 'k') editor.setTool('slice');
       else if (key === 't') editor.setTool('text');
       else if (key === 'h') editor.setTool('hand');
       else if (e.key === 'Escape') editor.clearSelection();

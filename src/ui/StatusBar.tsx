@@ -1,12 +1,13 @@
 import { useEditor } from '../state/editor';
 import { useCursor } from '../state/cursor';
+import { countArtboards } from '../core/doc';
 
 export function StatusBar() {
   const s = useEditor();
   const cursor = useCursor();
   const page = s.doc.pages.find((p) => p.id === s.pageId) ?? s.doc.pages[0];
   const root = s.doc.nodes[page.rootId];
-  const frames = root ? root.children.length : 0;
+  const frames = root ? countArtboards(s.doc, root.id) : 0;
   const selected = s.selectedId ? s.doc.nodes[s.selectedId] : null;
 
   const saveLabel = !s.projectId

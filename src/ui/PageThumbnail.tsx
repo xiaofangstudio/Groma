@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { GromaDoc, Page } from '../core/types';
 import { drawPageThumbnail } from '../render/draw';
+import { subscribeImages } from '../io/images';
 
 const THUMB_W = 34;
 const THUMB_H = 22;
@@ -21,7 +22,12 @@ export function PageThumbnail({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawnRef = useRef(false);
+  const [assetTick, setAssetTick] = useState(0);
   const source = active ? doc : null;
+
+  useEffect(() => {
+    return subscribeImages(() => setAssetTick((tick) => tick + 1));
+  }, []);
 
   useEffect(() => {
     if (!source && drawnRef.current) return;
@@ -33,7 +39,7 @@ export function PageThumbnail({
       drawnRef.current = true;
     }, delay);
     return () => window.clearTimeout(timer);
-  }, [source, page, index]);
+  }, [source, page, index, assetTick]);
 
   return (
     <canvas

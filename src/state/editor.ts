@@ -9,13 +9,16 @@ import {
   removePage as removePageFromDoc,
   renamePage as renamePageInDoc,
 } from '../core/pages';
-import type { GromaDoc, Guide, NodeType, Rect, SceneNode } from '../core/types';
+import type { GromaDoc, Guide, ImageAsset, NodeType, PathAnchor, Rect, SceneNode, Stroke } from '../core/types';
 import { clampScale, fitRect, zoomAt, type Viewport } from '../core/viewport';
 import type { ProjectUiState } from './project-ui';
+import type { ImportedNode, SvgImport } from '../io/importSvg';
 import { alignDeltas, distributeDeltas, type AlignMode, type DistributeMode } from '../core/align';
-import { absoluteRect, topLevelSelection } from '../core/geometry';
+import { absolutePosition, absoluteRect, deepestFrame, topLevelSelection } from '../core/geometry';
+import { shapePath, type ShapeKind } from '../core/shapes';
+import { nodePathContours, penContoursGeometry, type PenAnchor, type PenContour } from '../core/pen';
 
-export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text';
+export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'line' | 'arrow' | 'polygon' | 'star' | 'slice' | 'pen';
 export type SaveState = 'local' | 'saving' | 'saved' | 'error';
 
 interface PatchItem {
@@ -180,6 +183,48 @@ function validSelection(doc: GromaDoc, ids: string[]): string[] {
   });
 }
 
+/**
+ * 钢笔路径的统一写入口：世界坐标轮廓 → 节点包围盒 → 局部锚点/复合 pathData。
+ * 单轮廓仍只写 pathAnchors/pathClosed；多轮廓额外写 pathContours，并镜像第一条。
+ */
+function commitPathContours(id: string, contours: PenContour[], silent: boolean): boolean {
+  if (contours.length === 0 || contours.some((contour) => contour.anchors.length < 2)) return false;
+  let changed = false;
+  set((s) => {
+    const node = s.doc.nodes[id];
+    if (!node || node.type !== 'path' || node.locked || nodePathContours(node).length === 0) return s;
+    const geometry = penContoursGeometry(contours);
+    if (!geometry) return s;
+    const parent = node.parentId ? s.doc.nodes[node.parentId] : undefined;
+    const parentAbs = parent && parent.type !== 'page' ? absolutePosition(s.doc, parent.id) : { x: 0, y: 0 };
+    const first = geometry.contours[0];
+    const patch: NodePatch = {
+      x: geometry.x - parentAbs.x,
+      y: geometry.y - parentAbs.y,
+      w: geometry.w,
+      h: geometry.h,
+      pathData: geometry.pathData,
+      pathW: geometry.pathW,
+      pathH: geometry.pathH,
+      pathAnchors: first.anchors,
+      pathClosed: first.closed,
+      pathContours: geometry.contours.length > 1 ? geometry.contours : undefined,
+    };
+    const after: SceneNode = { ...node, ...patch };
+    if (JSON.stringify(node) === JSON.stringify(after)) return s;
+    changed = true;
+    const doc = run(s.doc, { type: 'patch', id, patch });
+    if (silent) return { ...s, doc };
+    return {
+      ...s,
+      doc,
+      past: [...s.past, { kind: 'patch', id, before: node, after } as HistoryEntry].slice(-200),
+      future: [],
+    };
+  });
+  return changed;
+}
+
 export function getState(): EditorState {
   return state;
 }
@@ -325,11 +370,20 @@ function patchItems(
   return { doc: next, items };
 }
 
+function patchForTarget(from: SceneNode, target: SceneNode): NodePatch {
+  const patch = { ...target } as Record<string, unknown>;
+  for (const key of Object.keys(from)) {
+    if (!(key in target)) patch[key] = undefined;
+  }
+  return patch as NodePatch;
+}
+
 function applyEntry(doc: GromaDoc, entry: HistoryEntry, direction: 'undo' | 'redo'): GromaDoc {
   if (entry.kind === 'patch') {
     const target = direction === 'undo' ? entry.before : entry.after;
+    const opposite = direction === 'undo' ? entry.after : entry.before;
     try {
-      return run(doc, { type: 'patch', id: entry.id, patch: target });
+      return run(doc, { type: 'patch', id: entry.id, patch: patchForTarget(opposite, target) });
     } catch {
       return doc;
     }
@@ -337,11 +391,13 @@ function applyEntry(doc: GromaDoc, entry: HistoryEntry, direction: 'undo' | 'red
   if (entry.kind === 'batch') {
     let next = doc;
     for (const item of entry.items) {
+      const target = direction === 'undo' ? item.before : item.after;
+      const opposite = direction === 'undo' ? item.after : item.before;
       try {
         next = run(next, {
           type: 'patch',
           id: item.id,
-          patch: direction === 'undo' ? item.before : item.after,
+          patch: patchForTarget(opposite, target),
         });
       } catch {
         // 保留其余可恢复项
@@ -734,7 +790,7 @@ export const editor = {
   },
 
   addNode(input: {
-    type: 'frame' | 'section' | 'rect' | 'ellipse' | 'text';
+    type: 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'path' | 'slice';
     parentId: string;
     x: number;
     y: number;
@@ -742,6 +798,16 @@ export const editor = {
     h: number;
     name?: string;
     fill?: string;
+    pathData?: string;
+    pathW?: number;
+    pathH?: number;
+    pathAnchors?: PathAnchor[];
+    pathClosed?: boolean;
+    shapeKind?: ShapeKind;
+    shapeSides?: number;
+    shapeInnerRatio?: number;
+    arrowHeadData?: string;
+    strokes?: Stroke[];
   }): string {
     const id = newNodeId(input.type);
     set((s) => {
@@ -750,6 +816,17 @@ export const editor = {
       const sameType = parent.children
         .map((cid) => s.doc.nodes[cid])
         .filter((n) => n && n.type === input.type).length;
+      const isPen = input.type === 'path' && Array.isArray(input.pathAnchors) && input.pathAnchors.length > 0;
+      const sameShape =
+        isPen
+          ? parent.children
+              .map((cid) => s.doc.nodes[cid])
+              .filter((n) => n && n.type === 'path' && (n.pathAnchors?.length ?? 0) > 0).length
+          : input.type === 'path' && input.shapeKind
+            ? parent.children
+                .map((cid) => s.doc.nodes[cid])
+                .filter((n) => n && n.type === 'path' && n.shapeKind === input.shapeKind).length
+            : sameType;
       const typeName =
         input.type === 'frame'
           ? '画板'
@@ -759,17 +836,33 @@ export const editor = {
               ? '矩形'
               : input.type === 'ellipse'
                 ? '椭圆'
-                : '文本';
+                : input.type === 'slice'
+                  ? '切片'
+                  : input.type === 'path'
+                    ? isPen
+                      ? '钢笔'
+                      : input.shapeKind === 'polygon'
+                        ? '多边形'
+                        : input.shapeKind === 'star'
+                          ? '星形'
+                          : input.shapeKind === 'arrow'
+                            ? '箭头'
+                            : '直线'
+                    : '文本';
       const fill =
         input.type === 'frame' || input.type === 'rect' || input.type === 'ellipse'
           ? [{ type: 'solid' as const, color: input.fill ?? (input.type === 'frame' ? '#FFFFFF' : '#D9D9D9'), opacity: 1 }]
-          : input.type === 'section'
-            ? []
-            : [{ type: 'solid' as const, color: input.fill ?? '#221C00', opacity: 1 }];
+          : input.type === 'path'
+            ? input.fill
+              ? [{ type: 'solid' as const, color: input.fill, opacity: 1 }]
+              : []
+            : input.type === 'section' || input.type === 'slice'
+              ? []
+              : [{ type: 'solid' as const, color: input.fill ?? '#221C00', opacity: 1 }];
       const node: SceneNode = {
         id,
         type: input.type,
-        name: input.name ?? `${typeName} ${sameType + 1}`,
+        name: input.name ?? `${typeName} ${sameShape + 1}`,
         parentId: parent.id,
         children: [],
         x: input.x,
@@ -783,6 +876,30 @@ export const editor = {
         clipContent: input.type === 'frame',
         fills: fill,
         cornerRadius: 0,
+        ...(input.type === 'path'
+          ? {
+              pathData: input.pathData ?? '',
+              pathW: Math.max(0.01, input.pathW ?? input.w),
+              pathH: Math.max(0.01, input.pathH ?? input.h),
+              ...(input.pathAnchors?.length
+                ? { pathAnchors: input.pathAnchors, pathClosed: Boolean(input.pathClosed) }
+                : {}),
+              ...(input.shapeKind
+                ? {
+                    shapeKind: input.shapeKind,
+                    ...(input.shapeKind === 'arrow'
+                      ? { arrowHeadData: input.arrowHeadData ?? '' }
+                      : { shapeSides: Math.round(Math.min(12, Math.max(3, input.shapeSides ?? 5))) }),
+                    ...(input.shapeKind === 'star'
+                      ? { shapeInnerRatio: Math.min(0.9, Math.max(0.1, input.shapeInnerRatio ?? 0.38)) }
+                      : {}),
+                  }
+                : {}),
+              strokes:
+                input.strokes ??
+                [{ color: '#221C00', opacity: 1, width: 2, dash: [], cap: 'butt' as const, join: 'miter' as const }],
+            }
+          : {}),
         ...(input.type === 'text' ? { text: '文本', fontSize: 24, fontWeight: 600 } : {}),
       };
       const result = applyCommand(s.doc, { type: 'insert', parentId: parent.id, node });
@@ -799,6 +916,321 @@ export const editor = {
       return { ...withSelection(s, [id]), doc: result.doc, past, future: [] };
     });
     return id;
+  },
+
+  insertImage(asset: ImageAsset, place?: { x?: number; y?: number; w?: number; h?: number }): string {
+    const id = newNodeId('image');
+    set((s) => {
+      const page = s.doc.pages.find((item) => item.id === s.pageId);
+      const root = page ? s.doc.nodes[page.rootId] : undefined;
+      if (!page || !root) return s;
+
+      const selected = s.selectedId ? s.doc.nodes[s.selectedId] : undefined;
+      let parent = root;
+      if (selected && (selected.type === 'frame' || selected.type === 'section')) {
+        parent = selected;
+      } else if (selected && selected.parentId) {
+        const owner = s.doc.nodes[selected.parentId];
+        if (owner && (owner.type === 'frame' || owner.type === 'section')) parent = owner;
+      } else {
+        const centerX = (s.viewSize.w / 2 - s.viewport.x) / s.viewport.scale;
+        const centerY = (s.viewSize.h / 2 - s.viewport.y) / s.viewport.scale;
+        const frame = s.viewSize.w > 0 && s.viewSize.h > 0 ? deepestFrame(s.doc, page, centerX, centerY) : null;
+        if (frame) parent = frame;
+      }
+
+      const naturalW = Math.max(1, asset.w);
+      const naturalH = Math.max(1, asset.h);
+      const maxW = parent.type === 'frame' || parent.type === 'section' ? Math.max(1, parent.w * 0.8) : 1600;
+      const maxH = parent.type === 'frame' || parent.type === 'section' ? Math.max(1, parent.h * 0.8) : 1600;
+      const fit = Math.min(1, maxW / naturalW, maxH / naturalH);
+      const w = Math.max(1, Math.round(place?.w ?? naturalW * fit));
+      const h = Math.max(1, Math.round(place?.h ?? naturalH * fit));
+      const x =
+        place?.x ??
+        (parent.type === 'page'
+          ? (s.viewSize.w / 2 - s.viewport.x) / s.viewport.scale - w / 2
+          : (parent.w - w) / 2);
+      const y =
+        place?.y ??
+        (parent.type === 'page'
+          ? (s.viewSize.h / 2 - s.viewport.y) / s.viewport.scale - h / 2
+          : (parent.h - h) / 2);
+
+      const node: SceneNode = {
+        id,
+        type: 'image',
+        name: asset.name || '图片',
+        parentId: parent.id,
+        children: [],
+        x: Math.round(x * 100) / 100,
+        y: Math.round(y * 100) / 100,
+        w,
+        h,
+        rotation: 0,
+        opacity: 1,
+        visible: true,
+        locked: false,
+        clipContent: false,
+        fills: [],
+        strokes: [],
+        cornerRadius: 0,
+        assetId: asset.id,
+      };
+      const result = applyCommand(s.doc, { type: 'insert', parentId: parent.id, node });
+      const assets = { ...(s.doc.assets ?? {}), [asset.id]: asset };
+      const past = [
+        ...s.past,
+        {
+          kind: 'add',
+          node,
+          parentId: parent.id,
+          index: result.index ?? parent.children.length,
+          subtree: { [id]: node },
+        } as HistoryEntry,
+      ].slice(-200);
+      return { ...withSelection(s, [id]), doc: { ...result.doc, assets }, past, future: [] };
+    });
+    return id;
+  },
+
+  setShapeParams(id: string, input: { sides?: number; innerRatio?: number }): boolean {
+    let changed = false;
+    set((s) => {
+      const node = s.doc.nodes[id];
+      if (!node || node.type !== 'path' || !node.shapeKind || node.shapeKind === 'arrow' || node.locked) return s;
+      const sides = Math.round(Math.min(12, Math.max(3, input.sides ?? node.shapeSides ?? 5)));
+      const ratio =
+        node.shapeKind === 'star'
+          ? Math.min(0.9, Math.max(0.1, input.innerRatio ?? node.shapeInnerRatio ?? 0.38))
+          : node.shapeInnerRatio;
+      if ((node.shapeSides ?? 5) === sides && (node.shapeInnerRatio ?? 0.38) === ratio) return s;
+      const pathData = shapePath(node.shapeKind, node.w, node.h, sides, ratio ?? 0.38);
+      const patch: NodePatch = {
+        shapeSides: sides,
+        pathData,
+        pathW: node.w,
+        pathH: node.h,
+        ...(node.shapeKind === 'star' ? { shapeInnerRatio: ratio } : {}),
+      };
+      changed = true;
+      const after: SceneNode = { ...node, ...patch };
+      return {
+        ...s,
+        doc: run(s.doc, { type: 'patch', id, patch }),
+        past: [...s.past, { kind: 'patch', id, before: node, after } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+    return changed;
+  },
+
+  /**
+   * 用世界坐标锚点重算钢笔几何。silent 用于拖拽中连续更新，由调用方用
+   * beginTransaction/endTransaction 合成一条撤销；加点/删点直接走历史。
+   * 多轮廓节点只替换第一条轮廓，其余轮廓原样保留。
+   */
+  setPathAnchors(id: string, anchors: PenAnchor[], closed: boolean, silent = false): boolean {
+    const node = getState().doc.nodes[id];
+    if (!node || node.type !== 'path' || node.locked) return false;
+    const contours: PenContour[] = nodePathContours(node).map((contour) => ({
+      closed: contour.closed,
+      anchors: contour.anchors.map((anchor) => ({ ...anchor })),
+    }));
+    if (contours.length === 0) return false;
+    contours[0] = { anchors: anchors.map((anchor) => ({ ...anchor })), closed };
+    return commitPathContours(id, contours, silent);
+  },
+
+  /** 世界坐标轮廓写入口；用于分支/多轮廓路径的新增、删除与拖拽。 */
+  setPathContours(id: string, contours: PenContour[], silent = false): boolean {
+    return commitPathContours(id, contours, silent);
+  },
+
+  fitImageRatio(id: string): boolean {
+    let changed = false;
+    set((s) => {
+      const node = s.doc.nodes[id];
+      if (!node || node.type !== 'image' || node.locked) return s;
+      const asset = node.assetId ? s.doc.assets?.[node.assetId] : undefined;
+      if (!asset || asset.w <= 0 || asset.h <= 0) return s;
+      const h = Math.max(1, Math.round((node.w * asset.h / asset.w) * 100) / 100);
+      if (Math.abs(h - node.h) < 0.01) return s;
+      changed = true;
+      const after: SceneNode = { ...node, h };
+      return {
+        ...s,
+        doc: run(s.doc, { type: 'patch', id, patch: { h } }),
+        past: [...s.past, { kind: 'patch', id, before: node, after } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+    return changed;
+  },
+
+  replaceImageAsset(id: string, asset: ImageAsset): boolean {
+    let changed = false;
+    set((s) => {
+      const node = s.doc.nodes[id];
+      if (!node || node.type !== 'image' || node.locked) return s;
+      if (node.assetId === asset.id) return s;
+      changed = true;
+      const oldAsset = node.assetId ? s.doc.assets?.[node.assetId] : undefined;
+      const rename = !oldAsset || node.name === oldAsset.name || node.name === '图片';
+      const patch = rename ? { assetId: asset.id, name: asset.name } : { assetId: asset.id };
+      const after: SceneNode = { ...node, ...patch };
+      return {
+        ...s,
+        doc: { ...run(s.doc, { type: 'patch', id, patch }), assets: { ...(s.doc.assets ?? {}), [asset.id]: asset } },
+        past: [...s.past, { kind: 'patch', id, before: node, after } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+    return changed;
+  },
+
+  importFrames(input: SvgImport, place?: { x: number; y: number }): string[] {
+    const created: string[] = [];
+    set((s) => {
+      const page = s.doc.pages.find((item) => item.id === s.pageId);
+      const root = page ? s.doc.nodes[page.rootId] : undefined;
+      if (!page || !root) return s;
+
+      const nodes = { ...s.doc.nodes };
+      const items: AddItem[] = [];
+      const gap = 48;
+      const totalW = input.frames.reduce((sum, frame) => sum + Math.max(1, frame.w), 0) + gap * Math.max(0, input.frames.length - 1);
+      const maxH = Math.max(1, ...input.frames.map((frame) => frame.h));
+      const siblings = root.children
+        .map((id) => s.doc.nodes[id])
+        .filter((node): node is SceneNode => Boolean(node && (node.type === 'frame' || node.type === 'section')));
+      const occupiedRight = siblings.length
+        ? Math.max(...siblings.map((node) => node.x + node.w))
+        : null;
+      const occupiedTop = siblings.length
+        ? Math.min(...siblings.map((node) => node.y))
+        : null;
+      const centerX = place?.x ?? (s.viewSize.w / 2 - s.viewport.x) / s.viewport.scale;
+      const centerY = place?.y ?? (s.viewSize.h / 2 - s.viewport.y) / s.viewport.scale;
+      let cursorX = place
+        ? centerX - totalW / 2
+        : occupiedRight !== null
+          ? occupiedRight + 96
+          : centerX - totalW / 2;
+      const cursorY = place
+        ? centerY - maxH / 2
+        : occupiedTop !== null
+          ? occupiedTop
+          : centerY - maxH / 2;
+
+      for (const frame of input.frames) {
+        const frameId = newNodeId('frame');
+        const subtree: Record<string, SceneNode> = {};
+        const frameNode: SceneNode = {
+          id: frameId,
+          type: 'frame',
+          name: frame.name || input.name || '导入图形',
+          parentId: root.id,
+          children: [],
+          x: Math.round(cursorX),
+          y: Math.round(cursorY),
+          w: Math.max(1, Math.min(16384, frame.w)),
+          h: Math.max(1, Math.min(16384, frame.h)),
+          rotation: 0,
+          opacity: 1,
+          visible: true,
+          locked: false,
+          clipContent: true,
+          fills: [{ type: 'solid', color: frame.background || '#FFFFFF', opacity: 1 }],
+          strokes: [],
+          cornerRadius: 0,
+        };
+        subtree[frameId] = frameNode;
+
+        const build = (source: ImportedNode, parentId: string): string => {
+          const id = newNodeId(source.type);
+          const node: SceneNode = {
+            id,
+            type: source.type,
+            name: source.name || '图层',
+            parentId,
+            children: [],
+            x: Math.round(source.x * 1000) / 1000,
+            y: Math.round(source.y * 1000) / 1000,
+            w: Math.max(0.01, Math.round(source.w * 1000) / 1000),
+            h: Math.max(0.01, Math.round(source.h * 1000) / 1000),
+            rotation: 0,
+            opacity: Math.max(0, Math.min(1, source.opacity)),
+            visible: true,
+            locked: false,
+            clipContent: false,
+            fills: source.fills,
+            strokes: source.strokes,
+            cornerRadius: 0,
+            ...(source.type === 'path'
+              ? {
+                  pathData: source.pathData,
+                  pathW: source.pathW,
+                  pathH: source.pathH,
+                  fillRule: source.fillRule,
+                }
+              : {}),
+            ...(source.type === 'text'
+              ? {
+                  text: source.text,
+                  fontSize: source.fontSize,
+                  fontWeight: source.fontWeight,
+                  fontFamily: source.fontFamily,
+                  italic: source.italic,
+                  align: source.align,
+                  lineHeight: source.lineHeight,
+                }
+              : {}),
+            ...(source.type === 'image' && source.assetId ? { assetId: source.assetId } : {}),
+          };
+          nodes[id] = node;
+          subtree[id] = node;
+          node.children = source.children.map((child) => build(child, id));
+          return id;
+        };
+
+        frameNode.children = frame.children.map((child) => build(child, frameId));
+        nodes[frameId] = frameNode;
+        items.push({
+          node: frameNode,
+          parentId: root.id,
+          index: root.children.length + items.length,
+          subtree,
+        });
+        created.push(frameId);
+        cursorX += Math.max(1, frame.w) + gap;
+      }
+
+      nodes[root.id] = { ...root, children: [...root.children, ...items.map((item) => item.node.id)] };
+      const past = [...s.past, { kind: 'addBatch', items } as HistoryEntry].slice(-200);
+      const assets = { ...(s.doc.assets ?? {}) };
+      input.assets.forEach((item) => {
+        assets[item.asset.id] = item.asset;
+      });
+      const importedBounds = {
+        x: items[0]?.node.x ?? cursorX,
+        y: cursorY,
+        w: totalW,
+        h: maxH,
+      };
+      const viewport = s.viewSize.w > 0 && s.viewSize.h > 0
+        ? fitRect(importedBounds, s.viewSize.w, s.viewSize.h)
+        : s.viewport;
+      return {
+        ...withSelection(s, created),
+        doc: { ...s.doc, nodes, assets },
+        past,
+        future: [],
+        viewport,
+        viewports: { ...s.viewports, [page.id]: viewport },
+      };
+    });
+    return created;
   },
 
   beginTransaction(input: string | string[]) {
@@ -1078,9 +1510,9 @@ export const editor = {
     });
   },
 
-  newDoc(name = '未命名设计', width = 1440, height = 900, frameName?: string) {
+  newDoc(name = '未命名设计', width = 1440, height = 900, frameName?: string, withFrame = true) {
     stopViewportAnimation();
-    const doc = createDoc(name, width, height, frameName);
+    const doc = createDoc(name, width, height, frameName, withFrame);
     transaction = null;
     set((s) => {
       const next: EditorState = {

@@ -1,6 +1,6 @@
-import type { GromaDoc, Guide, NodeType, Page, Paint, SceneNode } from './types';
+import type { GromaDoc, Guide, ImageAsset, NodeType, Page, Paint, SceneNode } from './types';
 
-const NODE_TYPES: NodeType[] = ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'group'];
+const NODE_TYPES: NodeType[] = ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'path', 'image', 'group', 'slice'];
 const NODE_TYPE_SET = new Set<string>(NODE_TYPES);
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -20,14 +20,75 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string' && item.length > 0);
 }
 
+function validateStop(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    isFiniteNumber(value.offset) &&
+    value.offset >= 0 &&
+    value.offset <= 1 &&
+    typeof value.color === 'string' &&
+    isFiniteNumber(value.opacity) &&
+    value.opacity >= 0 &&
+    value.opacity <= 1
+  );
+}
+
 function validatePaint(value: unknown): value is Paint {
   if (!isRecord(value)) return false;
-  return value.type === 'solid' && typeof value.color === 'string' && isFiniteNumber(value.opacity);
+  if (typeof value.color !== 'string' || !isFiniteNumber(value.opacity)) return false;
+  if (value.type === 'solid') return true;
+  if (!Array.isArray(value.stops) || !value.stops.every(validateStop)) return false;
+  if (value.type === 'linear') {
+    return ['x1', 'y1', 'x2', 'y2'].every((field) => isFiniteNumber(value[field]));
+  }
+  if (value.type === 'radial') {
+    return ['cx', 'cy', 'r'].every((field) => isFiniteNumber(value[field])) && Number(value.r) >= 0;
+  }
+  return false;
+}
+
+function validateStroke(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (typeof value.color !== 'string' || !isFiniteNumber(value.opacity)) return false;
+  if (!isFiniteNumber(value.width) || value.width < 0) return false;
+  if (!Array.isArray(value.dash) || !value.dash.every((item) => isFiniteNumber(item) && item >= 0)) {
+    return false;
+  }
+  if (value.cap !== undefined && !['butt', 'round', 'square'].includes(String(value.cap))) return false;
+  if (value.join !== undefined && !['miter', 'round', 'bevel'].includes(String(value.join))) return false;
+  return true;
+}
+
+function validatePathAnchor(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return ['x', 'y', 'inX', 'inY', 'outX', 'outY'].every((field) => isFiniteNumber(value[field]));
+}
+
+function validatePathContour(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.anchors) &&
+    value.anchors.length >= 2 &&
+    value.anchors.every(validatePathAnchor) &&
+    typeof value.closed === 'boolean'
+  );
 }
 
 function validateGuide(value: unknown): value is Guide {
   if (!isRecord(value)) return false;
   return (value.axis === 'x' || value.axis === 'y') && isFiniteNumber(value.position);
+}
+
+function validateAsset(value: unknown): value is ImageAsset {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== 'string' || value.id.length === 0) return false;
+  if (typeof value.name !== 'string' || value.name.length === 0) return false;
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(String(value.mime))) return false;
+  if (typeof value.file !== 'string' || !value.file.startsWith('assets/')) return false;
+  if (value.file.includes('..') || value.file.includes('\\')) return false;
+  if (!isFiniteNumber(value.w) || value.w <= 0 || !isFiniteNumber(value.h) || value.h <= 0) return false;
+  if (!isFiniteNumber(value.bytes) || value.bytes < 0) return false;
+  return true;
 }
 
 function validatePage(value: unknown): value is Page {
@@ -46,7 +107,7 @@ function validatePage(value: unknown): value is Page {
   );
 }
 
-function validateNode(node: SceneNode, key: string, issues: string[]): void {
+function validateNode(node: SceneNode, key: string, assets: Record<string, ImageAsset>, issues: string[]): void {
   if (!isRecord(node)) {
     issues.push(`节点 ${key} 不是对象`);
     return;
@@ -72,15 +133,64 @@ function validateNode(node: SceneNode, key: string, issues: string[]): void {
     issues.push(`节点 ${key} 的透明度必须在 0–1`);
   }
   if (!Array.isArray(node.fills) || !node.fills.every(validatePaint)) {
-    issues.push(`节点 ${key} 的 fills 必须是合法的纯色填充数组`);
+    issues.push(`节点 ${key} 的 fills 必须是合法的填充数组`);
+  }
+  if (node.strokes !== undefined && (!Array.isArray(node.strokes) || !node.strokes.every(validateStroke))) {
+    issues.push(`节点 ${key} 的 strokes 必须是合法的描边数组`);
   }
   for (const field of ['visible', 'locked', 'clipContent'] as const) {
     if (typeof node[field] !== 'boolean') issues.push(`节点 ${key} 的 ${field} 必须是布尔值`);
+  }
+  if (node.type === 'path') {
+    if (typeof node.pathData !== 'string' || node.pathData.trim().length === 0) {
+      issues.push(`路径节点 ${key} 缺少 pathData`);
+    }
+    if (node.pathW !== undefined && (!isFiniteNumber(node.pathW) || node.pathW <= 0)) {
+      issues.push(`路径节点 ${key} 的 pathW 非法`);
+    }
+    if (node.pathH !== undefined && (!isFiniteNumber(node.pathH) || node.pathH <= 0)) {
+      issues.push(`路径节点 ${key} 的 pathH 非法`);
+    }
+    if (node.pathAnchors !== undefined) {
+      if (!Array.isArray(node.pathAnchors) || node.pathAnchors.length < 2 || !node.pathAnchors.every(validatePathAnchor)) {
+        issues.push(`路径节点 ${key} 的 pathAnchors 必须是至少两个合法锚点`);
+      }
+    }
+    if (node.pathClosed !== undefined && typeof node.pathClosed !== 'boolean') {
+      issues.push(`路径节点 ${key} 的 pathClosed 必须是布尔值`);
+    }
+    if (node.pathContours !== undefined) {
+      if (!Array.isArray(node.pathContours) || node.pathContours.length === 0 || !node.pathContours.every(validatePathContour)) {
+        issues.push(`路径节点 ${key} 的 pathContours 必须是非空、每条至少两个合法锚点的轮廓`);
+      }
+    }
+    if (node.fillRule !== undefined && node.fillRule !== 'nonzero' && node.fillRule !== 'evenodd') {
+      issues.push(`路径节点 ${key} 的 fillRule 非法`);
+    }
+    if (node.shapeKind !== undefined && node.shapeKind !== 'polygon' && node.shapeKind !== 'star' && node.shapeKind !== 'arrow') {
+      issues.push(`路径节点 ${key} 的 shapeKind 非法`);
+    }
+    if (node.arrowHeadData !== undefined && (typeof node.arrowHeadData !== 'string' || node.arrowHeadData.length === 0)) {
+      issues.push(`路径节点 ${key} 的 arrowHeadData 非法`);
+    }
+    if (node.shapeSides !== undefined && (!isFiniteNumber(node.shapeSides) || node.shapeSides < 3 || node.shapeSides > 12)) {
+      issues.push(`路径节点 ${key} 的 shapeSides 必须在 3–12`);
+    }
+    if (node.shapeInnerRatio !== undefined && (!isFiniteNumber(node.shapeInnerRatio) || node.shapeInnerRatio < 0.1 || node.shapeInnerRatio > 0.9)) {
+      issues.push(`路径节点 ${key} 的 shapeInnerRatio 必须在 0.1–0.9`);
+    }
   }
   if (node.type === 'text') {
     if (typeof node.text !== 'string') issues.push(`文本节点 ${key} 缺少 text`);
     if (!isFiniteNumber(node.fontSize) || node.fontSize <= 0) issues.push(`文本节点 ${key} 的 fontSize 非法`);
     if (!isFiniteNumber(node.fontWeight)) issues.push(`文本节点 ${key} 的 fontWeight 非法`);
+  }
+  if (node.type === 'image') {
+    if (typeof node.assetId !== 'string' || node.assetId.length === 0) {
+      issues.push(`图片节点 ${key} 缺少 assetId`);
+    } else if (!assets[node.assetId]) {
+      issues.push(`图片节点 ${key} 引用了不存在的资产 ${node.assetId}`);
+    }
   }
 }
 
@@ -114,6 +224,26 @@ export function validateDoc(value: unknown): DocValidation {
     pages.push(raw);
   }
 
+  const assets: Record<string, ImageAsset> = {};
+  if (value.assets !== undefined) {
+    if (!isRecord(value.assets)) {
+      issues.push('场景 assets 必须是对象');
+    } else {
+      for (const [key, raw] of Object.entries(value.assets)) {
+        if (RESERVED_KEYS.has(key)) {
+          issues.push(`资产 id ${key} 是保留键`);
+          continue;
+        }
+        if (!validateAsset(raw)) {
+          issues.push(`资产 ${key} 结构非法`);
+          continue;
+        }
+        if (raw.id !== key) issues.push(`资产 ${key} 的 id 与键名不一致`);
+        assets[key] = raw;
+      }
+    }
+  }
+
   const nodes = value.nodes as Record<string, SceneNode>;
   const nodeIds = Object.keys(nodes);
   for (const key of nodeIds) {
@@ -121,7 +251,7 @@ export function validateDoc(value: unknown): DocValidation {
       issues.push(`节点 id ${key} 是保留键`);
       continue;
     }
-    validateNode(nodes[key], key, issues);
+    validateNode(nodes[key], key, assets, issues);
   }
 
   const roots = new Set<string>();

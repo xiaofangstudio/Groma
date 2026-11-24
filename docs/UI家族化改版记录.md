@@ -1,6 +1,6 @@
 # Groma UI 家族化改版记录
 
-初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-23 20:12（A08 导出 / 紧凑弹窗 / 截图自检）
+初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-24 07:13（A08 导出弹窗单焦点重排 / 拆掉导出即打开外部应用 / 1040 批量压缩）
 
 ## 这一轮为什么不是「美化」
 
@@ -355,5 +355,297 @@ Section 不是“换皮画板”，是页面下的一层透明容器：有名称
 - SVG 只覆盖当前基础节点（rect / ellipse / text / frame / section / group），不支持图片填充、阴影、混合模式、蒙版、组件实例；Frame 子边框是近似绘制，不是完整 CSS / 滤镜级保真。
 - 批量失败时逐个 Toast 汇总，不做“部分成功”文件清单；重名自动编号，用户不能指定基名。
 - Section 的 JPG/SVG 与批量组合未单独实拍；当前实拍覆盖普通 Frame 的 JPG/SVG 和 PNG 批量。
+
+## A08 导出交接：PNG/JPG → Strata，SVG → Vexa（第一版，入口已拆）
+
+> 2026-11-24 起，导出弹窗不再提供“导出后打开 Strata/Vexa”。这一节保留为底层启动与 Vexa 接收端的实现记录；新的入口只从“选中元素/框选区域”发起，等选区回传接收层接入后再开。下面提到的 `handoff` 复选框已从 UI 删除。
+
+不是把三种格式同时塞给两个软件，而是按格式固定分工：位图进 Strata 精修，矢量进 Vexa 编辑；批量不做交接，因为一个目标应用一次只适合接一个文件。
+
+**工程链路**
+
+- `src/io/handoff.ts`：`handoffTargetForFormat()` 固定映射（png/jpg/jpeg → strata，svg → vexa）；`openExportInApp()` 调 Tauri `groma_open_in_app`，返回真实 target/exe/file。
+- `ExportDialog.tsx`：新增 `handoff` 状态与 `.export-handoff` 复选框；文案随格式变化“导出后打开 Strata / Vexa”，描述“PNG/JPG 位图精修 / SVG 矢量编辑”；批量时禁用并写“批量不支持外部应用”；勾选后主按钮变“导出并打开”；导出成功但启动失败时 Toast 分开写“已导出 · 未找到 Strata / 未启动”，文件路径仍如实返回。
+- `src-tauri/src/main.rs`：新增 `HandoffInfo`、`find_handoff_exe()` 与 `groma_open_in_app(target, file)`；目标与扩展名二次校验（Strata 只接 png/jpg/jpeg，Vexa 只接 svg）；应用发现优先 `GROMA_STRATA_EXE` / `STRATA_EXE`、`GROMA_VEXA_EXE` / `VEXA_EXE`，其次从当前 EXE 向上 8 层找 `Strata/Strata.exe`、`Strata/src-tauri/target/release/strata.exe`、`Vexa/release/Vexa.exe`、`Vexa/src-tauri/target/release/vexa.exe`，再查 `%LOCALAPPDATA%\Programs`、`%PROGRAMFILES%` 与 `PATH`；`Command::new(exe).arg(file)` 启动，Windows 加 `CREATE_NO_WINDOW`。
+- Vexa 接收端：`src-tauri/Cargo.toml` 加 `tauri-plugin-single-instance`；`lib.rs` 增加 `launch_intent`、只接 `.svg`/`.vex` 的 `pick_launch_path()`、单实例 emit `vexa://launch-open` 并聚焦主窗口；`src/core/launch.ts` 读启动意图 / 订阅事件；`src/core/svg.ts` 增加 `svgIntrinsicSize()`；`App.tsx` 启动读 intent，`.svg` 走 `importSvgLaunch()`，用 SVG 的 viewBox/width/height 建同尺寸文档并导入节点，不写 recent 列表。
+
+**验证**
+
+- `npm run gate` PASS：18 个测试文件 / 92 条测试（新增 `handoff.test.ts` 2 条）；前端 `index-BJMi-EgH.css` 52.37 kB、`index-hc9Hzll9.js` 356.37 kB；EXE 3,247 KB，2026-11-23 20:35:11。
+- Vexa `cargo check` 与 `npm run tauri:build` 通过；新 `vexa.exe` 7,782,400 B / 2026-11-23 20:33:27，已同步 `release/Vexa.exe`。NSIS 打包阶段被占用文件挡住，但 raw EXE 已产出并替换，不影响本机交接。
+- 真实 Groma→Strata：JPG 勾选交接，Toast `JPG 已导出 · Strata 已打开`，路径 `...\exports\桌面 1440@2x.jpg`；随后用同一文件启动 Strata，窗口标题 `桌面 1440@2x`，画布显示 2,880×1,800 位图。
+- 真实 Groma→Vexa：SVG 勾选交接，Toast `SVG 已导出 · Vexa 已打开`，路径 `...\exports\桌面 1440-2.svg`；Vexa 新进程启动，直接以该 SVG 启动时标题 `桌面 1440 · Vexa`，画板 1,440×900，显示矩形、椭圆、标题文字与副标题；单实例第二进程带 SVG 启动时第一进程收到并替换为同一文档，证明“已开 Vexa 再交接”也能接收。
+- 端到端复核：用 `shot.ps1 -CaptureProcess Strata/Vexa -CaptureOut ...` 在同一虚拟桌面里截到交接后的接收端窗口——`strata-from-groma.png` 显示 2,880×1,800、RGB 8 位、1 个背景层；`vexa-from-groma.png` 显示标题 `桌面 1440-3`、画板 1,440×900、矩形/椭圆/两段文字/横条全在，不再是“只启动了进程”。
+- UI：`shots/handoff-dialog.png` 1440×900 导出弹窗，SVG + “导出后打开 Vexa”勾选，主按钮“导出并打开”；`shots/handoff-compact.png` 1040×680 紧凑弹窗，交接行完整、操作区无裁切；`shots/handoff-batch.png` 两画板本页全部，交接行置灰并写“批量不支持外部应用”，主按钮“导出 2 个”；`shots/handoff-strata.png` JPG→Strata Toast；`shots/handoff-vexa-final.png` SVG→Vexa Toast；`shots/strata-from-groma.png` 与 `shots/vexa-from-groma.png` 是实际交接后的接收端窗口。以上逐张自检：弹窗无裁切、Toast 路径真实、接收端标题/尺寸/内容对得上。
+
+**这轮边界**
+
+- 交接只对单画板/单区块开放，批量禁用；不把 PNG/JPG 塞给 Vexa，也不把 SVG 塞给 Strata。
+- 不写 `.strata` / `.vex` 原生工程，只传导出文件；接收端是否可继续编辑取决于对方格式能力。
+- 应用发现路径不在候选里时，靠环境变量或同级目录；找不到如实报“未找到”，不装成功。
+- Vexa 已打开文档时收到外部 SVG 会替换当前文档，没有未保存确认；这是当前实现边界，后续如做多标签/脏检查再补。
+
+
+## A08 导出弹窗重排：拆掉“导出即打开外部应用”（2026-11-24 07:11）
+
+**为什么改**
+
+上一版把“导出文件”和“继续编辑”塞进同一个弹窗：导出格式、范围、倍数、透明、外部软件五个选择都用黄色描边，视觉焦点散；最后还多一个“导出后打开 Strata / Vexa”复选框，像设置面板，不像一个干净交付动作。用户明确要求：默认一站式，只有选中素材/元素在 Groma 处理不了时才去外部软件，处理完带回原位；不要把外部软件做成导出选项。
+
+**改法**
+
+- `ExportDialog.tsx`：删除 `handoff` 状态、`openExportInApp` 调用和交接复选框；导出只做导出。
+- 三张大格式卡改成一条分段控件：PNG / JPG / SVG；下方一行说明当前格式能力。
+- 范围也改成分段控件，仅多画板时出现；倍数与输出尺寸同排，透明背景改成右侧开关；底部集中显示 `格式 · 倍数 · 输出尺寸` 与“写入 exports · 重名自动编号”。
+- 焦点只留主按钮；“取消/导出”固定底部；1040×680 两画板批量时压缩段间距、隐藏透明说明，所有内容与按钮一屏可见。
+- `handoff.ts`、`groma_open_in_app`、Vexa 带文件启动/单实例接收保留，不删底层；等“选中元素/框选区域 → 外部处理 → 带回原位”的接收层接入后再开新入口。
+
+**验证**
+
+- `npm run gate` PASS：18 个测试文件 / 92 条测试；最终 EXE 3,248 KB，2026-11-24 07:11:49。
+- 真实 EXE 单张导出：Toast `PNG 已导出`，路径 `...\exports\桌面 1440@2x-3.png`；文件生成后已清理，自检工程只剩原有两张 PNG。
+- 真实 EXE 批量导出：两画板“本页全部”，Toast `已导出 2 个文件`，目录 `...\交接批次.groma\exports`；`桌面 1440@2x-3.png` 154,997 B、`画板 2@2x.png` 105,602 B；临时工程与导出文件已删除。
+- UI：`shots/export-clean-1440.png` 1440×900 单画板 PNG；`shots/export-clean-1040.png` 1040×680 单画板 JPG（透明开关置灰、底部完整）；`shots/export-clean-batch-1040.png` 1040×680 两画板“本页全部”，范围行、2 个文件摘要、主按钮全部可见；`shots/export-clean-toast.png` 单张导出 Toast；`shots/export-clean-batch-toast.png` 批量导出 Toast。以上逐张看过：没有裁切、没有滚动条压住按钮、没有旧 Toast；1040 两画板批量是最紧状态。
+
+**边界**
+
+- 这轮只改导出 UI 与入口边界；真正的选区回传、图片资产层、Strata/Vexa 写回 Groma 尚未实现，不能把“底层启动命令还在”说成“回传已打通”。
+- 导出仍固定写工程 `exports`，重名自动编号；不做保存目录对话框、ZIP 打包、JPG 质量滑杆。
+
+## 图片资产层与位图节点（2026-11-24 07:54）
+
+**为什么做**
+
+Figma 基线里的 C06 图片还只有 SVG 内嵌图，没有可独立选中的位图节点：本地 PNG/JPG 进不来，工程 `assets` 只是空的占位目录。先把「图片进得来、能改、能存、能导出」这一垂直切片做通，后面 Strata 位图回传、Vexa 工程往返和选区外部处理才有落点。工程级导入仍只留入口，这轮不碰。
+
+**改法**
+
+- 数据模型：`NodeType` 增加 `image`；`SceneNode` 增加 `assetId`；新增 `ImageAsset { id, name, mime, file, w, h, bytes }` 与 `GromaDoc.assets`；`scene.json` 只存资产引用，图片本体在 `<工程>/assets`。
+- 校验：`schema.ts` 只接受 `image/png`、`image/jpeg`、`image/webp`；资产路径必须是 `assets/<文件名>`，拒绝 `..`、反斜杠和越界路径；图片节点缺 `assetId` 或引用不存在直接拒绝工程。
+- Rust：新增 `groma_write_asset` / `groma_read_asset`，校验扩展名、MIME、PNG/JPEG/WebP 文件头与 64MB 上限，重名自动编号；读回统一转 data URL。
+- 前端缓存：`src/io/images.ts` 按 `asset.id` 缓存图片位图与 data URL，打开工程/新建工程触发 hydrate；画布与页缩略图订阅加载完成重绘，缺图显示占位不崩。
+- 导入：顶栏“导入”接受 `.svg/.png/.jpg/.jpeg/.webp`；位图按自然尺寸插入，并限制到父容器 80%，优先挂当前选中画板/区块，否则落到视口中心画板，保证默认导出画板能带上图片。
+- 检查器：右侧显示文件名、原始尺寸、文件大小、X/Y/W/H、圆角、透明度与“恢复原比例”；“替换图片”用隐藏文件输入换图，保留节点位置与尺寸，默认图层名随新文件更新，自定义图层名保留；图层树和类型标签显示“图片”。
+- 渲染/导出：`drawImageNode` 支持圆角裁切、透明度、缺图占位；SVG 导出内嵌 `data:image/...;base64`，有圆角时套 `clipPath`；PNG/JPG 导出前预载资产。
+- 紧凑窗口：`@media (max-height: 760px)` 压缩检查器段距、字段高与提示留白，1040×680 下“恢复原比例”按钮不再被底部裁掉。
+
+**验证**
+
+- `npm run gate` PASS：18 个测试文件 / 99 条测试；前端 `index-CVV6Mwc-.css` 54.02 kB、`index-B-tjo4tv.js` 395.83 kB；EXE 3,270 KB，2026-11-24 08:06:53。
+- 真实 EXE：在 `图片资产验收.groma` 导入 `image-layer-source.png`（480×320、4,608 B），Toast 显示文件名与尺寸；图片节点成为 `桌面 1440` 子节点，x=480 / y=290 / w=480 / h=320；保存后 `scene.json` 含 `assets` 表与 `type:"image"`，资产文件落在 `assets/image-layer-source.png`。
+- 导出：真实 PNG `桌面 1440@2x-3.png` 177,492 B，打开可见导入图片；SVG `桌面 1440.svg` 7,308 B，包含 `<image` 与 `data:image/png;base64`。
+- 替换：在新建的 `图片替换验收.groma` 先导入 `image-layer-source.png`，再在检查器替换为 `image-replace-source.png`；文件行、图层名与 Toast 之外的检查器状态都切到新文件，节点 x=480 / y=290 / w=480 / h=320 不变，保存重开仍指向新资产。
+- UI：`shots/image-import.png` 1440×900 导入后图片在画板内、右侧图片检查器与 Toast；`shots/image-inspector-1040.png` 1040×680 紧凑检查器，恢复/替换两个按钮完整；`shots/image-replace.png` 真实替换后的检查器与图层名；`shots/image-replace-reopen.png` 替换后保存重开仍指向新资产；`shots/image-reopen-final.png` 关闭重开工程后图片随画板恢复；`shots/image-export.png` / `image-svg-export.png` 为真实导出 Toast。逐张自检，无横向溢出，Toast 不长期遮挡。
+- 回归：`schema.test.ts` 新增合法资产、缺资产引用、非法路径/格式 3 条；`editor.test.ts` 新增插入/撤销/比例/默认落画板/替换 5 条；`svg.test.ts` 新增图片内嵌 1 条。
+
+**边界**
+
+- 图片是独立节点，不是矩形的图片填充；无裁剪焦点、粘贴图片、删除后孤儿资产清理，也没有拖放导入。替换图片保留位置尺寸，不自动裁到新图比例，需要用户再点“恢复原比例”。
+- 1040×680 检查器只保证主操作可见，外观区仍在右栏滚动范围内；后续如需一屏全见，应把图片元信息收成一行。
+- 工程级导入（Groma 工程送进 Strata/Vexa 或反向）只保留入口，未做格式互转；这轮没有把外部软件重新挂回导出弹窗。
+
+## C07 文本样式补全：对齐、行高、斜体（2026-11-24 13:14）
+
+**为什么做**
+
+画布和 SVG 生成器早就支持 `align`、`lineHeight`、`italic`，但右侧检查器只暴露字号和字重，用户看得到效果却改不了。补齐这几个已有字段，比新开一套富文本模型风险小，也能让文本从“能写”变成“能排版”。
+
+**改法**
+
+- 文本区块新增三个对齐按钮（左/中/右），复用现有对象对齐图标，选中态用品牌黄描边和浅黄底；按钮带 `aria-label` 与 `aria-pressed`。
+- 新增“行高”数字输入，范围 0.8–3，默认 1.3；新增“斜体”开关，写回 `italic`，渲染与 SVG 已有支持。
+- 修复撤销可选字段的底层问题：`applyEntry` 现在把“目标中没有、旧状态中有”的键显式补成 `undefined`，否则给节点新加 `align / lineHeight / italic` 后撤销只会回到旧值，键本身仍留在节点上。
+- 1040×680 下对齐按钮与斜体开关跟随检查器紧凑高度（30px），右栏可滚动，不横向溢出。
+
+**验证**
+
+- `npm run gate` PASS：18 个测试文件 / 100 条测试；前端 `index-BvLJdBmk.css` 54.91 kB、`index-CWxZk0UB.js` 397.29 kB；EXE 3,271 KB，2026-11-24 13:14:05。
+- 新增 1 条 `editor.test.ts`：写入 `align: center / lineHeight: 1.6 / italic: true` 后撤销，三个可选字段全部回到未设置状态，证明底层补丁撤销修复有效。
+- 真实 EXE：在 `文字样式验收.groma` 选中“标题”，点“居中对齐”、行高改 1.6、开斜体；画布文字居中并变斜，检查器三个控件同步为选中态；保存重开后样式仍在。
+- UI：`shots/text-style-1440.png` 1440×900 三项控件与画布效果；`shots/text-style-1040.png` 1040×680 紧凑右栏，字号/字重/对齐/行高/斜体不裁切，填充与描边在滚动区下方。
+- 回归：`editor.test.ts` 从 24 条增至 25 条；完整套件 100 条全绿。
+
+**边界**
+
+- 字体族、字距、段前段后、列表、富文本区间样式、路径文字、链接仍未做；一个文本节点仍只有一种样式。
+- 文本对齐是节点内对齐，不改变节点 X/Y；行高影响多行间距，不自动撑高节点。
+- 1040×680 右栏仍需滚动才能看到填充/描边/外观，这是面板内容多于窗口高度的既有边界，不是本轮新增裁切。
+
+## C02 直线工具（2026-11-24 14:00）
+
+**为什么做**
+
+矩阵 C02 的基础形状里，Frame/矩形/椭圆/文字已经有入口，直线还缺。路径渲染、SVG 导出、描边检查器都已存在，先补直线比新造多边形/星形风险小，也能把“拖一下就有一条线”这条高频动作补上。
+
+**改法**
+
+- `Tool` 增加 `line`，顶栏在椭圆后加入斜线图标，`L` 快捷键等价；画布拖动时显示黄线预览，松手回到选择工具。
+- `addNode` 增加 `path` 输入：写 `pathData / pathW / pathH / strokes`，默认 `fills: []`、`#221C00` 2px 尖角描边，默认图层名“直线 N”。
+- 新增 `src/core/line.ts`：把拖拽起止点归一到包围盒，生成局部 `M…L…`；右下/左上方向都落在 `x/y/w/h` 内，水平/垂直保持 1px 厚度；距离小于 3px 时兜底 120×80。
+- 复用现有 path 渲染与 SVG 导出，不新增第二套直线图元；选中后可移动、角点缩放、改描边。
+
+**验证**
+
+- `npm run gate` PASS：21 个测试文件 / 115 条测试；前端 `index-DvX03g4F.css` 57.86 kB、`index-FHX0-PY9.js` 410.50 kB；MCP selftest 通过；EXE 3,278 KB，2026-11-24 14:00:25。
+- 新增 `line.test.ts` 4 条：右下、左上、水平/垂直、单击兜底；`editor.test.ts` 再增 1 条 path 落盘、默认无填充与 2px 描边、撤销删除。
+- 真实 EXE：在 `line-final.groma` 的 `桌面 1440` 内从画布拖出 `直线 1`，检查器显示 W=612.19 / H=496.68；保存后 `scene.json` 写入 `pathData:"M 0 0 L 612.19 496.68"`、`fills:[]`、2px 描边；关闭重开直线恢复。
+- UI：`shots/line-final-1440.png` 拖动创建后的画布、图层树与检查器；`shots/line-final-reopen-1440.png` 保存重开；`shots/line-final-1280.png` 1280×800 顶栏与画布；`shots/line-final-1040.png` 1040×680 顶栏直线入口仍可见，无横向溢出。逐张自检，直线预览不残留，选中框与线端一致。
+
+**边界**
+
+- 直线只有两个端点，没有锚点编辑、箭头端点或直线专属虚线/端帽控件；检查器仍走通用描边。
+- 多边形、星形、三角形、箭头、Slice 未做，C02 仍是部分完成。
+- 1040×680 画布本身会被左右栏夹窄，这是既有三栏布局边界，不是本轮新增裁切。
+
+## C02 多边形 / 星形与侧边栏交界修正（2026-11-24 19:11）
+
+**为什么做**
+
+直线落地后，C02 还缺多边形和星形；同时用户指出第一张截图左栏“浅色和下面颜色交界”处疑似溢出。DOM 几何审计没有发现左栏子元素越界，问题更可能是图层滚动内容/浮层阴影在 footer 透明背景上渗出；同轮还发现根级 path 被误计入“画板”数量。
+
+**改法**
+
+- 新增 `src/core/shapes.ts`：`polygonPath / starPath / shapePath`；边数/角数 3–12，星形内径 0.1–0.9、默认 0.38，闭合路径，首顶点在正上方。
+- `SceneNode` 增加 `shapeKind / shapeSides / shapeInnerRatio`，`schema.ts` 做范围校验；`addNode` 的 path 分支接收形状参数，path 仅在传入 `fill` 时生成默认填充。
+- 画布新增多边形/星形拖建，顶栏图标在直线后，快捷键 `G` / `Y`；松手生成 5 边/5 角，尺寸过小兜底 120×120。
+- 检查器新增“形状”段：多边形显示边数，星形显示角数与内径%；`setShapeParams` 按当前 W/H 重算路径并只记一条撤销。
+- 左栏与右栏加 `overflow:hidden`；`.panel-foot` 改为实底 `var(--bg-app)`、`position:relative`、`z-index:1`，把滚动内容与浮层阴影挡在 footer 上方。
+- 页行计数与底栏“画板”改为只统计 `type==='frame'` 的根子节点，避免画板外创建的 path 被算成画板。
+- 画布底部提示 `.canvas-tip` 加单行省略与最大宽度，1040 不再换成两行盖住画布。
+
+**验证**
+
+- `npm run gate` PASS：22 个测试文件 / 124 条测试；MCP selftest 通过；前端 `index-DId1aIH6.css` 58.03 kB、`index-CQbD3jSw.js` 415.12 kB；EXE 3,279 KB，2026-11-24 19:16:02。
+- 回归：`shapes.test.ts` 4 条、`schema.test.ts` 1 条越界校验、`svg.test.ts` 1 条两形状闭合路径导出、`editor.test.ts` 1 条参数化落盘/默认填充/改边数撤销。
+- 真实 EXE：`shape-final.groma` 在 `桌面 1440` 内拖出五边形与五角星，检查器改八边形/内径 55%，保存后 `scene.json` 两节点都挂在 `frame-1`，`shapeSides:8`、`shapeInnerRatio:0.55`、`fills:#D9D9D9`、`strokes:[]`；重开八边形与五角星恢复。
+- 截图：`shots/shapes-1440.png` 绘制与参数修改后的画布/图层树/星形检查器；`shots/shapes-reopen-1440.png` 保存重开；`shots/shapes-final-1440.png` / `shapes-final-1280.png` 两档完整窗口；`shots/shapes-1040-inspector.png` 1040×680 星形检查器。逐张自检：左栏底栏与状态栏交界为单条实线、无颜色渗出，页行与底栏都显示 `1 个画板`，8 个图层统计正确；1040 提示条单行省略，未盖住画布主体。
+
+**边界**
+
+- 多边形/星形没有独立旋转角、圆角或描边快捷控件，仍走通用填充/描边检查器；三角形只能用多边形 3 边生成，没有独立图标。
+- 箭头、Slice、钢笔锚点编辑未做，C02 仍未完成；1040 三栏画布会被夹窄，是既有布局边界，不是本轮新裁切。
+
+## C02 箭头工具与紧凑顶栏重排（2026-11-24 20:07）
+
+**为什么做**
+
+C02 形状还缺箭头。路径渲染、描边检查器和 SVG 导出都成熟，补箭头只用线身 + 单色三角头即可，不必新造第二套矢量模型。加入第 11 个工具入口后，1040 窗口的中央工具条会压到左侧文件名，因此同轮重排紧凑顶栏。
+
+**改法**
+
+- 新增 `src/core/arrow.ts`：把拖拽起止点转成线身 `pathData` 与三角头 `arrowHeadData`；头长 8–24 随线长变化，两翼一起算进包围盒，保证选中框包住箭头。
+- `SceneNode` 增加 `arrowHeadData`，`shapeKind` 扩展 `arrow`；`schema.ts` 校验箭头头部路径非空。
+- `Tool` 增加 `arrow`，顶栏在直线后加入箭头图标，`A` 快捷键；拖动显示线预览，松手生成“箭头 N”，默认 `#221C00` 2px 描边、无填充。
+- 画布 `drawVectorPath` 在线身描边后用描边色填充三角头；SVG 输出第二条 `<path>`，颜色/透明度跟随描边。
+- 检查器对箭头不显示“边数/角数”，`setShapeParams` 拒绝箭头，避免把三角头改成多边形路径。
+- 紧凑顶栏：`@media (max-width: 900px)` 下文件名宽度从 180px 收到 120px、左侧间距 6→4px；1040 下文件名省略，工具条与撤销/缩放区不再重叠。
+
+**验证**
+
+- `npm run gate` PASS：23 个测试文件 / 131 条测试；MCP selftest 通过；前端 `index-D5Mcvg9K.css` 58.03 kB、`index-SzBigaRI.js` 417.06 kB；EXE 3,280 KB，2026-11-24 20:07:18。
+- 回归：`arrow.test.ts` 4 条（水平包围盒、斜向尖端重合、单击兜底、头长夹取），`schema.test.ts` +1 条箭头头部校验，`svg.test.ts` +1 条箭头双 path 导出，`editor.test.ts` +1 条箭头落盘/默认描边/拒绝改边数。
+- 真实 EXE：`arrow-final.groma` 在 `桌面 1440` 内拖出斜向与近水平两支箭头，`scene.json` 均为 `frame-1` 子节点，`pathData` 是两点线身、`arrowHeadData` 是闭合三角、`fills:[]`、2px `#221C00` 描边；保存重开后方向与头部完整。
+- UI：`shots/arrow-final-1440.png` 两支箭头、箭头 2 检查器与顶栏箭头入口；`shots/arrow-reopen-1440.png` 保存重开；`shots/arrow-final-1280.png` 1280×800；`shots/arrow-1040.png` 1040×680，文件名省略、工具条不重叠。逐张自检，三角头随描边色，选中框包住头部，无横向溢出。
+
+**边界**
+
+- 箭头是直线段 + 单色三角头，不支持曲线箭头、双头箭头、端点样式（空心/菱形）或箭头大小单独控制；箭头仍走通用描边检查器。
+- 1040 画布仍被左右栏夹窄，页面只显示局部；这是三栏布局既有边界。
+- C02 只剩 Slice；三角形继续用多边形 3 边生成。
+
+## C02 Slice 切片导出与紧凑顶栏收口（2026-11-24 20:57）
+
+**为什么做**
+
+C02 最后一项是 Slice。Groma 已有完整的 PNG/JPG/SVG 导出链路，切片只需作为“导出区域标注”存在：不引入第二套渲染模型，导出时按矩形重绘并裁切。加入第 12 个顶栏入口后，1040 下工具分组竖线仍占宽，文件名被挤成 `Grom`，同轮收口。
+
+**改法**
+
+- `NodeType / Tool` 增加 `slice`；顶栏在星形与文本之间加虚线切片图标，`K` 快捷键。拖出的切片挂到最深画板，名称“切片 N”，`fills:[]`、`children:[]`、不裁剪，宽或高不足兜底 `160×120`，不进入画板计数。
+- 画布 `drawSlice`：青色虚线框、极淡青底、左上角白底标签；用专用 `exporting` 标志控制，编辑器常态始终显示，导出时隐藏。最初用 `interactive` 判断，真实截图发现松手后虚线消失，已改掉。
+- 导出：新增 `pageRootOf / renderSliceRaster / Png / Jpg / Svg`。位图从页面根重绘，画布平移到切片零点并按矩形裁切；SVG 以切片尺寸建 `width/height` 与 `viewBox`，套独立 `groma-slice-export` clipPath；切片自身不输出。普通画板、区块导出与缩略图同样隐藏切片标注。
+- 检查器：切片类型标签、`SliceInspector`，提供 X/Y/W/H 与“导出区域”说明；页面检查器改用 `countArtboards`，根级切片不会被算成画板。
+- 导出弹窗：选中切片作为独立目标，页面批量目标接受顶层切片；文案补切片，SVG 摘要显示 `1× · 527 × 497`。
+- 紧凑顶栏：`@media (max-width: 900px)` 隐藏 `.tool-sep`，把宽度还给文件名；1040 下 12 个入口完整、标题恢复为 `Groma`、无重叠。
+
+**修掉的真实缺陷**
+
+- 切片虚线只在拖拽时出现：`interactive=false` 时被跳过，改为只在 `exporting` 时跳过。
+- SVG 居中文本左移出画：父级 `x` 虽已按文本框中心计算，但每行 `<tspan>` 仍写旧左边界，覆盖父级锚点；改为 `tspan` 同步使用 `textX`，测试补 `tspan x="70"` 断言。
+- 打开工程误传完整路径：`--open` 只接受工程 id，改传 `slice-final`；重开时画板图层默认折叠，CDP 选择切片前先展开 `.layer-caret`。
+
+**验证**
+
+- `npm run gate` PASS：23 个测试文件 / 135 条测试；MCP selftest 通过；前端 `index-CPsLA2Dx.css` 58.03 kB、`index-BTAErJ2y.js` 422.13 kB；EXE 3,281 KB，2026-11-24 20:57:07。
+- 真实 EXE：`slice-final.groma` 中 `slice-mwuomxf8-1` 为 X443/Y182/527×497，保存重开虚线、标签、检查器恢复，状态栏仍“1 个画板”。
+- 导出实测：PNG `切片 1@1x.png` 527×497 / 14,235 B，无虚线无标签；SVG `切片 1.svg` 1,278 B、`viewBox="0 0 527 497"`，Edge headless 渲染与 PNG 的卡片右缘、墨色圆、标题尾“oma”、副标题残段、横条一致。
+- UI：`shots/slice-reopen-1440.png`、`slice-export-dialog-1440.png`、`slice-final-export-1440.png`、`slice-compact-1040.png`；逐张自检，1440 顶栏 12 入口与文件名不互压，1040 标题完整，右栏切片字段完整。
+
+**边界**
+
+- 切片只支持单个矩形；批量切片网格、嵌套切片全部参与本页批量导出未做。
+- 1040×680 三栏画布仍偏窄，切片右侧会被右栏遮住，需平移查看；这是既有布局边界。
+
+## C03 钢笔/矢量路径一期与单图层导出（2026-11-24 21:42）
+
+**为什么做**
+
+Figma 能力矩阵里 C03 仍写着“渲染器尚无矢量节点”，但组件、图标、布尔、蒙版都压在矢量对象模型上。这一刀只做一条能验收的钢笔链路：入口 → 放锚点/拖手柄 → 闭合或收尾 → 真实 path 节点 → 保存重开 → 导出；锚点增删、分支路径明确留到下一刀。
+
+**改法**
+
+- 新增 `src/core/pen.ts`：`PenAnchor` 用世界坐标，`PathAnchor` 用节点局部坐标；相邻锚点任一有手柄时输出三次贝塞尔 `C`，否则 `L`，闭合补末段并加 `Z`；`penGeometry` 把手柄计入包围盒，输出节点 `x/y/w/h`、`pathData`、`pathW/H`、局部锚点与 `closed`；少于 2 锚点无效，闭合不足 3 锚点降级为开放。
+- `SceneNode` 加 `pathAnchors/pathClosed`；schema 校验至少 2 锚点、六个字段有限数字、`pathClosed` 布尔。钢笔节点继续是 `type:'path'`，靠 `pathAnchors` 判定，旧直线/箭头/多边形不受影响。
+- `Tool` 加 `pen`；`P` 快捷键；顶栏在星形与切片之间加钢笔图标；左栏与右栏类型统一为“钢笔”，检查器显示锚点数与开放/闭合。
+- 画布钢笔会话：首击定父画板，之后点击加锚点、拖动生成对称手柄；点首点（≥3 锚点、≤8px）闭合；靠近末锚点 420ms 内再按视为双击收尾；`Enter/Escape` 捕获阶段收尾；切工具自动收尾。收尾后选中新节点并切回移动工具。闭合默认浅灰填充无描边，开放默认墨色 2px 描边。
+- `pen-overlay` SVG：品牌黄虚线预览、白底锚点、首锚实心黄、灰手柄线与圆点；选中钢笔且工具为钢笔时显示；节点缩放按 `w/pathW`、`h/pathH` 映射锚点。
+- 单图层导出：新增 `renderNodePng / renderNodeSvg`，选中任意非页面图层时以自身包围盒为零点；`ExportDialog` 的 `pickTarget` 不再把钢笔/形状上溯到父画板，标题显示“图层 · 钢笔 1”。画板/区块/切片继续走原专用导出。
+- 紧凑顶栏：13 个工具入口在 1440 物理窗口（CSS viewport 946、DPR 1.5）把工程名压到工具条下；把紧凑规则从 `max-width:900px` 上移到 `1180px`，工具 28→23px、隐藏 `.tool-sep`、隐藏导入/版本文字、工程名 `min-width:0`。修复后 `.topbar-left` 右界 294 与 `.topbar-tools` 左界 294 对齐，工程名 x101–221 完整。
+
+**修掉的真实缺陷**
+
+- 顶栏第 13 个入口压字：CSS viewport 946 下 `1fr auto 1fr` 的中心列涨到 470，左栏只剩 120；断点上移后复测无重叠。
+- 选中钢笔导出仍导出父画板：弹窗最初显示“画板 · 桌面 1440”，实际导出 1440×900 整图；补 `renderNodePng/Svg` 与通用 `pickTarget` 后，弹窗变为“图层 · 钢笔 1”、377×427。
+
+**验证**
+
+- `npm run gate` PASS：24 个测试文件 / 142 条测试；MCP selftest 通过；前端 `index-CH1qqibQ.css` 58.40 kB、`index-DLuSIfC-.js` 430.08 kB；EXE 3,283 KB，2026-11-24 21:42:32。
+- 新增 `pen.test.ts` 4 条；`schema.test.ts` 15 条（+1 锚点校验）；`editor.test.ts` 30 条（+1 钢笔落盘/撤销）；`svg.test.ts` 9 条（+1 单图层钢笔 SVG 零点）。
+- 真实 EXE：`pen-final.groma` 在 `桌面 1440` 画出 `钢笔 1`（闭合、5 锚点、`#D9D9D9` 填充、无描边、377.33×427.38）与 `钢笔 2`（开放、4 锚点、无填充、2px 墨色描边、296.47×369.63）；保存重开后图层、锚点叠层与检查器均恢复。
+- 导出实测：`钢笔 1@1x.png` 377×427 白底位图；`钢笔 1.svg` 471 B、`viewBox="0 0 377.33 427.38"`，Edge 渲染与 PNG 轮廓一致；开放路径 `钢笔 2@1x.png` 296×370，仅开放线身。
+- UI：`shots/pen-create-1440.png`（两条路径、选中钢笔、5 个锚点/10 个手柄点、检查器闭合）、`pen-reopen-1440.png`（重开）、`pen-reopen-1280.png` / `pen-reopen-1040.png`（紧凑窗口 13 入口无重叠）、`pen-export-dialog-1440.png`（图层目标 377×427）、`pen-export-png-1440.png`（PNG Toast）、`pen-export-open-1440.png`（开放路径导出）、`topbar-pen-probe2.png`（修复后顶栏）。
+
+**边界**
+
+- 一期当时边界：锚点只读展示，不能拖手柄改形、增删锚点或拆分路径；只做单条连续路径，分支/多路径矢量网络未做。锚点编辑在下一节补齐。
+- 钢笔工具默认填充/描边暂不记忆；1040×680 下工程名省略为“钢…”，画布仍被三栏夹窄。
+- 未做 JPG 钢笔导出与 2× 钢笔导出复验；未做透明背景钢笔导出截图。
+
+## C03 钢笔锚点编辑与全屏最大化验收（2026-11-24 22:28）
+
+**为什么做**
+
+钢笔一期能画能存，但锚点只是只读标记，画错了只能删整条路径重画，不算可用的矢量编辑。这一刀把锚点补成可编辑：拖锚点改形、拖手柄调曲线、在线段上加点、选中后 `Delete` 删点；同时按用户要求改验收口径，生产力软件必须铺满屏幕再截图，不再用小窗口判断 UI。
+
+**改法**
+
+- 新增 `nearestOnPenPath`：直线段投影，贝塞尔段 32 段采样，返回最近段、`t`、落点与距离；`insertPenAnchor` 用 De Casteljau 在 `t` 处切分并改写两端手柄，插点不改变原曲线形状；直线段插无手柄角点；`removePenAnchor` 少于 2 锚点拒绝删除；`pathAnchorsToWorld` 按 `w/pathW`、`h/pathH` 还原缩放后的世界坐标。
+- `editor.setPathAnchors(id, anchors, closed, silent)` 统一重算几何、节点包围盒与 `pathData`。拖动中用 `silent` 连续写、`beginTransaction/endTransaction` 合成一条撤销；插点/删点各写一条历史。
+- `CanvasView`：钢笔工具下选中钢笔时，距锚点 ≤7px、手柄 ≤6px 进入编辑；拖锚点整点连同 in/out 手柄平移；拖手柄默认对称、`Alt` 只改单边；点路径段 ≤6px 插点并选中；`Delete/Backspace` 删选中锚点；`Escape` 只清锚点选择。选中锚点加深色描边，底部提示改为“拖动锚点/手柄改形 · 点线段加点 · Delete 删锚点”。
+- `tools/shot.ps1` 增加 `-Maximized`：启动后 `ShowWindow(hwnd, 3)` 铺满工作区，等 900ms 再截图；不再手工改 1440×900。
+
+**验证**
+
+- 局部：`pen.test.ts` 7 条、`editor.test.ts` 31 条通过；新增事务断言确认两次静默更新只回退一步。
+- 完整 `npm run gate` PASS：24 个测试文件 / 146 条测试；MCP selftest 通过；前端 `index-D--MXBsj.css` 58.48 kB、`index-C_v_y0DE.js` 436.22 kB；EXE 3,284 KB，2026-11-24 22:28:12。
+- 真实 EXE（最大化 1707×1019）：`pen-edit.groma` 选中 `钢笔 1`、缩放到 100%；拖动第 3 个锚点后 W/H 从 377.33×427.38 变为 473.33×438.75；拖手柄继续改形；点线段插点，锚点 5→6，`Delete` 后 6→5；保存后 `scene.json` 仍为闭合 5 锚点，重开锚点叠层、检查器与改写后的 `pathData` 全部恢复。
+- `Alt` 单边手柄：`pen-alt.groma` 按住 `Alt` 拖 out 手柄，`out` 377.33,296.47→431.33,264.47，`in` 保持 377.33,219.47，W 377.33→431.33；保存重开保持。
+- UI：最大化后顶栏 `.topbar-left` 右界 619 = `.topbar-tools` 左界 619，工程名完整，13 个工具入口无重叠；三栏比例舒展、画布占主要宽度，锚点/手柄不挤。截图 `shots/pen-edit-max.png`、`shots/pen-edit-reopen-max.png`、`shots/pen-alt-max.png` 均为全屏工作区（CSS 1707×1019、物理 2582×1550），不再保留旧的小窗口验收口径。
+
+**边界**
+
+- 仍是单条连续路径；分支路径、多路径 Vector Network 未做。
+- 锚点最少 2 个；手柄默认对称、`Alt` 单边，独立断开手柄状态未做。
+- 插点按 32 段采样，极限放大时落点精度可能差一个采样步长；缩放后编辑把 `w/pathW` 重置为 1 的视觉跳动尚未专项压测。
 
 

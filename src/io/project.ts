@@ -49,6 +49,27 @@ export async function loadProject(id: string): Promise<GromaDoc> {
   return deserializeDoc(text);
 }
 
+export interface AssetFileInfo {
+  file: string;
+  mime: string;
+  bytes: number;
+}
+
+export async function writeAsset(
+  id: string,
+  fileName: string,
+  mime: string,
+  dataBase64: string,
+): Promise<AssetFileInfo> {
+  if (!isDesktop()) throw new Error('当前不在桌面端，无法写入图片资产');
+  return invoke<AssetFileInfo>('groma_write_asset', { id, fileName, mime, dataBase64 });
+}
+
+export async function readAsset(id: string, file: string): Promise<string> {
+  if (!isDesktop()) throw new Error('当前不在桌面端，无法读取图片资产');
+  return invoke<string>('groma_read_asset', { id, file });
+}
+
 export type ExportFormat = 'png' | 'jpg' | 'svg';
 
 export async function exportFile(

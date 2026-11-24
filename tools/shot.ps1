@@ -19,8 +19,11 @@ param(
   [int]$PostWaitMs = 900,
   [int]$WinWidth = 0,
   [int]$WinHeight = 0,
+  [switch]$Maximized,
   [string]$CdpScript = "",
   [int]$CdpPort = 0,
+  [string]$CaptureProcess = "",
+  [string]$CaptureOut = "",
   [switch]$NoDesktop
 )
 
@@ -67,6 +70,7 @@ public class GromaShot {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder sb, int max);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int h2, uint flags);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
@@ -104,6 +108,21 @@ public class GromaShot {
         StringBuilder sb = new StringBuilder(256);
         GetWindowText(h, sb, 256);
         if (sb.ToString().Contains("Groma")) { found = h; return false; }
+      }
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
+
+  public static IntPtr FindDesktopProcessWindow(IntPtr desktop, uint pid) {
+    IntPtr found = IntPtr.Zero;
+    EnumDesktopWindows(desktop, delegate(IntPtr h, IntPtr lp) {
+      uint p;
+      GetWindowThreadProcessId(h, out p);
+      if (p == pid && IsWindowVisible(h)) {
+        StringBuilder sb = new StringBuilder(256);
+        GetWindowText(h, sb, 256);
+        if (sb.Length > 0) { found = h; return false; }
       }
       return true;
     }, IntPtr.Zero);
@@ -309,7 +328,7 @@ function Send-Chord([IntPtr]$Target, [string]$Text) {
 Get-Process groma -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 200
 if ($CdpPort -gt 0) {
-  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$CdpPort"
+  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$CdpPort --remote-allow-origins=*"
 }
 
 $desktop = [IntPtr]::Zero
@@ -350,7 +369,10 @@ try {
 
   if ($hwnd -eq [IntPtr]::Zero) { throw "Groma 窗口没有出现" }
 
-  if ($WinWidth -gt 0 -and $WinHeight -gt 0) {
+  if ($Maximized) {
+    [GromaShot]::ShowWindow($hwnd, 3) | Out-Null
+    Start-Sleep -Milliseconds 900
+  } elseif ($WinWidth -gt 0 -and $WinHeight -gt 0) {
     # 只改尺寸，不移动窗口；NOMOVE(0x0002) + NOZORDER(0x0004)
     [GromaShot]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, $WinWidth, $WinHeight, 0x0006) | Out-Null
     Start-Sleep -Milliseconds 500
@@ -449,6 +471,25 @@ try {
     }
   }
   "saved $Out hwnd=$hwnd virtualDesktop=$($desktop -ne [IntPtr]::Zero) printWindow=$ok"
+
+  if ($CaptureProcess -and $CaptureOut) {
+    $targetProc = Get-Process $CaptureProcess -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
+    if (-not $targetProc) {
+      "extra skipped: $CaptureProcess 没有进程"
+    } else {
+      $extraHwnd = if ($desktop -ne [IntPtr]::Zero) {
+        [GromaShot]::FindDesktopProcessWindow($desktop, [uint32]$targetProc.Id)
+      } else {
+        $targetProc.MainWindowHandle
+      }
+      if ($extraHwnd -eq [IntPtr]::Zero) {
+        "extra skipped: $CaptureProcess 没有可见窗口 pid=$($targetProc.Id)"
+      } else {
+        $extraOk = Capture-Window $extraHwnd $CaptureOut
+        "extra saved $CaptureOut hwnd=$extraHwnd pid=$($targetProc.Id) printWindow=$extraOk"
+      }
+    }
+  }
 }
 finally {
   if ($proc) { try { $proc | Stop-Process -Force } catch {} }

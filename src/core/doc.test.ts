@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { childrenOf, createDoc } from './doc';
+import { childrenOf, countArtboards, createDoc } from './doc';
 
 describe('createDoc', () => {
   it('新建工程包含一页、一个根节点和一个 1440×900 画板', () => {
@@ -36,6 +36,44 @@ describe('createDoc', () => {
     const frame = doc.nodes[page.rootId].children.map((id) => doc.nodes[id])[0];
     expect(frame.w).toBe(1);
     expect(frame.h).toBe(16384);
+  });
+
+  it('画板计数穿透区块但忽略根级路径', () => {
+    const doc = createDoc();
+    const page = doc.pages[0];
+    const root = doc.nodes[page.rootId];
+    const frame = doc.nodes[root.children[0]];
+    const section = {
+      ...frame,
+      id: 'section-x',
+      type: 'section' as const,
+      parentId: root.id,
+      children: [frame.id],
+      fills: [],
+      clipContent: false,
+    };
+    const path = {
+      ...frame,
+      id: 'path-x',
+      type: 'path' as const,
+      parentId: root.id,
+      children: [],
+      pathData: 'M 0 0 L 20 20',
+    };
+    const slice = {
+      ...frame,
+      id: 'slice-x',
+      type: 'slice' as const,
+      parentId: root.id,
+      children: [],
+      fills: [],
+    };
+    frame.parentId = section.id;
+    doc.nodes[section.id] = section;
+    doc.nodes[path.id] = path;
+    doc.nodes[slice.id] = slice;
+    root.children = [section.id, path.id, slice.id];
+    expect(countArtboards(doc, root.id)).toBe(1);
   });
 
   it('每个节点 id 唯一且 children 与 parentId 对应', () => {

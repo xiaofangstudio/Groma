@@ -159,6 +159,76 @@ export function IconEllipse(props: IconProps) {
   );
 }
 
+export function IconLine(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3 13L13 3" />
+    </svg>
+  );
+}
+
+export function IconArrow(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3 13L13 3M13 3H8.6M13 3V7.4" />
+    </svg>
+  );
+}
+
+export function IconPolygon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M8 2.2L13.6 5.4L12.2 11.9L3.8 11.9L2.4 5.4Z" />
+    </svg>
+  );
+}
+
+export function IconStar(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M8 2.1L9.7 6.1L14 6.5L10.8 9.4L11.8 13.7L8 11.5L4.2 13.7L5.2 9.4L2 6.5L6.3 6.1Z" />
+    </svg>
+  );
+}
+
+export function IconSlice(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="2.4" y="3.4" width="11.2" height="9.2" rx="1" strokeDasharray="3 2" />
+      <path d="M5.2 10.8 10.8 5.2" />
+    </svg>
+  );
+}
+
+export function IconImage(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="2.5" y="3.5" width="11" height="9" rx="1.2" />
+      <circle cx="5.6" cy="6.4" r="1.1" />
+      <path d="M3.2 11.2l3.1-3 2.3 2.2 1.8-1.7 2.4 2.5" />
+    </svg>
+  );
+}
+
+export function IconPath(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M2.5 11.5c2.2-6.4 4.2 2.2 6.2-2.6 1.4-3.4 3.2 3.4 4.8 1.4" />
+      <circle cx="2.7" cy="11.5" r="1.1" />
+      <circle cx="13.5" cy="10.3" r="1.1" />
+    </svg>
+  );
+}
+
+export function IconPen(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M2.8 13.2 4.2 8.5 10.5 2.2 13.8 5.5 7.5 11.8Z" />
+      <path d="M4.2 8.5 7.5 11.8" />
+    </svg>
+  );
+}
+
 export function IconText(props: IconProps) {
   return (
     <svg {...base(props)}>
@@ -205,6 +275,14 @@ export function IconExternal(props: IconProps) {
   return (
     <svg {...base(props)}>
       <path d="M6.5 3H3v10h10v-3.5M9.5 3h3.5v3.5M13 3 7.5 8.5" />
+    </svg>
+  );
+}
+
+export function IconImport(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M8 3v7.5M5.4 7.7 8 10.3l2.6-2.6M3 12.2v1.3h10v-1.3" />
     </svg>
   );
 }

@@ -19,6 +19,7 @@ function baseNode(partial: Partial<SceneNode> & Pick<SceneNode, 'id' | 'type' | 
     locked: false,
     clipContent: false,
     fills: [],
+    strokes: [],
     cornerRadius: 0,
     ...partial,
   };
@@ -38,6 +39,7 @@ export function createDoc(
   width = 1440,
   height = 900,
   frameName?: string,
+  withFrame = true,
 ): GromaDoc {
   const pageId = nid('page');
   const rootId = nid('root');
@@ -52,7 +54,7 @@ export function createDoc(
     name: '页面 1',
     parentId: null,
   });
-  root.children = [frameId];
+  root.children = withFrame ? [frameId] : [];
 
   const frame = baseNode({
     id: frameId,
@@ -69,7 +71,8 @@ export function createDoc(
     version: 1,
     name,
     pages: [{ id: pageId, name: '页面 1', rootId, background: '#E9E8E4' }],
-    nodes: { [rootId]: root, [frameId]: frame },
+    nodes: withFrame ? { [rootId]: root, [frameId]: frame } : { [rootId]: root },
+    assets: {},
   };
 }
 
@@ -77,4 +80,14 @@ export function childrenOf(doc: GromaDoc, parentId: string): SceneNode[] {
   const parent = doc.nodes[parentId];
   if (!parent) return [];
   return parent.children.map((id) => doc.nodes[id]).filter(Boolean);
+}
+
+export function countArtboards(doc: GromaDoc, rootId: string): number {
+  const walk = (id: string): number => {
+    const node = doc.nodes[id];
+    if (!node) return 0;
+    if (node.type === 'frame') return 1;
+    return node.children.reduce((total, childId) => total + walk(childId), 0);
+  };
+  return walk(rootId);
 }

@@ -4,7 +4,11 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -436,16 +440,342 @@ fn groma_export_file(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LaunchInfo {
-    mode: String,
-    project_id: Option<String>,
+struct AssetFileInfo {
+    file: String,
+    mime: String,
+    bytes: u64,
+}
+
+fn asset_extension(mime: &str) -> Result<&'static str, String> {
+    match mime {
+        "image/png" => Ok("png"),
+        "image/jpeg" => Ok("jpg"),
+        "image/webp" => Ok("webp"),
+        _ => Err("只支持 PNG / JPG / WebP 图片".to_string()),
+    }
+}
+
+fn asset_mime(ext: &str) -> Result<&'static str, String> {
+    match ext {
+        "png" => Ok("image/png"),
+        "jpg" | "jpeg" => Ok("image/jpeg"),
+        "webp" => Ok("image/webp"),
+        _ => Err("不支持的图片扩展名".to_string()),
+    }
+}
+
+fn asset_path(dir: &Path, file: &str) -> Result<PathBuf, String> {
+    if file.contains("..") || file.contains('\\') || file.contains(':') {
+        return Err("非法的资产路径".to_string());
+    }
+    let rel = Path::new(file);
+    let mut parts = rel.components();
+    let first = parts.next();
+    let second = parts.next();
+    let third = parts.next();
+    if !matches!(first, Some(std::path::Component::Normal(value)) if value == std::ffi::OsStr::new("assets"))
+        || !matches!(second, Some(std::path::Component::Normal(_)))
+        || third.is_some()
+    {
+        return Err("资产路径必须是 assets/文件名".to_string());
+    }
+    Ok(dir.join(rel))
 }
 
 #[tauri::command]
-fn launch_mode() -> LaunchInfo {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn groma_write_asset(
+    id: String,
+    file_name: String,
+    mime: String,
+    data_base64: String,
+) -> Result<AssetFileInfo, String> {
+    let dir = project_dir(&id)?;
+    if !dir.exists() {
+        return Err("工程不存在".to_string());
+    }
+    let ext = asset_extension(&mime)?;
+    let encoded = data_base64
+        .rsplit_once(',')
+        .map(|(_, value)| value)
+        .unwrap_or(&data_base64);
+    if encoded.len() > 90_000_000 {
+        return Err("图片超过 64MB".to_string());
+    }
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|error| format!("图片数据损坏：{error}"))?;
+    if bytes.len() > 64_000_000 {
+        return Err("图片超过 64MB".to_string());
+    }
+    let magic_ok = match mime.as_str() {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(b"\xFF\xD8\xFF"),
+        "image/webp" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        _ => false,
+    };
+    if !magic_ok {
+        return Err("图片内容与声明格式不一致".to_string());
+    }
+
+    let assets = dir.join("assets");
+    fs::create_dir_all(&assets).map_err(|error| format!("无法创建图片目录：{error}"))?;
+    let raw_name = Path::new(&file_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("图片");
+    let base = sanitize_name(raw_name);
+    let mut name = format!("{base}.{ext}");
+    let mut index = 2;
+    while assets.join(&name).exists() {
+        name = format!("{base}-{index}.{ext}");
+        index += 1;
+    }
+    let path = assets.join(&name);
+    fs::write(&path, &bytes).map_err(|error| format!("写入图片失败：{error}"))?;
+    Ok(AssetFileInfo {
+        file: format!("assets/{name}"),
+        mime,
+        bytes: bytes.len() as u64,
+    })
+}
+
+#[tauri::command]
+fn groma_read_asset(id: String, file: String) -> Result<String, String> {
+    let dir = project_dir(&id)?;
+    if !dir.exists() {
+        return Err("工程不存在".to_string());
+    }
+    let path = asset_path(&dir, &file)?;
+    if !path.exists() {
+        return Err(format!("图片资产不存在：{file}"));
+    }
+    let bytes = fs::read(&path).map_err(|error| format!("读取图片失败：{error}"))?;
+    if bytes.len() > 64_000_000 {
+        return Err("图片超过 64MB".to_string());
+    }
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mime = asset_mime(&ext)?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        STANDARD.encode(bytes)
+    ))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffInfo {
+    target: String,
+    exe: String,
+    file: String,
+}
+
+struct HandoffSpec {
+    label: &'static str,
+    env_keys: &'static [&'static str],
+    rel_paths: &'static [&'static str],
+    bare_names: &'static [&'static str],
+}
+
+const STRATA_ENV: &[&str] = &["GROMA_STRATA_EXE", "STRATA_EXE"];
+const VEXA_ENV: &[&str] = &["GROMA_VEXA_EXE", "VEXA_EXE"];
+const STRATA_REL: &[&str] = &[
+    "Strata/Strata.exe",
+    "Strata/release/Strata.exe",
+    "Strata/src-tauri/target/release/strata.exe",
+    "Strata/src-tauri/target/release/Strata.exe",
+];
+const VEXA_REL: &[&str] = &[
+    "Vexa/release/Vexa.exe",
+    "Vexa/release/vexa.exe",
+    "Vexa/src-tauri/target/release/vexa.exe",
+    "Vexa/src-tauri/target/release/Vexa.exe",
+];
+const STRATA_NAMES: &[&str] = &["Strata.exe"];
+const VEXA_NAMES: &[&str] = &["Vexa.exe", "vexa.exe"];
+
+fn handoff_spec(target: &str) -> Result<HandoffSpec, String> {
+    match target.trim().to_ascii_lowercase().as_str() {
+        "strata" => Ok(HandoffSpec {
+            label: "Strata",
+            env_keys: STRATA_ENV,
+            rel_paths: STRATA_REL,
+            bare_names: STRATA_NAMES,
+        }),
+        "vexa" => Ok(HandoffSpec {
+            label: "Vexa",
+            env_keys: VEXA_ENV,
+            rel_paths: VEXA_REL,
+            bare_names: VEXA_NAMES,
+        }),
+        _ => Err("不支持的交接目标".to_string()),
+    }
+}
+
+fn find_handoff_exe(spec: &HandoffSpec) -> Result<PathBuf, String> {
+    for key in spec.env_keys {
+        if let Ok(raw) = std::env::var(key) {
+            let path = PathBuf::from(raw.trim().trim_matches('"'));
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(current) = std::env::current_exe() {
+        let mut dir = current.parent();
+        for _ in 0..8 {
+            let Some(base) = dir else { break };
+            for rel in spec.rel_paths {
+                candidates.push(base.join(rel));
+            }
+            for name in spec.bare_names {
+                candidates.push(base.join(name));
+            }
+            dir = base.parent();
+        }
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let programs = PathBuf::from(local).join("Programs");
+        for name in spec.bare_names {
+            candidates.push(programs.join(spec.label).join(name));
+        }
+    }
+    if let Ok(program_files) = std::env::var("PROGRAMFILES") {
+        let base = PathBuf::from(program_files);
+        for name in spec.bare_names {
+            candidates.push(base.join(spec.label).join(name));
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for name in spec.bare_names {
+                candidates.push(dir.join(name));
+            }
+        }
+    }
+
+    for path in candidates {
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err(format!(
+        "没找到 {}。请把 {} 指向发布版，或把 {} 放在 Groma 同级目录。",
+        spec.label, spec.env_keys[0], spec.label
+    ))
+}
+
+#[tauri::command]
+fn groma_open_in_app(target: String, file: String) -> Result<HandoffInfo, String> {
+    let spec = handoff_spec(&target)?;
+    let target_key = target.trim().to_ascii_lowercase();
+    let file_path = PathBuf::from(file.trim().trim_matches('"'));
+    if !file_path.is_file() {
+        return Err("导出文件不存在，无法交给外部应用".to_string());
+    }
+    let ext = file_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let allowed = match target_key.as_str() {
+        "strata" => matches!(ext.as_str(), "png" | "jpg" | "jpeg"),
+        "vexa" => ext == "svg",
+        _ => false,
+    };
+    if !allowed {
+        return Err(format!(
+            "{} 不能接收 .{}；PNG/JPG 交给 Strata，SVG 交给 Vexa。",
+            spec.label, ext
+        ));
+    }
+
+    let exe = find_handoff_exe(&spec)?;
+    let mut command = Command::new(&exe);
+    command.arg(&file_path);
+    if let Some(parent) = exe.parent() {
+        command.current_dir(parent);
+    }
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    command
+        .spawn()
+        .map_err(|e| format!("启动 {} 失败：{e}", spec.label))?;
+    Ok(HandoffInfo {
+        target: target_key,
+        exe: exe.to_string_lossy().to_string(),
+        file: file_path.to_string_lossy().to_string(),
+    })
+}
+
+/// 交接进来的图片：路径 -> 字节，前端据此构造 File 走既有 importImageAsset。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffImage {
+    name: String,
+    mime: String,
+    base64: String,
+    bytes: u64,
+}
+
+/// 读取外部软件（Strata）处理好后送来的图片。
+///
+/// 只认位图扩展名 + 48MB 上限，和前端 importImageAsset 的口径一致；
+/// 路径必须是真实文件，不能拿目录或工程包混进来。
+#[tauri::command]
+fn groma_read_handoff_image(path: String) -> Result<HandoffImage, String> {
+    let file = PathBuf::from(path.trim().trim_matches('"'));
+    if !file.is_file() {
+        return Err("交接图片不存在".to_string());
+    }
+    let ext = file
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return Err(format!("Groma 只接收 PNG / JPG / WebP，收到 .{ext}")),
+    };
+    let meta = fs::metadata(&file).map_err(|e| format!("读取图片属性失败：{e}"))?;
+    if meta.len() > 48_000_000 {
+        return Err("交接图片超过 48MB，请压缩后再送".to_string());
+    }
+    let bytes = fs::read(&file).map_err(|e| format!("读取交接图片失败：{e}"))?;
+    let size = bytes.len() as u64;
+    let name = file
+        .file_name()
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "交接图片.png".to_string());
+    Ok(HandoffImage {
+        name,
+        mime: mime.to_string(),
+        base64: STANDARD.encode(bytes),
+        bytes: size,
+    })
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct LaunchInfo {
+    mode: String,
+    project_id: Option<String>,
+    /** Strata 送来的图片路径，带 --import-image 时非空。 */
+    files: Vec<String>,
+}
+
+/// 纯解析：把命令行参数变成启动意图，便于单测钉死优先级与多图参数。
+fn parse_launch_args(args: &[String]) -> LaunchInfo {
     let mut project_id = None;
     let mut wants_new = false;
+    let mut files: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--new" || args[i] == "-n" {
@@ -453,10 +783,20 @@ fn launch_mode() -> LaunchInfo {
         } else if args[i] == "--open" {
             project_id = args.get(i + 1).cloned();
             i += 1;
+        } else if args[i] == "--import-image" || args[i] == "--import" {
+            // 支持重复参数送多张；空路径直接忽略，不让坏参数把启动流程带歪。
+            if let Some(path) = args.get(i + 1) {
+                if !path.trim().is_empty() {
+                    files.push(path.trim().trim_matches('"').to_string());
+                }
+                i += 1;
+            }
         }
         i += 1;
     }
-    let mode = if wants_new {
+    let mode = if !files.is_empty() {
+        "importImage"
+    } else if wants_new {
         "new"
     } else if project_id.is_some() {
         "open"
@@ -466,6 +806,56 @@ fn launch_mode() -> LaunchInfo {
     LaunchInfo {
         mode: mode.to_string(),
         project_id,
+        files,
+    }
+}
+
+#[tauri::command]
+fn launch_mode() -> LaunchInfo {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    parse_launch_args(&args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn import_image_wins_over_open_and_new() {
+        let info = parse_launch_args(&a(&[
+            "--new",
+            "--open",
+            "some-project",
+            "--import-image",
+            "C:\\tmp\\strata.png",
+        ]));
+        assert_eq!(info.mode, "importImage");
+        assert_eq!(info.files, vec!["C:\\tmp\\strata.png"]);
+    }
+
+    #[test]
+    fn repeated_import_flags_keep_order() {
+        let info = parse_launch_args(&a(&[
+            "--import",
+            "a.png",
+            "--import-image",
+            "b.webp",
+        ]));
+        assert_eq!(info.files, vec!["a.png", "b.webp"]);
+    }
+
+    #[test]
+    fn legacy_modes_still_work() {
+        assert_eq!(parse_launch_args(&a(&["--new"])).mode, "new");
+        let open = parse_launch_args(&a(&["--open", "abc"]));
+        assert_eq!(open.mode, "open");
+        assert_eq!(open.project_id.as_deref(), Some("abc"));
+        assert_eq!(parse_launch_args(&[]).mode, "welcome");
+        assert!(parse_launch_args(&[]).files.is_empty());
     }
 }
 
@@ -480,6 +870,10 @@ fn main() {
             groma_rename_project,
             groma_export_png,
             groma_export_file,
+            groma_write_asset,
+            groma_read_asset,
+            groma_open_in_app,
+            groma_read_handoff_image,
             groma_list_snapshots,
             groma_create_snapshot,
             groma_load_snapshot,

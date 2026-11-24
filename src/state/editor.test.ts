@@ -24,6 +24,221 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[id].x).toBe(10);
   });
 
+  it('直线以 path 节点落盘，默认无填充并带描边', () => {
+    const id = editor.addNode({
+      type: 'path',
+      parentId: rootId(),
+      x: 40,
+      y: 60,
+      w: 160,
+      h: 80,
+      pathData: 'M 0 0 L 160 80',
+      pathW: 160,
+      pathH: 80,
+    });
+    const node = getState().doc.nodes[id];
+    expect(node.type).toBe('path');
+    expect(node.pathData).toBe('M 0 0 L 160 80');
+    expect(node.pathW).toBe(160);
+    expect(node.pathH).toBe(80);
+    expect(node.fills).toEqual([]);
+    expect(node.strokes?.[0]?.width).toBe(2);
+    expect(node.strokes?.[0]?.color).toBe('#221C00');
+
+    editor.undo();
+    expect(getState().doc.nodes[id]).toBeUndefined();
+  });
+
+  it('多边形与星形以参数化 path 落盘，改边数可撤销', () => {
+    const polygon = editor.addNode({
+      type: 'path',
+      parentId: rootId(),
+      x: 40,
+      y: 60,
+      w: 160,
+      h: 160,
+      pathData: 'M 80 0 L 160 80 L 80 160 L 0 80 Z',
+      shapeKind: 'polygon',
+      shapeSides: 4,
+      fill: '#D9D9D9',
+      strokes: [],
+    });
+    const polyNode = getState().doc.nodes[polygon];
+    expect(polyNode.name).toBe('多边形 1');
+    expect(polyNode.shapeKind).toBe('polygon');
+    expect(polyNode.shapeSides).toBe(4);
+    expect(polyNode.fills).toEqual([{ type: 'solid', color: '#D9D9D9', opacity: 1 }]);
+    expect(editor.setShapeParams(polygon, { sides: 6 })).toBe(true);
+    expect(getState().doc.nodes[polygon].shapeSides).toBe(6);
+    expect(getState().doc.nodes[polygon].pathData).toContain(' L ');
+
+    editor.undo();
+    expect(getState().doc.nodes[polygon].shapeSides).toBe(4);
+
+    const star = editor.addNode({
+      type: 'path',
+      parentId: rootId(),
+      x: 220,
+      y: 60,
+      w: 160,
+      h: 160,
+      pathData: 'M 0 0 L 160 160 Z',
+      shapeKind: 'star',
+      shapeSides: 5,
+      shapeInnerRatio: 0.5,
+      fill: '#D9D9D9',
+      strokes: [],
+    });
+    expect(getState().doc.nodes[star].name).toBe('星形 1');
+    expect(getState().doc.nodes[star].shapeInnerRatio).toBe(0.5);
+  });
+
+  it('箭头以线身加三角头落盘，默认无填充与 2px 描边', () => {
+    const arrow = editor.addNode({
+      type: 'path',
+      parentId: rootId(),
+      x: 20,
+      y: 30,
+      w: 160,
+      h: 42,
+      pathData: 'M 0 21 L 160 21',
+      pathW: 160,
+      pathH: 42,
+      shapeKind: 'arrow',
+      arrowHeadData: 'M 145 1 L 160 21 L 145 41 Z',
+    });
+    const node = getState().doc.nodes[arrow];
+    expect(node.name).toBe('箭头 1');
+    expect(node.shapeKind).toBe('arrow');
+    expect(node.shapeSides).toBeUndefined();
+    expect(node.arrowHeadData).toContain('Z');
+    expect(node.fills).toEqual([]);
+    expect(node.strokes?.[0].color).toBe('#221C00');
+    expect(node.strokes?.[0].width).toBe(2);
+    expect(editor.setShapeParams(arrow, { sides: 8 })).toBe(false);
+  });
+
+  it('切片以只标注节点落盘，无填充且不改画板结构', () => {
+    const frame = editor.addNode({ type: 'frame', parentId: rootId(), x: 0, y: 0, w: 400, h: 300 });
+    const slice = editor.addNode({ type: 'slice', parentId: frame, x: 120, y: 80, w: 160, h: 100 });
+    const node = getState().doc.nodes[slice];
+    expect(node.type).toBe('slice');
+    expect(node.name).toBe('切片 1');
+    expect(node.fills).toEqual([]);
+    expect(node.children).toEqual([]);
+    expect(node.clipContent).toBe(false);
+
+    editor.undo();
+    expect(getState().doc.nodes[slice]).toBeUndefined();
+    expect(getState().doc.nodes[frame].children).toEqual([]);
+  });
+
+  it('导入图片会同时登记资产、选中节点并可撤销重做', () => {
+    const asset = {
+      id: 'asset-1',
+      name: '照片.png',
+      mime: 'image/png',
+      file: 'assets/照片.png',
+      w: 640,
+      h: 480,
+      bytes: 1200,
+    };
+    const id = editor.insertImage(asset);
+    const s = getState();
+    expect(s.doc.nodes[id].type).toBe('image');
+    expect(s.doc.nodes[id].assetId).toBe('asset-1');
+    expect(s.doc.assets?.['asset-1']).toEqual(asset);
+    expect(s.selectedId).toBe(id);
+
+    editor.undo();
+    expect(getState().doc.nodes[id]).toBeUndefined();
+    expect(getState().doc.assets?.['asset-1']).toBeTruthy();
+
+    editor.redo();
+    expect(getState().doc.nodes[id].assetId).toBe('asset-1');
+  });
+
+  it('恢复原比例按资产宽高修正节点高度', () => {
+    const asset = {
+      id: 'asset-2',
+      name: '宽图.png',
+      mime: 'image/png',
+      file: 'assets/宽图.png',
+      w: 800,
+      h: 400,
+      bytes: 1000,
+    };
+    const id = editor.insertImage(asset, { w: 400, h: 300 });
+    expect(editor.fitImageRatio(id)).toBe(true);
+    expect(getState().doc.nodes[id].h).toBe(200);
+  });
+
+  it('文本对齐、行高与斜体可写入并可撤销', () => {
+    const id = editor.addNode({ type: 'text', parentId: rootId(), x: 12, y: 18, w: 240, h: 44 });
+    editor.applyPatch(id, { align: 'center', lineHeight: 1.6, italic: true });
+    const styled = getState().doc.nodes[id];
+    expect(styled.align).toBe('center');
+    expect(styled.lineHeight).toBe(1.6);
+    expect(styled.italic).toBe(true);
+
+    editor.undo();
+    const base = getState().doc.nodes[id];
+    expect(base.align).toBeUndefined();
+    expect(base.lineHeight).toBeUndefined();
+    expect(base.italic).toBeUndefined();
+  });
+
+  it('替换图片保留位置尺寸、登记新资产并可撤销', () => {
+    const first = {
+      id: 'asset-4',
+      name: '旧图.png',
+      mime: 'image/png',
+      file: 'assets/旧图.png',
+      w: 640,
+      h: 480,
+      bytes: 1000,
+    };
+    const next = {
+      id: 'asset-5',
+      name: '新图.png',
+      mime: 'image/png',
+      file: 'assets/新图.png',
+      w: 300,
+      h: 200,
+      bytes: 900,
+    };
+    const id = editor.insertImage(first, { w: 320, h: 240 });
+    const before = getState().doc.nodes[id];
+    expect(editor.replaceImageAsset(id, next)).toBe(true);
+    const s = getState();
+    expect(s.doc.nodes[id].assetId).toBe('asset-5');
+    expect(s.doc.nodes[id].name).toBe('新图.png');
+    expect(s.doc.nodes[id].w).toBe(before.w);
+    expect(s.doc.nodes[id].h).toBe(before.h);
+    expect(s.doc.assets?.['asset-5']).toEqual(next);
+    expect(s.doc.assets?.['asset-4']).toBeTruthy();
+
+    editor.undo();
+    expect(getState().doc.nodes[id].assetId).toBe('asset-4');
+  });
+
+  it('图片默认落入视口中心画板，保证画板导出带上图片', () => {
+    editor.setCanvasSize(1440, 900);
+    const page = getState().doc.pages[0];
+    const frameId = getState().doc.nodes[page.rootId].children[0];
+    const asset = {
+      id: 'asset-3',
+      name: '居中.png',
+      mime: 'image/png',
+      file: 'assets/居中.png',
+      w: 320,
+      h: 200,
+      bytes: 800,
+    };
+    const id = editor.insertImage(asset);
+    expect(getState().doc.nodes[id].parentId).toBe(frameId);
+  });
+
   it('区块节点可容纳画板，删除整块可撤销', () => {
     const section = editor.addNode({ type: 'section', parentId: rootId(), x: 40, y: 60, w: 1200, h: 800 });
     const frame = editor.addNode({ type: 'frame', parentId: section, x: 80, y: 80, w: 480, h: 320 });
@@ -340,6 +555,111 @@ describe('editor 命令与历史', () => {
     editor.redo();
     expect(getState().doc.pages.map((page) => page.name)).toEqual(['页面 3', '页面 1', '页面 2']);
     expect(editor.movePage(page3, 0)).toBe(false);
+  });
+
+  it('钢笔闭合路径落盘为钢笔节点，锚点保留且可撤销', () => {
+    const id = editor.addNode({
+      type: 'path',
+      parentId: rootId(),
+      x: 40,
+      y: 50,
+      w: 120,
+      h: 90,
+      pathData: 'M 0 0 L 120 0 L 60 90 L 0 0 Z',
+      pathW: 120,
+      pathH: 90,
+      pathAnchors: [
+        { x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0 },
+        { x: 120, y: 0, inX: 120, inY: 0, outX: 120, outY: 0 },
+        { x: 60, y: 90, inX: 60, inY: 90, outX: 60, outY: 90 },
+      ],
+      pathClosed: true,
+      fill: '#D9D9D9',
+      strokes: [],
+    });
+    const node = getState().doc.nodes[id];
+    expect(node.name).toBe('钢笔 1');
+    expect(node.pathAnchors).toHaveLength(3);
+    expect(node.pathAnchors?.[1]).toEqual({ x: 120, y: 0, inX: 120, inY: 0, outX: 120, outY: 0 });
+    expect(node.pathClosed).toBe(true);
+    expect(node.fills).toEqual([{ type: 'solid', color: '#D9D9D9', opacity: 1 }]);
+    expect(node.strokes).toEqual([]);
+
+    editor.undo();
+    expect(getState().doc.nodes[id]).toBeUndefined();
+  });
+
+  it('钢笔锚点编辑重算包围盒与路径，并可单步撤销', () => {
+    const id = editor.addNode({
+      type: 'path',
+      parentId: rootId(),
+      x: 40,
+      y: 50,
+      w: 120,
+      h: 90,
+      pathData: 'M 0 0 L 120 0 L 60 90 L 0 0 Z',
+      pathW: 120,
+      pathH: 90,
+      pathAnchors: [
+        { x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0 },
+        { x: 120, y: 0, inX: 120, inY: 0, outX: 120, outY: 0 },
+        { x: 60, y: 90, inX: 60, inY: 90, outX: 60, outY: 90 },
+      ],
+      pathClosed: true,
+      fill: '#D9D9D9',
+      strokes: [],
+    });
+    const changed = editor.setPathAnchors(
+      id,
+      [
+        { x: 40, y: 50 },
+        { x: 100, y: 50 },
+        { x: 100, y: 140 },
+        { x: 40, y: 140 },
+      ],
+      true,
+    );
+    expect(changed).toBe(true);
+    const node = getState().doc.nodes[id];
+    expect(node.pathAnchors).toHaveLength(4);
+    expect(node.pathClosed).toBe(true);
+    expect(node.x).toBe(40);
+    expect(node.y).toBe(50);
+    expect(node.w).toBe(60);
+    expect(node.h).toBe(90);
+
+    editor.undo();
+    expect(getState().doc.nodes[id].pathAnchors).toHaveLength(3);
+    expect(getState().doc.nodes[id].w).toBe(120);
+
+    editor.beginTransaction(id);
+    editor.setPathAnchors(
+      id,
+      [
+        { x: 40, y: 50 },
+        { x: 100, y: 50 },
+        { x: 100, y: 140 },
+        { x: 40, y: 140 },
+      ],
+      true,
+      true,
+    );
+    editor.setPathAnchors(
+      id,
+      [
+        { x: 40, y: 50 },
+        { x: 110, y: 40 },
+        { x: 120, y: 90 },
+        { x: 110, y: 140 },
+        { x: 40, y: 140 },
+      ],
+      true,
+      true,
+    );
+    editor.endTransaction();
+    expect(getState().doc.nodes[id].pathAnchors).toHaveLength(5);
+    editor.undo();
+    expect(getState().doc.nodes[id].pathAnchors).toHaveLength(3);
   });
 
   it('每一页记住自己的缩放与平移，切页后再切回仍恢复', () => {

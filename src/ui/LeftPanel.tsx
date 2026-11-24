@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
-import { childrenOf } from '../core/doc';
+import { childrenOf, countArtboards } from '../core/doc';
 import { searchPageNodes, type NodeSearchHit } from '../core/search';
-import type { GromaDoc, Page, SceneNode } from '../core/types';
+import type { GromaDoc, NodeType, Page, SceneNode } from '../core/types';
 import { PageThumbnail } from './PageThumbnail';
 import {
   IconChevronLeft,
@@ -12,24 +12,32 @@ import {
   IconEyeOff,
   IconFrame,
   IconGroup,
+  IconImage,
   IconLock,
   IconMore,
   IconPage,
+  IconPath,
+  IconPen,
   IconPlus,
   IconRect,
   IconSearch,
   IconSection,
+  IconSlice,
   IconText,
   IconUnlock,
 } from './icons';
 
-function NodeIcon({ type }: { type: SceneNode['type'] }) {
-  if (type === 'frame') return <IconFrame size={14} />;
-  if (type === 'section') return <IconSection size={14} />;
-  if (type === 'rect') return <IconRect size={14} />;
-  if (type === 'ellipse') return <IconEllipse size={14} />;
-  if (type === 'text') return <IconText size={14} />;
-  if (type === 'group') return <IconGroup size={14} />;
+function NodeIcon({ node, type }: { node?: SceneNode; type?: NodeType }) {
+  const kind = node?.type ?? type;
+  if (kind === 'frame') return <IconFrame size={14} />;
+  if (kind === 'section') return <IconSection size={14} />;
+  if (kind === 'rect') return <IconRect size={14} />;
+  if (kind === 'ellipse') return <IconEllipse size={14} />;
+  if (kind === 'text') return <IconText size={14} />;
+  if (kind === 'path') return (node?.pathAnchors?.length ?? 0) > 0 ? <IconPen size={14} /> : <IconPath size={14} />;
+  if (kind === 'image') return <IconImage size={14} />;
+  if (kind === 'group') return <IconGroup size={14} />;
+  if (kind === 'slice') return <IconSlice size={14} />;
   return <IconPage size={14} />;
 }
 
@@ -84,7 +92,7 @@ function LayerNode({
         >
           {children.length > 0 && <IconChevronRight size={11} />}
         </button>
-        <NodeIcon type={node.type} />
+        <NodeIcon node={node} />
         <span className="layer-name" title={node.name}>{node.name}</span>
         <span className="layer-actions" onClick={(e) => e.stopPropagation()}>
           <button
@@ -544,7 +552,7 @@ export function LeftPanel() {
       >
         {s.doc.pages.map((item, pageIndex) => {
           const current = item.id === s.pageId;
-          const count = s.doc.nodes[item.rootId]?.children.length ?? 0;
+          const count = countArtboards(s.doc, item.rootId);
           const editing = renameId === item.id;
           return (
             <div

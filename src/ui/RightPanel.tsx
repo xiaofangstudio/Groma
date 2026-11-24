@@ -1,7 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
-import type { SceneNode } from '../core/types';
+import { getImageProjectId, importImageAsset } from '../io/images';
+import type { Paint, PaintStop, SceneNode, StrokeCap, StrokeJoin } from '../core/types';
+import {
+  addGradientStop,
+  isGradientPaint,
+  linearAngle,
+  paintPreview,
+  removeGradientStop,
+  rotateLinearGradient,
+  toGradientPaint,
+  toSolidPaint,
+  updateGradientStops,
+} from '../core/paint';
+import { dashForKind, dashKind, formatDash, parseDashInput, type DashKind } from '../core/stroke';
 import { absolutePosition, absoluteRect, selectionBounds, topLevelSelection } from '../core/geometry';
+import { countArtboards } from '../core/doc';
 import {
   IconAlignBottom,
   IconAlignHCenter,
@@ -14,11 +28,14 @@ import {
   IconDistributeH,
   IconDistributeV,
   IconEllipse,
+  IconPath,
   IconFrame,
   IconGroup,
+  IconImage,
   IconPage,
   IconRect,
   IconSection,
+  IconSlice,
   IconText,
   IconUngroup,
 } from './icons';
@@ -93,9 +110,33 @@ function normalizeHex(raw: string): string | null {
   return `#${h.toUpperCase()}`;
 }
 
-function ColorField({ color, disabled, onCommit }: { color: string; disabled?: boolean; onCommit: (hex: string) => void }) {
+function ColorField({
+  color,
+  opacity,
+  disabled,
+  onCommit,
+  onOpacity,
+}: {
+  color: string;
+  opacity?: number;
+  disabled?: boolean;
+  onCommit: (hex: string) => void;
+  onOpacity?: (value: number) => void;
+}) {
   const [draft, setDraft] = useState(color.toUpperCase());
+  const [alpha, setAlpha] = useState(String(Math.round((opacity ?? 1) * 100)));
   useEffect(() => setDraft(color.toUpperCase()), [color]);
+  useEffect(() => setAlpha(String(Math.round((opacity ?? 1) * 100))), [opacity]);
+
+  function commitAlpha(raw: string) {
+    const value = Math.max(0, Math.min(100, Math.round(Number(raw))));
+    if (!Number.isFinite(value)) {
+      setAlpha(String(Math.round((opacity ?? 1) * 100)));
+      return;
+    }
+    setAlpha(String(value));
+    if (value !== Math.round((opacity ?? 1) * 100)) onOpacity?.(value / 100);
+  }
 
   function commit(raw: string) {
     const hex = normalizeHex(raw);
@@ -135,7 +176,24 @@ function ColorField({ color, disabled, onCommit }: { color: string; disabled?: b
           }
         }}
       />
-      <span className="color-alpha">100%</span>
+      <input
+        className="field-input alpha-input"
+        value={alpha}
+        disabled={disabled || !onOpacity}
+        inputMode="numeric"
+        aria-label="透明度"
+        onChange={(e) => setAlpha(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={(e) => commitAlpha(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          if (e.key === 'Escape') {
+            setAlpha(String(Math.round((opacity ?? 1) * 100)));
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <span className="color-alpha-unit">%</span>
     </div>
   );
 }
@@ -173,13 +231,106 @@ function TextField({ value, disabled, onCommit }: { value: string; disabled?: bo
   );
 }
 
+function LineField({
+  label,
+  value,
+  placeholder,
+  ariaLabel,
+  disabled,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  ariaLabel: string;
+  disabled?: boolean;
+  onCommit: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const skip = useRef(false);
+
+  useEffect(() => setDraft(value), [value]);
+
+  function commit(raw: string) {
+    if (skip.current) {
+      skip.current = false;
+      setDraft(value);
+      return;
+    }
+    const next = raw.trim().slice(0, 120);
+    setDraft(next);
+    if (next !== value) onCommit(next);
+  }
+
+  return (
+    <label className="field line-field">
+      <span className="field-label">{label}</span>
+      <input
+        className="field-input"
+        value={draft}
+        placeholder={placeholder}
+        disabled={disabled}
+        spellCheck={false}
+        aria-label={ariaLabel}
+        onChange={(e) => setDraft(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={(e) => commit(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          if (e.key === 'Escape') {
+            skip.current = true;
+            setDraft(value);
+            e.currentTarget.blur();
+          }
+        }}
+      />
+    </label>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="field select-field">
+      <span className="field-label">{label}</span>
+      <select
+        className="field-select"
+        value={value}
+        disabled={disabled}
+        aria-label={label}
+        onChange={(e) => onChange(e.currentTarget.value)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function typeLabel(type: SceneNode['type']): string {
   if (type === 'frame') return '画板';
   if (type === 'section') return '区块';
   if (type === 'rect') return '矩形';
   if (type === 'ellipse') return '椭圆';
   if (type === 'text') return '文本';
+  if (type === 'path') return '矢量';
+  if (type === 'image') return '图片';
   if (type === 'group') return '分组';
+  if (type === 'slice') return '切片';
   return '节点';
 }
 
@@ -189,7 +340,10 @@ function TypeIcon({ type, size = 14 }: { type: SceneNode['type']; size?: number 
   if (type === 'rect') return <IconRect size={size} />;
   if (type === 'ellipse') return <IconEllipse size={size} />;
   if (type === 'text') return <IconText size={size} />;
+  if (type === 'path') return <IconPath size={size} />;
+  if (type === 'image') return <IconImage size={size} />;
   if (type === 'group') return <IconGroup size={size} />;
+  if (type === 'slice') return <IconSlice size={size} />;
   return <IconPage size={size} />;
 }
 
@@ -233,9 +387,298 @@ function NameField({ node }: { node: SceneNode }) {
   );
 }
 
-function FrameInspector({ node }: { node: SceneNode }) {
-  const fill = node.fills[0];
+function GradientStopRow({
+  stop,
+  index,
+  count,
+  disabled,
+  onChange,
+  onRemove,
+}: {
+  stop: PaintStop;
+  index: number;
+  count: number;
+  disabled?: boolean;
+  onChange: (next: PaintStop) => void;
+  onRemove: () => void;
+}) {
+  const [hex, setHex] = useState(stop.color.toUpperCase());
+  const [offset, setOffset] = useState(fmt(stop.offset * 100));
+  const [alpha, setAlpha] = useState(String(Math.round(stop.opacity * 100)));
 
+  useEffect(() => setHex(stop.color.toUpperCase()), [stop.color]);
+  useEffect(() => setOffset(fmt(stop.offset * 100)), [stop.offset]);
+  useEffect(() => setAlpha(String(Math.round(stop.opacity * 100))), [stop.opacity]);
+
+  function commitHex(raw: string) {
+    const value = normalizeHex(raw);
+    if (!value) {
+      setHex(stop.color.toUpperCase());
+      return;
+    }
+    setHex(value);
+    if (value !== stop.color.toUpperCase()) onChange({ ...stop, color: value });
+  }
+
+  function commitOffset(raw: string) {
+    const value = Number(raw.replace(',', '.'));
+    if (!Number.isFinite(value)) {
+      setOffset(fmt(stop.offset * 100));
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, Math.round(value * 10) / 10));
+    setOffset(String(percent));
+    if (percent / 100 !== stop.offset) onChange({ ...stop, offset: percent / 100 });
+  }
+
+  function commitAlpha(raw: string) {
+    const value = Number(raw);
+    if (!Number.isFinite(value)) {
+      setAlpha(String(Math.round(stop.opacity * 100)));
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, Math.round(value)));
+    setAlpha(String(percent));
+    if (percent / 100 !== stop.opacity) onChange({ ...stop, opacity: percent / 100 });
+  }
+
+  return (
+    <div className="gradient-stop-row">
+      <div className="gradient-stop-color">
+        <input
+          type="color"
+          className="color-swatch stop-swatch"
+          value={normalizeHex(hex) ?? '#FFFFFF'}
+          disabled={disabled}
+          aria-label={`色标 ${index + 1} 颜色`}
+          onChange={(e) => setHex(e.currentTarget.value.toUpperCase())}
+          onBlur={(e) => commitHex(e.currentTarget.value)}
+        />
+        <input
+          className="field-input hex-input stop-hex"
+          value={hex}
+          disabled={disabled}
+          spellCheck={false}
+          aria-label={`色标 ${index + 1} 色值`}
+          onChange={(e) => setHex(e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={(e) => commitHex(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+            if (e.key === 'Escape') {
+              setHex(stop.color.toUpperCase());
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      </div>
+      <input
+        className="field-input stop-num"
+        value={offset}
+        disabled={disabled}
+        inputMode="decimal"
+        aria-label={`色标 ${index + 1} 位置百分比`}
+        onChange={(e) => setOffset(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={(e) => commitOffset(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          if (e.key === 'Escape') {
+            setOffset(fmt(stop.offset * 100));
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <input
+        className="field-input stop-num"
+        value={alpha}
+        disabled={disabled}
+        inputMode="numeric"
+        aria-label={`色标 ${index + 1} 透明度`}
+        onChange={(e) => setAlpha(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        onBlur={(e) => commitAlpha(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          if (e.key === 'Escape') {
+            setAlpha(String(Math.round(stop.opacity * 100)));
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <button
+        type="button"
+        className="stop-remove"
+        title={count <= 2 ? '至少保留两个色标' : '删除色标'}
+        aria-label={`删除色标 ${index + 1}`}
+        disabled={disabled || count <= 2}
+        onClick={onRemove}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+const FILL_TYPES = [
+  { type: 'solid', label: '纯色' },
+  { type: 'linear', label: '线性' },
+  { type: 'radial', label: '径向' },
+] as const;
+
+function FillEditor({
+  node,
+  fallbackColor,
+  note,
+}: {
+  node: SceneNode;
+  fallbackColor: string;
+  note?: string;
+}) {
+  const fill = node.fills[0];
+  const gradient = isGradientPaint(fill) ? fill : null;
+  const currentType = fill?.type ?? 'solid';
+
+  function patchFill(next: Paint) {
+    editor.applyPatch(node.id, { fills: [next, ...node.fills.slice(1)] });
+  }
+
+  function changeType(type: (typeof FILL_TYPES)[number]['type']) {
+    if (type === currentType) return;
+    if (type === 'solid') patchFill(toSolidPaint(fill, fallbackColor));
+    else patchFill(toGradientPaint(fill, type, fallbackColor, node.w, node.h));
+  }
+
+  function updateStops(stops: PaintStop[]) {
+    if (!gradient) return;
+    patchFill(updateGradientStops(gradient, stops));
+  }
+
+  return (
+    <>
+      {note ? <p className="ins-note">{note}</p> : null}
+      <div className="fill-type-switch" role="group" aria-label="填充类型">
+        {FILL_TYPES.map((item) => (
+          <button
+            key={item.type}
+            type="button"
+            className={`fill-type-btn ${currentType === item.type ? 'is-on' : ''}`}
+            aria-pressed={currentType === item.type}
+            disabled={node.locked}
+            onClick={() => changeType(item.type)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      {gradient ? (
+        <>
+          <div
+            className="gradient-preview"
+            style={{ background: paintPreview(gradient, node.w, node.h) }}
+            aria-hidden="true"
+          />
+          <div className="gradient-stop-head" aria-hidden="true">
+            <span>颜色</span>
+            <span>位置%</span>
+            <span>透明%</span>
+            <span />
+          </div>
+          <div className="gradient-stop-list">
+            {gradient.stops.map((stop, index) => (
+              <GradientStopRow
+                key={`${index}-${stop.offset}`}
+                stop={stop}
+                index={index}
+                count={gradient.stops.length}
+                disabled={node.locked}
+                onChange={(next) => updateStops(gradient.stops.map((item, i) => (i === index ? next : item)))}
+                onRemove={() => patchFill(removeGradientStop(gradient, index))}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            className="wide-action gradient-add"
+            disabled={node.locked || gradient.stops.length >= 32}
+            onClick={() => patchFill(addGradientStop(gradient))}
+          >
+            <span>添加色标</span>
+          </button>
+
+          {gradient.type === 'linear' ? (
+            <div className="field-grid gradient-geometry">
+              <NumField
+                label="角度"
+                value={Math.round(linearAngle(gradient) * 10) / 10}
+                min={-360}
+                max={360}
+                disabled={node.locked}
+                onCommit={(n) => patchFill(rotateLinearGradient(gradient, n))}
+              />
+              <button
+                type="button"
+                className="text-toggle gradient-reverse"
+                disabled={node.locked}
+                onClick={() => patchFill(rotateLinearGradient(gradient, linearAngle(gradient) + 180))}
+              >
+                反向
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="gradient-geometry gradient-geometry-radial">
+                <NumField
+                  label="X"
+                  value={gradient.cx}
+                  disabled={node.locked}
+                  onCommit={(n) => patchFill({ ...gradient, cx: n })}
+                />
+                <NumField
+                  label="Y"
+                  value={gradient.cy}
+                  disabled={node.locked}
+                  onCommit={(n) => patchFill({ ...gradient, cy: n })}
+                />
+                <NumField
+                  label="R"
+                  value={gradient.r}
+                  min={0.1}
+                  max={100000}
+                  disabled={node.locked}
+                  onCommit={(n) => patchFill({ ...gradient, r: n })}
+                />
+              </div>
+              <p className="ins-note">X / Y 为圆心，R 为半径，按节点局部坐标计算。</p>
+            </>
+          )}
+          <p className="ins-note">
+            {gradient.type === 'linear' ? '角度 0° 指向右侧，色标位置按渐变长度计算。' : '色标位置按半径比例计算。'}
+          </p>
+        </>
+      ) : (
+        <ColorField
+          color={fill?.color ?? fallbackColor}
+          opacity={fill?.opacity ?? 1}
+          disabled={node.locked}
+          onCommit={(hex) =>
+            patchFill(fill ? { ...fill, type: 'solid', color: hex } : { type: 'solid', color: hex, opacity: 1 })
+          }
+          onOpacity={(value) =>
+            patchFill(
+              fill
+                ? { ...fill, opacity: value }
+                : { type: 'solid', color: fallbackColor, opacity: value },
+            )
+          }
+        />
+      )}
+    </>
+  );
+}
+
+function FrameInspector({ node }: { node: SceneNode }) {
   return (
     <>
       <div className="inspector-sel">
@@ -271,15 +714,7 @@ function FrameInspector({ node }: { node: SceneNode }) {
 
       <section className="ins-section">
         <h3 className="ins-title">填充</h3>
-        <ColorField
-          color={fill?.color ?? '#FFFFFF'}
-          disabled={node.locked}
-          onCommit={(hex) =>
-            editor.applyPatch(node.id, {
-              fills: [{ type: 'solid', color: hex, opacity: fill?.opacity ?? 1 }],
-            })
-          }
-        />
+        <FillEditor node={node} fallbackColor="#FFFFFF" />
         <Row label="混合" value="正常" />
       </section>
 
@@ -288,17 +723,13 @@ function FrameInspector({ node }: { node: SceneNode }) {
   );
 }
 
-function ShapeInspector({ node }: { node: SceneNode }) {
-  const fill = node.fills[0];
-  const isText = node.type === 'text';
-  const isRect = node.type === 'rect';
-
+function SliceInspector({ node }: { node: SceneNode }) {
   return (
     <>
       <div className="inspector-sel">
         <TypeIcon type={node.type} />
         <NameField node={node} />
-        <span className="type-chip">{typeLabel(node.type)}</span>
+        <span className="type-chip">切片</span>
       </div>
 
       <section className="ins-section">
@@ -311,6 +742,97 @@ function ShapeInspector({ node }: { node: SceneNode }) {
         </div>
       </section>
 
+      <section className="ins-section">
+        <h3 className="ins-title">导出区域</h3>
+        <Row label="尺寸" value={`${Math.round(node.w)} × ${Math.round(node.h)}`} />
+        <Row label="格式" value="PNG · JPG · SVG" />
+        <p className="ins-note">选中切片后点顶部“导出”，只输出这个矩形里的画面。画布上的虚线只是编辑标记，不会进入导出文件。</p>
+      </section>
+
+      <div className="ins-hint">{node.locked ? '切片已锁定，属性编辑已停用' : 'K 切片工具 · 选中后从导出弹窗输出'}</div>
+    </>
+  );
+}
+
+function ShapeInspector({ node }: { node: SceneNode }) {
+  const stroke = node.strokes?.[0];
+  const isText = node.type === 'text';
+  const isRect = node.type === 'rect';
+  const isPen = node.type === 'path' && ((node.pathContours?.length ?? 0) > 0 || (node.pathAnchors?.length ?? 0) > 0);
+  const penContours = node.pathContours?.length
+    ? node.pathContours
+    : node.pathAnchors?.length
+      ? [{ anchors: node.pathAnchors, closed: Boolean(node.pathClosed) }]
+      : [];
+  const penClosed = penContours.filter((contour) => contour.closed).length;
+  const penPathState =
+    penContours.length > 1
+      ? `${penClosed} 闭合 / ${penContours.length - penClosed} 开放`
+      : node.pathClosed
+        ? '闭合'
+        : '开放';
+  const penAnchorTotal = penContours.reduce((sum, contour) => sum + contour.anchors.length, 0);
+  const strokeDash = stroke ? dashKind(stroke.dash) : 'solid';
+
+  const patchStroke = (patch: Partial<NonNullable<SceneNode['strokes']>[number]>) => {
+    if (!stroke) return;
+    editor.applyPatch(node.id, { strokes: [{ ...stroke, ...patch }] });
+  };
+
+  return (
+    <>
+      <div className="inspector-sel">
+        <TypeIcon type={node.type} />
+        <NameField node={node} />
+        <span className="type-chip">{isPen ? '钢笔' : typeLabel(node.type)}</span>
+      </div>
+
+      <section className="ins-section">
+        <h3 className="ins-title">对齐与变换</h3>
+        <div className="field-grid">
+          <NumField label="X" value={node.x} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { x: n })} />
+          <NumField label="Y" value={node.y} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { y: n })} />
+          <NumField label="W" value={node.w} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { w: n })} />
+          <NumField label="H" value={node.h} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { h: n })} />
+        </div>
+      </section>
+
+      {node.type === 'path' && (node.shapeKind === 'polygon' || node.shapeKind === 'star') && (
+        <section className="ins-section">
+          <h3 className="ins-title">形状</h3>
+          <div className="field-grid">
+            <NumField
+              label={node.shapeKind === 'polygon' ? '边数' : '角数'}
+              value={node.shapeSides ?? 5}
+              min={3}
+              max={12}
+              disabled={node.locked}
+              onCommit={(n) => editor.setShapeParams(node.id, { sides: n })}
+            />
+            {node.shapeKind === 'star' && (
+              <NumField
+                label="内径%"
+                value={Math.round((node.shapeInnerRatio ?? 0.38) * 100)}
+                min={10}
+                max={90}
+                disabled={node.locked}
+                onCommit={(n) => editor.setShapeParams(node.id, { innerRatio: n / 100 })}
+              />
+            )}
+          </div>
+        </section>
+      )}
+
+      {isPen && (
+        <section className="ins-section">
+          <h3 className="ins-title">钢笔路径</h3>
+          <Row label="轮廓" value={`${penContours.length} 条`} />
+          <Row label="锚点" value={`${penAnchorTotal} 个`} />
+          <Row label="路径" value={penPathState} />
+          <p className="ins-note">拖动锚点与手柄可改形；点线段加点，选中锚点 Delete 删除；`Alt`+点击空白追加轮廓。</p>
+        </section>
+      )}
+
       {isText && (
         <section className="ins-section">
           <h3 className="ins-title">文本</h3>
@@ -319,6 +841,16 @@ function ShapeInspector({ node }: { node: SceneNode }) {
             disabled={node.locked}
             onCommit={(text) => editor.applyPatch(node.id, { text })}
           />
+          <div className="text-meta">
+            <LineField
+              label="字体"
+              value={node.fontFamily ?? ''}
+              placeholder="系统默认（Segoe UI / 微软雅黑）"
+              ariaLabel="字体族"
+              disabled={node.locked}
+              onCommit={(fontFamily) => editor.applyPatch(node.id, { fontFamily: fontFamily || undefined })}
+            />
+          </div>
           <div className="field-grid text-meta">
             <NumField
               label="字号"
@@ -337,23 +869,172 @@ function ShapeInspector({ node }: { node: SceneNode }) {
               onCommit={(n) => editor.applyPatch(node.id, { fontWeight: n })}
             />
           </div>
+          <div className="text-align-row" role="group" aria-label="文本对齐">
+            <button
+              type="button"
+              className={`text-align-btn ${(node.align ?? 'left') === 'left' ? 'is-on' : ''}`}
+              title="左对齐"
+              aria-label="左对齐"
+              aria-pressed={(node.align ?? 'left') === 'left'}
+              disabled={node.locked}
+              onClick={() => editor.applyPatch(node.id, { align: 'left' })}
+            >
+              <IconAlignLeft size={15} />
+            </button>
+            <button
+              type="button"
+              className={`text-align-btn ${node.align === 'center' ? 'is-on' : ''}`}
+              title="居中对齐"
+              aria-label="居中对齐"
+              aria-pressed={node.align === 'center'}
+              disabled={node.locked}
+              onClick={() => editor.applyPatch(node.id, { align: 'center' })}
+            >
+              <IconAlignHCenter size={15} />
+            </button>
+            <button
+              type="button"
+              className={`text-align-btn ${node.align === 'right' ? 'is-on' : ''}`}
+              title="右对齐"
+              aria-label="右对齐"
+              aria-pressed={node.align === 'right'}
+              disabled={node.locked}
+              onClick={() => editor.applyPatch(node.id, { align: 'right' })}
+            >
+              <IconAlignRight size={15} />
+            </button>
+          </div>
+          <div className="field-grid text-meta">
+            <NumField
+              label="行高"
+              value={node.lineHeight ?? 1.3}
+              min={0.8}
+              max={3}
+              disabled={node.locked}
+              onCommit={(n) => editor.applyPatch(node.id, { lineHeight: n })}
+            />
+            <button
+              type="button"
+              className={`text-toggle ${node.italic ? 'is-on' : ''}`}
+              aria-pressed={Boolean(node.italic)}
+              disabled={node.locked}
+              onClick={() => editor.applyPatch(node.id, { italic: !node.italic })}
+            >
+              斜体
+            </button>
+          </div>
         </section>
       )}
 
       <section className="ins-section">
         <h3 className="ins-title">填充</h3>
-        {node.type === 'section' && !fill && (
-          <p className="ins-note">区块默认透明；选择颜色后会写入填充。</p>
-        )}
-        <ColorField
-          color={fill?.color ?? (isText ? '#221C00' : node.type === 'section' ? '#FFFFFF' : '#D9D9D9')}
-          disabled={node.locked}
-          onCommit={(hex) =>
-            editor.applyPatch(node.id, {
-              fills: [{ type: 'solid', color: hex, opacity: fill?.opacity ?? 1 }],
-            })
-          }
+        <FillEditor
+          node={node}
+          fallbackColor={isText ? '#221C00' : node.type === 'section' ? '#FFFFFF' : '#D9D9D9'}
+          note={node.type === 'section' && !node.fills[0] ? '区块默认透明；选择颜色后会写入填充。' : undefined}
         />
+      </section>
+
+      <section className="ins-section">
+        <h3 className="ins-title">描边</h3>
+        {stroke ? (
+          <>
+            <ColorField
+              color={stroke.color}
+              opacity={stroke.opacity}
+              disabled={node.locked}
+              onCommit={(hex) => patchStroke({ color: hex })}
+              onOpacity={(value) => patchStroke({ opacity: value })}
+            />
+            <div className="field-grid">
+              <NumField
+                label="宽度"
+                value={stroke.width}
+                min={0.1}
+                max={1000}
+                disabled={node.locked}
+                onCommit={(n) => patchStroke({ width: n })}
+              />
+              <SelectField
+                label="线型"
+                value={strokeDash}
+                disabled={node.locked}
+                options={[
+                  { value: 'solid', label: '实线' },
+                  { value: 'dashed', label: '虚线' },
+                  { value: 'dotted', label: '点线' },
+                  { value: 'custom', label: '自定义' },
+                ]}
+                onChange={(value) => {
+                  const kind = value as DashKind;
+                  patchStroke({
+                    dash: kind === 'custom' && stroke.dash.length > 0 ? stroke.dash : dashForKind(kind),
+                  });
+                }}
+              />
+            </div>
+            <div className="stroke-controls">
+              {strokeDash === 'custom' && (
+                <div className="stroke-dash-custom">
+                  <LineField
+                    label="间距"
+                    value={formatDash(stroke.dash)}
+                    placeholder="例如 8 6"
+                    ariaLabel="自定义虚线间距"
+                    disabled={node.locked}
+                    onCommit={(text) => {
+                      const parsed = parseDashInput(text);
+                      if (parsed) patchStroke({ dash: parsed });
+                    }}
+                  />
+                </div>
+              )}
+              <div className="stroke-select-grid">
+                <SelectField
+                  label="端点"
+                  value={stroke.cap ?? 'butt'}
+                  disabled={node.locked}
+                  options={[
+                    { value: 'butt', label: '平头' },
+                    { value: 'round', label: '圆头' },
+                    { value: 'square', label: '方头' },
+                  ]}
+                  onChange={(value) => patchStroke({ cap: value as StrokeCap })}
+                />
+                <SelectField
+                  label="转角"
+                  value={stroke.join ?? 'miter'}
+                  disabled={node.locked}
+                  options={[
+                    { value: 'miter', label: '尖角' },
+                    { value: 'round', label: '圆角' },
+                    { value: 'bevel', label: '斜角' },
+                  ]}
+                  onChange={(value) => patchStroke({ join: value as StrokeJoin })}
+                />
+              </div>
+            </div>
+            <button
+              className="wide-action stroke-remove"
+              disabled={node.locked}
+              onClick={() => editor.applyPatch(node.id, { strokes: [] })}
+            >
+              <span>移除描边</span>
+            </button>
+          </>
+        ) : (
+          <button
+            className="wide-action"
+            disabled={node.locked}
+            onClick={() =>
+              editor.applyPatch(node.id, {
+                strokes: [{ color: '#221C00', opacity: 1, width: 1, dash: [], cap: 'butt', join: 'miter' }],
+              })
+            }
+          >
+            <span>添加描边</span>
+          </button>
+        )}
       </section>
 
       <section className="ins-section">
@@ -381,6 +1062,121 @@ function ShapeInspector({ node }: { node: SceneNode }) {
       </section>
 
       <div className="ins-hint">{node.locked ? '节点已锁定，属性编辑已停用' : '拖动移动 · 角点缩放 · Delete 删除'}</div>
+    </>
+  );
+}
+
+function ImageInspector({ node }: { node: SceneNode }) {
+  const s = useEditor();
+  const asset = node.assetId ? s.doc.assets?.[node.assetId] : undefined;
+  const kb = asset ? Math.max(1, Math.round(asset.bytes / 1024)) : 0;
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function replace(file: File | undefined) {
+    if (!file) return;
+    const projectId = getImageProjectId();
+    if (!projectId) {
+      setError('工程尚未保存，无法写入图片资产');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const imported = await importImageAsset(projectId, file);
+      if (!editor.replaceImageAsset(node.id, imported.asset)) setError('图片已锁定，未替换');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '图片替换失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="inspector-sel">
+        <IconImage size={14} />
+        <NameField node={node} />
+        <span className="type-chip">图片</span>
+      </div>
+
+      <section className="ins-section">
+        <h3 className="ins-title">对齐与变换</h3>
+        <div className="field-grid">
+          <NumField label="X" value={node.x} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { x: n })} />
+          <NumField label="Y" value={node.y} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { y: n })} />
+          <NumField label="W" value={node.w} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { w: n })} />
+          <NumField label="H" value={node.h} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { h: n })} />
+        </div>
+      </section>
+
+      <section className="ins-section">
+        <h3 className="ins-title">图片</h3>
+        {asset ? (
+          <>
+            <Row label="文件" value={asset.name} />
+            <Row label="原始" value={`${asset.w} × ${asset.h}`} />
+            <Row label="大小" value={`${kb} KB`} />
+          </>
+        ) : (
+          <p className="ins-note">图片资产缺失：工程 assets 目录里找不到这个文件。</p>
+        )}
+        <div className="ins-action-row">
+          <button
+            className="wide-action"
+            disabled={node.locked || !asset}
+            title={node.locked ? '图片已锁定' : '按原图比例修正高度'}
+            onClick={() => editor.fitImageRatio(node.id)}
+          >
+            <span>恢复原比例</span>
+          </button>
+          <button
+            className="wide-action"
+            disabled={node.locked || busy}
+            title={node.locked ? '图片已锁定' : '用新图片替换当前图片，保留位置与尺寸'}
+            onClick={() => fileRef.current?.click()}
+          >
+            <span>{busy ? '替换中…' : '替换图片'}</span>
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(e) => {
+              const file = e.currentTarget.files?.[0];
+              e.currentTarget.value = '';
+              void replace(file);
+            }}
+          />
+        </div>
+        {error ? <p className="ins-note">{error}</p> : null}
+      </section>
+
+      <section className="ins-section">
+        <h3 className="ins-title">外观</h3>
+        <div className="field-grid">
+          <NumField
+            label="圆角"
+            value={node.cornerRadius}
+            min={0}
+            max={100000}
+            disabled={node.locked}
+            onCommit={(n) => editor.applyPatch(node.id, { cornerRadius: n })}
+          />
+          <NumField
+            label="透明"
+            value={Math.round(node.opacity * 100)}
+            min={0}
+            max={100}
+            disabled={node.locked}
+            onCommit={(n) => editor.applyPatch(node.id, { opacity: n / 100 })}
+          />
+        </div>
+      </section>
+
+      <div className="ins-hint">{node.locked ? '图片已锁定，属性编辑已停用' : '拖动移动 · 角点缩放 · 圆角会裁切图片'}</div>
     </>
   );
 }
@@ -559,7 +1355,7 @@ function PageInspector() {
   const s = useEditor();
   const page = s.doc.pages.find((p) => p.id === s.pageId) ?? s.doc.pages[0];
   const root = s.doc.nodes[page.rootId];
-  const frames = root ? root.children.length : 0;
+  const frames = root ? countArtboards(s.doc, root.id) : 0;
 
   return (
     <>
@@ -622,6 +1418,10 @@ export function RightPanel() {
           <FrameInspector node={node} />
         ) : node.type === 'group' ? (
           <GroupInspector node={node} />
+        ) : node.type === 'image' ? (
+          <ImageInspector node={node} />
+        ) : node.type === 'slice' ? (
+          <SliceInspector node={node} />
         ) : (
           <ShapeInspector node={node} />
         )}

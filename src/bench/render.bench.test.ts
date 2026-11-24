@@ -86,6 +86,7 @@ function makeContext() {
     'save',
     'restore',
     'translate',
+    'scale',
     'beginPath',
     'rect',
     'clip',

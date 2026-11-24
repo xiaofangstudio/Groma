@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   IconChevronRight,
   IconCursor,
   IconEllipse,
   IconFrame,
+  IconImport,
   IconPage,
   IconPlus,
   IconRect,
@@ -21,6 +22,7 @@ export interface CreateOptions {
 interface Props {
   onCreate: (options?: CreateOptions) => void;
   onOpen: (id: string) => void;
+  onImportSvg: (file: File) => Promise<void>;
   projects: ProjectEntry[];
   loading: boolean;
   error: string | null;
@@ -95,11 +97,13 @@ function previewBox(width: number, height: number, maxW = 30, maxH = 22): { widt
   return { width: Math.max(6, Math.round(maxH * ratio)), height: maxH };
 }
 
-export function Welcome({ onCreate, onOpen, projects, loading, error }: Props) {
+export function Welcome({ onCreate, onOpen, onImportSvg, projects, loading, error }: Props) {
   const [about, setAbout] = useState(false);
   const [preset, setPreset] = useState('desktop');
   const [widthText, setWidthText] = useState('1440');
   const [heightText, setHeightText] = useState('900');
+  const [importing, setImporting] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
   const currentWidth = clampSize(widthText, 1440);
   const currentHeight = clampSize(heightText, 900);
   const preview = previewBox(currentWidth, currentHeight);
@@ -129,6 +133,16 @@ export function Welcome({ onCreate, onOpen, projects, loading, error }: Props) {
     setPreset(p.id);
     setWidthText(String(p.width));
     setHeightText(String(p.height));
+  }
+
+  async function importDrawing(file: File | undefined) {
+    if (!file || importing) return;
+    setImporting(true);
+    try {
+      await onImportSvg(file);
+    } finally {
+      setImporting(false);
+    }
   }
 
   return (
@@ -266,6 +280,29 @@ export function Welcome({ onCreate, onOpen, projects, loading, error }: Props) {
                   将创建 <b>{currentWidth}</b> × <b>{currentHeight}</b> 画板
                 </span>
                 <span className="home-shortcut"><kbd>Ctrl</kbd><span>+</span><kbd>N</kbd></span>
+              </div>
+
+              <div className="home-import-row">
+                <button
+                  className="home-import"
+                  disabled={importing}
+                  onClick={() => importRef.current?.click()}
+                >
+                  <IconImport size={14} />
+                  {importing ? '正在导入…' : '导入 Vexa 画的图'}
+                </button>
+                <span className="home-import-note">SVG 里的路径、渐变、描边、文本和图片都会保留</span>
+                <input
+                  ref={importRef}
+                  type="file"
+                  accept=".svg,image/svg+xml"
+                  hidden
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    void importDrawing(file);
+                  }}
+                />
               </div>
             </div>
 

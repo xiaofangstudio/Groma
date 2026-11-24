@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { editor, useEditor } from '../state/editor';
 import { renameProject } from '../io/project';
+import { parseSvgDrawing } from '../io/importSvg';
+import { applySvgImport } from '../io/applySvgImport';
+import { importImageAsset, isImageFile } from '../io/images';
 import { ExportDialog } from './ExportDialog';
 import { VersionHistory } from './VersionHistory';
 import {
@@ -11,11 +14,18 @@ import {
   IconFrame,
   IconHand,
   IconHistory,
+  IconImport,
+  IconArrow,
+  IconLine,
   IconMinus,
+  IconPen,
   IconPlus,
+  IconPolygon,
   IconRect,
   IconRedo,
   IconSection,
+  IconSlice,
+  IconStar,
   IconText,
   IconUndo,
 } from './icons';
@@ -26,6 +36,8 @@ export function TopBar() {
   const [exportOpen, setExportOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
   const [toast, setToast] = useState<{ title: string; detail: string } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setName(s.doc.name);
@@ -47,6 +59,44 @@ export function TopBar() {
       if (s.projectId) {
         void renameProject(s.projectId, next).catch(() => undefined);
       }
+    }
+  }
+
+  async function onImportFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImporting(true);
+    try {
+      if (isImageFile(file)) {
+        if (!s.projectId) throw new Error('先保存工程，再把图片放进 assets');
+        const { asset } = await importImageAsset(s.projectId, file);
+        editor.insertImage(asset);
+        setToast({
+          title: '已导入图片',
+          detail: `${asset.name} · ${asset.w} × ${asset.h}`,
+        });
+        return;
+      }
+      const isSvg = /\.svg$/i.test(file.name) || file.type === 'image/svg+xml';
+      if (!isSvg) throw new Error('只支持 SVG / PNG / JPG / WebP');
+      const text = await file.text();
+      const parsed = parseSvgDrawing(text, file.name.replace(/\.svg$/i, '') || 'Vexa 图形');
+      if (parsed.frames.every((frame) => frame.children.length === 0)) {
+        throw new Error('SVG 里没有可导入的图形');
+      }
+      const result = await applySvgImport(parsed, s.projectId);
+      setToast({
+        title: `已导入 ${result.count} 个图层`,
+        detail: result.warnings.length ? result.warnings.join(' · ') : file.name,
+      });
+    } catch (error) {
+      setToast({
+        title: '导入失败',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -116,6 +166,54 @@ export function TopBar() {
             <IconEllipse size={15} />
           </button>
           <button
+            className={`tool-btn${s.tool === 'line' ? ' is-active' : ''}`}
+            title="直线工具 L"
+            aria-label="直线工具"
+            onClick={() => editor.setTool('line')}
+          >
+            <IconLine size={15} />
+          </button>
+          <button
+            className={`tool-btn${s.tool === 'arrow' ? ' is-active' : ''}`}
+            title="箭头工具 A"
+            aria-label="箭头工具"
+            onClick={() => editor.setTool('arrow')}
+          >
+            <IconArrow size={15} />
+          </button>
+          <button
+            className={`tool-btn${s.tool === 'polygon' ? ' is-active' : ''}`}
+            title="多边形工具 G"
+            aria-label="多边形工具"
+            onClick={() => editor.setTool('polygon')}
+          >
+            <IconPolygon size={15} />
+          </button>
+          <button
+            className={`tool-btn${s.tool === 'star' ? ' is-active' : ''}`}
+            title="星形工具 Y"
+            aria-label="星形工具"
+            onClick={() => editor.setTool('star')}
+          >
+            <IconStar size={15} />
+          </button>
+          <button
+            className={`tool-btn${s.tool === 'pen' ? ' is-active' : ''}`}
+            title="钢笔工具 P"
+            aria-label="钢笔工具"
+            onClick={() => editor.setTool('pen')}
+          >
+            <IconPen size={15} />
+          </button>
+          <button
+            className={`tool-btn${s.tool === 'slice' ? ' is-active' : ''}`}
+            title="切片工具 K"
+            aria-label="切片工具"
+            onClick={() => editor.setTool('slice')}
+          >
+            <IconSlice size={15} />
+          </button>
+          <button
             className={`tool-btn${s.tool === 'text' ? ' is-active' : ''}`}
             title="文字工具 T"
             aria-label="文字工具"
@@ -154,6 +252,22 @@ export function TopBar() {
         </div>
 
         <div className="topbar-right">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(e) => void onImportFile(e)}
+          />
+          <button
+            className="export-btn"
+            title="导入 SVG 图形或图片"
+            disabled={importing}
+            onClick={() => fileRef.current?.click()}
+          >
+            <IconImport size={14} />
+            <span>{importing ? '导入中…' : '导入'}</span>
+          </button>
           <button
             className="version-btn"
             title="版本历史"
