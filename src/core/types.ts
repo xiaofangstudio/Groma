@@ -58,6 +58,8 @@ export interface PathAnchor {
   inY: number;
   outX: number;
   outY: number;
+  /** 同一节点内相同 id 的锚点共享位置与手柄；旧数据可没有。 */
+  vertexId?: string;
 }
 
 /** 一条连续轮廓；同一钢笔节点可有多个轮廓，组成复合矢量路径。 */

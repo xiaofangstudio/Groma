@@ -8,6 +8,7 @@ export interface PenAnchor {
   inY?: number;
   outX?: number;
   outY?: number;
+  vertexId?: string;
 }
 
 export interface PenGeometry {
@@ -148,6 +149,7 @@ export function insertPenAnchor(
     inY: anchor.inY ?? anchor.y,
     outX: anchor.outX ?? anchor.x,
     outY: anchor.outY ?? anchor.y,
+    ...(anchor.vertexId ? { vertexId: anchor.vertexId } : {}),
   })) as PathAnchor[];
   const start = next[startIndex];
   const end = next[endIndex];
@@ -193,6 +195,146 @@ export function removePenAnchor(anchors: PenAnchor[], index: number): PenAnchor[
   return anchors.filter((_, itemIndex) => itemIndex !== index).map((anchor) => ({ ...anchor }));
 }
 
+/** 同 vertexId 的锚点共享位置与手柄；把源锚点几何复制到所有引用。 */
+export function syncSharedPenVertex(
+  contours: PenContour[],
+  source: { contour: number; index: number },
+): PenContour[] {
+  const anchor = contours[source.contour]?.anchors[source.index];
+  const id = anchor?.vertexId;
+  return contours.map((contour) => ({
+    closed: contour.closed,
+    anchors: contour.anchors.map((item) => {
+      if (!id || item.vertexId !== id) return { ...item };
+      return {
+        x: anchor.x,
+        y: anchor.y,
+        inX: anchor.inX ?? anchor.x,
+        inY: anchor.inY ?? anchor.y,
+        outX: anchor.outX ?? anchor.x,
+        outY: anchor.outY ?? anchor.y,
+        vertexId: id,
+      };
+    }),
+  }));
+}
+
+/**
+ * 删除一个顶点：有 vertexId 时从所有轮廓中移除同 id 锚点；
+ * 某条轮廓不足 2 锚点则整条移除，全部轮廓都不够时返回 null。
+ */
+export function removePenVertex(
+  contours: PenContour[],
+  source: { contour: number; index: number },
+): PenContour[] | null {
+  const contour = contours[source.contour];
+  const anchor = contour?.anchors[source.index];
+  if (!contour || !anchor) return null;
+  const id = anchor.vertexId;
+  if (!id) {
+    const next = removePenAnchor(contour.anchors, source.index);
+    if (!next) return null;
+    if (next.length >= 2) {
+      return contours.map((item, index) =>
+        index === source.contour ? { closed: item.closed, anchors: next } : { closed: item.closed, anchors: item.anchors.map((a) => ({ ...a })) },
+      );
+    }
+    if (contours.length <= 1) return null;
+    return contours
+      .filter((_, index) => index !== source.contour)
+      .map((item) => ({ closed: item.closed, anchors: item.anchors.map((a) => ({ ...a })) }));
+  }
+  const trimmed = contours
+    .map((item) => ({
+      closed: item.closed,
+      anchors: item.anchors.filter((a) => a.vertexId !== id).map((a) => ({ ...a })),
+    }))
+    .filter((item) => item.anchors.length >= 2);
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** 统计被多条轮廓引用的共享顶点数，用于右栏只读反馈。 */
+export function countSharedPenVertices(contours: PenContour[]): number {
+  const counts = new Map<string, number>();
+  for (const contour of contours) {
+    for (const anchor of contour.anchors) {
+      if (!anchor.vertexId) continue;
+      counts.set(anchor.vertexId, (counts.get(anchor.vertexId) ?? 0) + 1);
+    }
+  }
+  let shared = 0;
+  for (const count of counts.values()) if (count > 1) shared += 1;
+  return shared;
+}
+
+/** 有任一非零手柄视为平滑点；双击在平滑 / 角点之间切换。 */
+export function isSmoothPenAnchor(anchor: PenAnchor): boolean {
+  return dist(inPoint(anchor), anchor) > 0.01 || dist(outPoint(anchor), anchor) > 0.01;
+}
+
+/**
+ * 在角点与平滑点之间切换。平滑点按前后锚点连线取切线，两侧手柄等长；
+ * 开放路径端点只看向唯一邻居，闭合路径两端环绕。返回新数组，不改原对象。
+ */
+export function togglePenAnchorType(
+  anchors: PenAnchor[],
+  closed: boolean,
+  index: number,
+): { anchors: PenAnchor[]; smooth: boolean } | null {
+  if (index < 0 || index >= anchors.length) return null;
+  const next = anchors.map((anchor) => ({
+    x: anchor.x,
+    y: anchor.y,
+    inX: anchor.inX ?? anchor.x,
+    inY: anchor.inY ?? anchor.y,
+    outX: anchor.outX ?? anchor.x,
+    outY: anchor.outY ?? anchor.y,
+    ...(anchor.vertexId ? { vertexId: anchor.vertexId } : {}),
+  }));
+  const target = next[index];
+  const smooth = !isSmoothPenAnchor(target);
+  if (!smooth) {
+    target.inX = target.x;
+    target.inY = target.y;
+    target.outX = target.x;
+    target.outY = target.y;
+    return { anchors: next, smooth: false };
+  }
+  const count = next.length;
+  const hasPrev = closed || index > 0;
+  const hasNext = closed || index < count - 1;
+  const prev = hasPrev ? next[(index - 1 + count) % count] : null;
+  const after = hasNext ? next[(index + 1) % count] : null;
+  const prevDist = prev ? Math.hypot(prev.x - target.x, prev.y - target.y) : 0;
+  const nextDist = after ? Math.hypot(after.x - target.x, after.y - target.y) : 0;
+  let tx = 1;
+  let ty = 0;
+  if (prev && after) {
+    tx = after.x - prev.x;
+    ty = after.y - prev.y;
+  } else if (after) {
+    tx = after.x - target.x;
+    ty = after.y - target.y;
+  } else if (prev) {
+    tx = target.x - prev.x;
+    ty = target.y - prev.y;
+  }
+  const tangent = Math.hypot(tx, ty);
+  if (tangent > 0.01) {
+    tx /= tangent;
+    ty /= tangent;
+  } else {
+    tx = 1;
+    ty = 0;
+  }
+  const length = Math.max(4, Math.min(prevDist || Infinity, nextDist || Infinity) * 0.33);
+  target.inX = r2(target.x - tx * length);
+  target.inY = r2(target.y - ty * length);
+  target.outX = r2(target.x + tx * length);
+  target.outY = r2(target.y + ty * length);
+  return { anchors: next, smooth: true };
+}
+
 /** 把节点局部锚点还原为世界坐标，包含节点被缩放后的 sx/sy 映射。 */
 export function pathAnchorsToWorld(node: SceneNode, origin: { x: number; y: number }): PenAnchor[] {
   if (!node.pathAnchors || node.pathAnchors.length === 0) return [];
@@ -205,6 +347,7 @@ export function pathAnchorsToWorld(node: SceneNode, origin: { x: number; y: numb
     inY: origin.y + anchor.inY * sy,
     outX: origin.x + anchor.outX * sx,
     outY: origin.y + anchor.outY * sy,
+    ...(anchor.vertexId ? { vertexId: anchor.vertexId } : {}),
   }));
 }
 
@@ -290,6 +433,7 @@ export function penContoursGeometry(contours: PenContour[]): PenContoursGeometry
         inY: r2(pin.y - minY),
         outX: r2(pout.x - minX),
         outY: r2(pout.y - minY),
+        ...(anchor.vertexId ? { vertexId: anchor.vertexId } : {}),
       };
     });
     return { anchors, closed: contour.closed && anchors.length >= 3 };
@@ -350,6 +494,7 @@ export function pathContoursToWorld(node: SceneNode, origin: { x: number; y: num
       inY: origin.y + anchor.inY * sy,
       outX: origin.x + anchor.outX * sx,
       outY: origin.y + anchor.outY * sy,
+      ...(anchor.vertexId ? { vertexId: anchor.vertexId } : {}),
     })),
   }));
 }

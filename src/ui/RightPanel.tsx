@@ -14,6 +14,8 @@ import {
   updateGradientStops,
 } from '../core/paint';
 import { dashForKind, dashKind, formatDash, parseDashInput, type DashKind } from '../core/stroke';
+import { countSharedPenVertices } from '../core/pen';
+import { usePenAnchorSelection } from '../state/pen-selection';
 import { absolutePosition, absoluteRect, selectionBounds, topLevelSelection } from '../core/geometry';
 import { countArtboards } from '../core/doc';
 import {
@@ -755,6 +757,7 @@ function SliceInspector({ node }: { node: SceneNode }) {
 }
 
 function ShapeInspector({ node }: { node: SceneNode }) {
+  const penSelection = usePenAnchorSelection();
   const stroke = node.strokes?.[0];
   const isText = node.type === 'text';
   const isRect = node.type === 'rect';
@@ -772,6 +775,7 @@ function ShapeInspector({ node }: { node: SceneNode }) {
         ? '闭合'
         : '开放';
   const penAnchorTotal = penContours.reduce((sum, contour) => sum + contour.anchors.length, 0);
+  const penSharedTotal = countSharedPenVertices(penContours);
   const strokeDash = stroke ? dashKind(stroke.dash) : 'solid';
 
   const patchStroke = (patch: Partial<NonNullable<SceneNode['strokes']>[number]>) => {
@@ -829,7 +833,18 @@ function ShapeInspector({ node }: { node: SceneNode }) {
           <Row label="轮廓" value={`${penContours.length} 条`} />
           <Row label="锚点" value={`${penAnchorTotal} 个`} />
           <Row label="路径" value={penPathState} />
-          <p className="ins-note">拖动锚点与手柄可改形；点线段加点，选中锚点 Delete 删除；`Alt`+点击空白追加轮廓。</p>
+          {penContours.length > 1 && (
+            <Row
+              label="当前轮廓"
+              value={
+                penSelection?.nodeId === node.id
+                  ? `第 ${penSelection.contour + 1} / ${penContours.length} 条`
+                  : '未选锚点'
+              }
+            />
+          )}
+          {penSharedTotal > 0 && <Row label="共享顶点" value={`${penSharedTotal} 个`} />}
+          <p className="ins-note">拖动锚点与手柄可改形；双击锚点切角/平滑；点线段加点，选中锚点 Delete 删除；Ctrl+Delete 删除整条轮廓；Alt + 点锚点起分支，Alt + 点空白追加轮廓。</p>
         </section>
       )}
 

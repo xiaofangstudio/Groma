@@ -101,6 +101,35 @@ describe('场景校验', () => {
     doc.nodes['pen-x'] = pen;
     expect(validateDoc(doc).ok).toBe(true);
 
+    pen.pathContours = [
+      {
+        closed: true,
+        anchors: [
+          { x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0 },
+          { x: 80, y: 0, inX: 80, inY: 0, outX: 80, outY: 0 },
+        ],
+      },
+      {
+        closed: false,
+        anchors: [
+          { x: 20, y: 70, inX: 20, inY: 70, outX: 20, outY: 70 },
+          { x: 60, y: 90, inX: 60, inY: 90, outX: 60, outY: 90 },
+        ],
+      },
+    ];
+    expect(validateDoc(doc).ok).toBe(true);
+
+    pen.pathContours[0].anchors[0].vertexId = 'v-shared';
+    pen.pathContours[1].anchors[0].vertexId = 'v-shared';
+    expect(validateDoc(doc).ok).toBe(true);
+    pen.pathContours[1].anchors[0].vertexId = '';
+    expect(firstError(doc)).toContain('pathContours');
+    pen.pathContours[1].anchors[0].vertexId = 'v-shared';
+
+    pen.pathContours = [{ closed: true, anchors: [{ x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0 }] }];
+    expect(firstError(doc)).toContain('pathContours');
+
+    pen.pathContours = undefined;
     pen.pathAnchors = [{ x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0 }];
     expect(firstError(doc)).toContain('至少两个合法锚点');
 

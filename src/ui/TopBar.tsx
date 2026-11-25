@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { editor, useEditor } from '../state/editor';
+import { booleanEligibility, type BooleanOp } from '../core/boolean';
 import { renameProject } from '../io/project';
 import { parseSvgDrawing } from '../io/importSvg';
 import { applySvgImport } from '../io/applySvgImport';
@@ -30,6 +31,13 @@ import {
   IconUndo,
 } from './icons';
 
+const BOOLEAN_ACTIONS: Array<{ op: BooleanOp; label: string; hint: string }> = [
+  { op: 'union', label: '并集', hint: '合并两个闭合对象' },
+  { op: 'subtract', label: '差集', hint: '从底层对象减去上层对象' },
+  { op: 'intersect', label: '交集', hint: '只保留两个对象的重叠部分' },
+  { op: 'exclude', label: '排除', hint: '保留两个对象不重叠的部分' },
+];
+
 export function TopBar() {
   const s = useEditor();
   const [name, setName] = useState(s.doc.name);
@@ -37,6 +45,7 @@ export function TopBar() {
   const [versionOpen, setVersionOpen] = useState(false);
   const [toast, setToast] = useState<{ title: string; detail: string } | null>(null);
   const [importing, setImporting] = useState(false);
+  const [boolMenuOpen, setBoolMenuOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -50,6 +59,42 @@ export function TopBar() {
   }, [toast]);
 
   const scalePct = Math.round(s.viewport.scale * 100);
+  const booleanReady = booleanEligibility(s.doc, s.selectedIds);
+  const showBoolean = s.selectedIds.length >= 2;
+
+  useEffect(() => {
+    if (!showBoolean) setBoolMenuOpen(false);
+  }, [showBoolean]);
+
+  useEffect(() => {
+    if (!boolMenuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setBoolMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [boolMenuOpen]);
+
+  function runBoolean(op: BooleanOp) {
+    if (!booleanReady.ok) {
+      setToast({ title: '无法执行布尔', detail: booleanReady.reason });
+      return;
+    }
+    if (editor.booleanSelected(op)) {
+      const title: Record<BooleanOp, string> = {
+        union: '并集完成',
+        subtract: '差集完成',
+        intersect: '交集完成',
+        exclude: '排除完成',
+      };
+      setToast({
+        title: title[op],
+        detail: '布尔结果已扁平化为折线',
+      });
+    } else {
+      setToast({ title: '无法执行布尔', detail: '结果为空或对象没有父级' });
+    }
+  }
 
   function commitName() {
     const next = name.trim() || '未命名设计';
@@ -249,6 +294,69 @@ export function TopBar() {
           >
             <IconRedo size={15} />
           </button>
+          {showBoolean && (
+            <>
+              <span className="tool-sep" />
+              <span className="bool-wide">
+                {BOOLEAN_ACTIONS.map((action) => (
+                  <button
+                    key={action.op}
+                    className="tool-btn bool-btn"
+                    title={booleanReady.ok ? `${action.label}：${action.hint}` : `${action.label}：${booleanReady.reason}`}
+                    aria-label={action.label}
+                    disabled={!booleanReady.ok}
+                    onClick={() => runBoolean(action.op)}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </span>
+              <span className="bool-menu-wrap">
+                <button
+                  className="tool-btn bool-btn bool-compact"
+                  title={booleanReady.ok ? '布尔运算：并集 / 差集 / 交集 / 排除' : `布尔运算：${booleanReady.reason}`}
+                  aria-label="布尔运算"
+                  aria-expanded={boolMenuOpen}
+                  onClick={() => setBoolMenuOpen((open) => !open)}
+                >
+                  布尔 ▾
+                </button>
+                {boolMenuOpen && (
+                  <>
+                    <button
+                      className="bool-menu-shade"
+                      aria-label="关闭布尔菜单"
+                      tabIndex={-1}
+                      onClick={() => setBoolMenuOpen(false)}
+                    />
+                    <div className="bool-menu" role="menu" aria-label="布尔运算">
+                      {BOOLEAN_ACTIONS.map((action) => (
+                        <button
+                          key={action.op}
+                          className="bool-menu-item"
+                          role="menuitem"
+                          disabled={!booleanReady.ok}
+                          title={booleanReady.ok ? action.hint : booleanReady.reason}
+                          onClick={() => {
+                            runBoolean(action.op);
+                            setBoolMenuOpen(false);
+                          }}
+                        >
+                          {action.label}
+                        </button>
+                      ))}
+                      {!booleanReady.ok && <span className="bool-menu-reason">{booleanReady.reason}</span>}
+                    </div>
+                  </>
+                )}
+              </span>
+              {!booleanReady.ok && (
+                <span className="bool-reason" title={booleanReady.reason}>
+                  需两条闭合对象
+                </span>
+              )}
+            </>
+          )}
         </div>
 
         <div className="topbar-right">

@@ -61,7 +61,10 @@ function validateStroke(value: unknown): boolean {
 
 function validatePathAnchor(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return ['x', 'y', 'inX', 'inY', 'outX', 'outY'].every((field) => isFiniteNumber(value[field]));
+  const vertexOk =
+    value.vertexId === undefined ||
+    (typeof value.vertexId === 'string' && value.vertexId.trim().length > 0);
+  return vertexOk && ['x', 'y', 'inX', 'inY', 'outX', 'outY'].every((field) => isFiniteNumber(value[field]));
 }
 
 function validatePathContour(value: unknown): boolean {

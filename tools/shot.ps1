@@ -72,6 +72,7 @@ public class GromaShot {
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int h2, uint flags);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
@@ -178,8 +179,24 @@ function Capture-Window {
   $ok = [GromaShot]::PrintWindow($Hwnd, $hdc, 2)
   $g.ReleaseHdc($hdc)
   $g.Dispose()
-  $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
-  $bmp.Dispose()
+  [GromaShot+RECT]$cr = New-Object GromaShot+RECT
+  [GromaShot]::GetClientRect($Hwnd, [ref]$cr) | Out-Null
+  $clientW = $cr.right - $cr.left
+  $border = [int](($w - $clientW) / 2)
+  if ($border -gt 0 -and $border -lt 40 -and $h -gt $border) {
+    $cropW = $w - 2 * $border
+    $cropH = $h - $border
+    $crop = New-Object System.Drawing.Bitmap $cropW, $cropH
+    $cg = [System.Drawing.Graphics]::FromImage($crop)
+    $cg.DrawImage($bmp, [System.Drawing.Rectangle]::new(0, 0, $cropW, $cropH), [System.Drawing.Rectangle]::new($border, 0, $cropW, $cropH), [System.Drawing.GraphicsUnit]::Pixel)
+    $cg.Dispose()
+    $bmp.Dispose()
+    $crop.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $crop.Dispose()
+  } else {
+    $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Dispose()
+  }
   return $ok
 }
 

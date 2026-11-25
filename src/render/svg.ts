@@ -1,5 +1,6 @@
 import type { GromaDoc, Paint, SceneNode } from '../core/types';
 import { absoluteRect } from '../core/geometry';
+import { nodePathContours, penPathData } from '../core/pen';
 import { getAssetDataUrl } from '../io/images';
 
 export interface SvgExport {
@@ -109,6 +110,26 @@ function emitNode(
         node.shapeKind === 'arrow' && node.arrowHeadData && node.strokes?.[0] && node.strokes[0].opacity > 0 && node.strokes[0].width > 0
           ? `<path d="${esc(node.arrowHeadData)}" transform="${transform}" fill="${esc(node.strokes[0].color)}" fill-opacity="${n(node.strokes[0].opacity)}" />`
           : '';
+      if (node.pathContours?.length) {
+        const contours = nodePathContours(node);
+        const closedData = contours
+          .filter((contour) => contour.closed && contour.anchors.length >= 3)
+          .map((contour) => penPathData(contour.anchors, true))
+          .filter(Boolean)
+          .join(' ');
+        const openData = contours
+          .filter((contour) => !contour.closed)
+          .map((contour) => penPathData(contour.anchors, false))
+          .filter(Boolean)
+          .join(' ');
+        const filled = closedData
+          ? `<path d="${esc(closedData)}" transform="${transform}" fill-rule="${node.fillRule ?? 'nonzero'}" ${paintAttrs(node, defs)}${strokeAttrs(node)} />`
+          : '';
+        const open = openData
+          ? `<path d="${esc(openData)}" transform="${transform}" fill="none"${strokeAttrs(node)} />`
+          : '';
+        return `${filled}${open}${head}`;
+      }
       return `<path d="${esc(node.pathData)}" transform="${transform}" fill-rule="${node.fillRule ?? 'nonzero'}" ${paintAttrs(node, defs)}${strokeAttrs(node)} />${head}`;
     }
     if (node.type === 'image') {

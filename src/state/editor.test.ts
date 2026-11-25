@@ -24,6 +24,28 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[id].x).toBe(10);
   });
 
+  it('布尔并集落成单个路径节点，并一步撤销/重做', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 50, y: 0, w: 100, h: 100 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.booleanSelected('union')).toBe(true);
+    const resultId = getState().selectedId;
+    expect(resultId).toBeTruthy();
+    expect(getState().doc.nodes[a]).toBeUndefined();
+    expect(getState().doc.nodes[b]).toBeUndefined();
+    expect(getState().doc.nodes[resultId!].pathContours?.length).toBe(1);
+
+    editor.undo();
+    expect(getState().doc.nodes[a]).toBeTruthy();
+    expect(getState().doc.nodes[b]).toBeTruthy();
+    expect(getState().doc.nodes[resultId!]).toBeUndefined();
+
+    editor.redo();
+    expect(getState().doc.nodes[a]).toBeUndefined();
+    expect(getState().doc.nodes[resultId!]).toBeTruthy();
+  });
+
   it('直线以 path 节点落盘，默认无填充并带描边', () => {
     const id = editor.addNode({
       type: 'path',
@@ -660,6 +682,75 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[id].pathAnchors).toHaveLength(5);
     editor.undo();
     expect(getState().doc.nodes[id].pathAnchors).toHaveLength(3);
+  });
+
+  it('钢笔节点可追加第二条轮廓，更新首条轮廓时保留分支', () => {
+    const id = editor.addNode({
+      type: 'path',
+      parentId: rootId(),
+      x: 40,
+      y: 50,
+      w: 120,
+      h: 90,
+      pathData: 'M 0 0 L 120 0 L 60 90 L 0 0 Z',
+      pathW: 120,
+      pathH: 90,
+      pathAnchors: [
+        { x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0 },
+        { x: 120, y: 0, inX: 120, inY: 0, outX: 120, outY: 0 },
+        { x: 60, y: 90, inX: 60, inY: 90, outX: 60, outY: 90 },
+      ],
+      pathClosed: true,
+      fill: '#D9D9D9',
+      strokes: [],
+    });
+    const changed = editor.setPathContours(id, [
+      {
+        closed: true,
+        anchors: [
+          { x: 40, y: 50 },
+          { x: 160, y: 50 },
+          { x: 100, y: 140 },
+        ],
+      },
+      {
+        closed: false,
+        anchors: [
+          { x: 220, y: 180 },
+          { x: 300, y: 250 },
+        ],
+      },
+    ]);
+    expect(changed).toBe(true);
+    const node = getState().doc.nodes[id];
+    expect(node.pathContours).toHaveLength(2);
+    expect(node.pathContours?.[1].closed).toBe(false);
+    expect(node.pathAnchors).toHaveLength(3);
+    expect(node.x).toBe(40);
+    expect(node.y).toBe(50);
+    expect(node.w).toBe(260);
+    expect(node.h).toBe(200);
+    expect(node.pathData?.match(/M /g)).toHaveLength(2);
+
+    editor.setPathAnchors(
+      id,
+      [
+        { x: 40, y: 60 },
+        { x: 180, y: 60 },
+        { x: 100, y: 160 },
+      ],
+      true,
+    );
+    const updated = getState().doc.nodes[id];
+    expect(updated.pathContours).toHaveLength(2);
+    expect(updated.pathContours?.[1].anchors).toHaveLength(2);
+    expect(updated.pathAnchors?.[0].y).toBe(0);
+    expect(updated.y).toBe(60);
+
+    editor.undo();
+    expect(getState().doc.nodes[id].y).toBe(50);
+    editor.undo();
+    expect(getState().doc.nodes[id].pathContours).toBeUndefined();
   });
 
   it('每一页记住自己的缩放与平移，切页后再切回仍恢复', () => {

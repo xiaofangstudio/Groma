@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { RULER, drawEditor, drawRulers, type DrawStats } from '../render/draw';
-import { screenToWorld } from '../core/viewport';
+import { RULER, drawEditor, drawRulers, type DrawStats } from '../render/draw';import { screenToWorld } from '../core/viewport';
 import { hitTestGuide, guideScreenPosition } from '../core/guides';
 import { arrowGeometry } from '../core/arrow';
 import { lineGeometry } from '../core/line';
@@ -10,7 +9,9 @@ import {
   pathContoursToWorld,
   penGeometry,
   penPathData,
-  removePenAnchor,
+  removePenVertex,
+  syncSharedPenVertex,
+  togglePenAnchorType,
   type PenAnchor,
   type PenContour,
 } from '../core/pen';
@@ -35,6 +36,7 @@ import {
   type VerticalSnapEdge,
 } from '../core/snapping';
 import { editor, getState, useEditor } from '../state/editor';
+import { setPenAnchorSelection } from '../state/pen-selection';
 import { setCursor } from '../state/cursor';
 import { subscribeImages } from '../io/images';
 import type { Guide, Rect, SceneNode } from '../core/types';
@@ -152,6 +154,13 @@ interface ScreenRect {
   h: number;
 }
 
+let penVertexSeq = 0;
+
+function newPenVertexId(): string {
+  penVertexSeq += 1;
+  return `v${Date.now().toString(36)}-${penVertexSeq}`;
+}
+
 export function CanvasView() {
   const s = useEditor();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -185,6 +194,8 @@ export function CanvasView() {
   const [linePreview, setLinePreview] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   const [penHover, setPenHover] = useState<{ x: number; y: number } | null>(null);
   const [penAnchorIndex, setPenAnchorIndex] = useState<PenAnchorRef | null>(null);
+  const [penHint, setPenHint] = useState<string | null>(null);
+  const penHintTimerRef = useRef(0);
   const [, setPenTick] = useState(0);
   const [marquee, setMarquee] = useState<ScreenRect | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
@@ -195,6 +206,25 @@ export function CanvasView() {
 
   const { doc, pageId, viewport, selectedIds, viewSize } = s;
   const page = doc.pages.find((p) => p.id === pageId) ?? doc.pages[0];
+  const activePenNodeId = selectedIds.length === 1 ? selectedIds[0] : null;
+
+  useEffect(() => {
+    setPenAnchorSelection(
+      activePenNodeId && penAnchorIndex
+        ? { nodeId: activePenNodeId, contour: penAnchorIndex.contour, index: penAnchorIndex.index }
+        : null,
+    );
+  }, [activePenNodeId, penAnchorIndex]);
+
+  useEffect(() => () => {
+    if (penHintTimerRef.current) window.clearTimeout(penHintTimerRef.current);
+  }, []);
+
+  function flashPenHint(text: string) {
+    setPenHint(text);
+    if (penHintTimerRef.current) window.clearTimeout(penHintTimerRef.current);
+    penHintTimerRef.current = window.setTimeout(() => setPenHint(null), 2600);
+  }
 
   function showSnapGuides(next: SnapGuide[]) {
     const key = next
@@ -431,6 +461,18 @@ export function CanvasView() {
         finishPen(false);
         return;
       }
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        penAnchorIndexRef.current !== null &&
+        !penRef.current
+      ) {
+        if (deletePenContour()) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
+      }
       if ((e.key === 'Delete' || e.key === 'Backspace') && penAnchorIndexRef.current !== null && !penRef.current) {
         if (deletePenAnchor()) {
           e.preventDefault();
@@ -606,9 +648,10 @@ export function CanvasView() {
     }));
     const target = next[best.contour];
     const inserted = insertPenAnchor(target.anchors, target.closed, best.hit.segment, best.hit.t);
+    const index = Math.min(best.hit.segment + 1, inserted.length - 1);
+    inserted[index].vertexId = newPenVertexId();
     target.anchors = inserted;
     if (!editor.setPathContours(node.id, next)) return false;
-    const index = Math.min(best.hit.segment + 1, inserted.length - 1);
     penAnchorIndexRef.current = { contour: best.contour, index };
     setPenAnchorIndex({ contour: best.contour, index });
     bumpPen();
@@ -628,21 +671,67 @@ export function CanvasView() {
       setPenAnchorIndex(null);
       return true;
     }
-    const next = removePenAnchor(contour.anchors, selected.index);
+    const next = removePenVertex(contours, selected);
     if (!next) return true;
-    let nextRef: PenAnchorRef | null;
-    if (next.length >= 2) {
-      contours[selected.contour] = { anchors: next, closed: contour.closed };
-      nextRef = { contour: selected.contour, index: Math.min(selected.index, next.length - 1) };
-    } else if (contours.length > 1) {
-      contours.splice(selected.contour, 1);
-      nextRef = { contour: Math.max(0, selected.contour - 1), index: 0 };
-    } else {
-      return true;
-    }
-    if (!editor.setPathContours(node.id, contours)) return true;
+    const nextContour = Math.min(selected.contour, next.length - 1);
+    const nextRef: PenAnchorRef = {
+      contour: nextContour,
+      index: Math.min(selected.index, next[nextContour].anchors.length - 1),
+    };
+    if (!editor.setPathContours(node.id, next)) return true;
     penAnchorIndexRef.current = nextRef;
     setPenAnchorIndex(nextRef);
+    bumpPen();
+    return true;
+  }
+
+  function deletePenContour(): boolean {
+    const current = getState();
+    const node = selectedPenPath(current);
+    const selected = penAnchorIndexRef.current;
+    if (!node || !selected) return false;
+    const origin = absolutePosition(current.doc, node.id);
+    const contours = pathContoursToWorld(node, origin);
+    if (contours.length <= 1) {
+      flashPenHint('至少保留一条轮廓');
+      return true;
+    }
+    const next = contours
+      .filter((_, index) => index !== selected.contour)
+      .map((contour) => ({ closed: contour.closed, anchors: contour.anchors.map((anchor) => ({ ...anchor })) }));
+    const nextRef: PenAnchorRef = {
+      contour: Math.min(selected.contour, next.length - 1),
+      index: 0,
+    };
+    if (!editor.setPathContours(node.id, next)) return true;
+    penAnchorIndexRef.current = nextRef;
+    setPenAnchorIndex(nextRef);
+    bumpPen();
+    flashPenHint('已删除整条轮廓');
+    return true;
+  }
+
+
+  function togglePenAnchorAt(e: React.MouseEvent<HTMLCanvasElement>): boolean {
+    const current = getState();
+    const node = selectedPenPath(current);
+    if (!node) return false;
+    const p = contentPoint(e);
+    if (p.x < 0 || p.y < 0) return false;
+    const world = screenToWorld(current.viewport, p.x, p.y);
+    const hit = penEditHit(current, node, world);
+    if (!hit || hit.kind !== 'anchor') return false;
+    const origin = absolutePosition(current.doc, node.id);
+    const contours = pathContoursToWorld(node, origin);
+    const contour = contours[hit.contour];
+    if (!contour) return false;
+    const next = togglePenAnchorType(contour.anchors, contour.closed, hit.index);
+    if (!next) return false;
+    contour.anchors = next.anchors;
+    const synced = syncSharedPenVertex(contours, { contour: hit.contour, index: hit.index });
+    editor.setPathContours(node.id, synced);
+    penAnchorIndexRef.current = { contour: hit.contour, index: hit.index };
+    setPenAnchorIndex({ contour: hit.contour, index: hit.index });
     bumpPen();
     return true;
   }
@@ -665,7 +754,7 @@ export function CanvasView() {
         closed: closeIt,
         anchors: session.anchors.map((anchor) => ({ ...anchor })),
       });
-      editor.setPathContours(node.id, contours);
+      editor.setPathContours(node.id, contours, false, !closeIt);
       editor.select(node.id);
       return;
     }
@@ -729,7 +818,7 @@ export function CanvasView() {
       }
       penRef.current = active;
     }
-    const anchor: PenAnchor = { x: world.x, y: world.y };
+    const anchor: PenAnchor = { x: world.x, y: world.y, vertexId: newPenVertexId() };
     active.anchors.push(anchor);
     lastPenAnchorAtRef.current = Date.now();
     penHandleRef.current = {
@@ -803,6 +892,31 @@ export function CanvasView() {
       const editNode = selectedPenPath(current);
       if (editNode) {
         const hit = penEditHit(current, editNode, world);
+        if (e.altKey && hit?.kind === 'anchor') {
+          const origin = absolutePosition(current.doc, editNode.id);
+          const contours = pathContoursToWorld(editNode, origin);
+          const anchor = contours[hit.contour]?.anchors[hit.index];
+          if (anchor) {
+            e.preventDefault();
+            const seedId = anchor.vertexId ?? newPenVertexId();
+            if (!anchor.vertexId) {
+              anchor.vertexId = seedId;
+              editor.setPathContours(editNode.id, contours, true);
+            }
+            penRef.current = {
+              parentId: editNode.parentId ?? statePage.rootId,
+              parentAbs: penParentAbs(current, editNode),
+              anchors: [{ x: anchor.x, y: anchor.y, vertexId: seedId }],
+              targetId: editNode.id,
+              branch: true,
+            };
+            penAnchorIndexRef.current = null;
+            setPenAnchorIndex(null);
+            setPenHover(null);
+            bumpPen();
+            return;
+          }
+        }
         if (hit) {
           e.preventDefault();
           beginPenEdit(e, current, editNode, hit, world);
@@ -994,7 +1108,8 @@ export function CanvasView() {
           }
         }
         if (Math.hypot(world.x - edit.startWorld.x, world.y - edit.startWorld.y) > 1) edit.moved = true;
-        editor.setPathContours(edit.id, nextContours, true);
+        const synced = syncSharedPenVertex(nextContours, { contour: edit.contour, index: edit.index });
+        editor.setPathContours(edit.id, synced, true);
         bumpPen();
       }
       return;
@@ -1412,6 +1527,7 @@ export function CanvasView() {
   }
 
   function onDoubleClick(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (togglePenAnchorAt(e)) return;
     const p = contentPoint(e);
     if (p.x < 0 || p.y < 0) return;
     const current = getState();
@@ -1472,6 +1588,12 @@ export function CanvasView() {
         onDoubleClick={onDoubleClick}
         onContextMenu={(e) => e.preventDefault()}
       />
+      {penHint && (
+        <div className="toast" role="status">
+          <span className="toast-dot" />
+          <strong>{penHint}</strong>
+        </div>
+      )}
       {(page.guides ?? []).map((guide, index) => {
         const dragging = guideDraft?.mode === 'move' && guideDraft.index === index;
         const deleting = dragging && guideDraft?.deleting;
@@ -1688,7 +1810,7 @@ export function CanvasView() {
             ? penRef.current
               ? '单击加锚点 · 拖动出手柄 · 点首点闭合 · Enter 收尾'
               : selectedPenNode
-                ? '拖动锚点/手柄改形 · 点线段加点 · Delete 删锚点 · Alt+点空白加轮廓'
+                ? '拖动锚点/手柄改形 · 双击锚点切角/平滑 · 点线段加点 · Delete 删锚点 · Alt + 点锚点起分支/点空白加轮廓'
                 : '单击放锚点 · 拖动出手柄 · Enter / 双击收尾 · 点首点闭合'
             : guideDraft
             ? guideDraft.deleting

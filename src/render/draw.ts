@@ -1,5 +1,6 @@
 import type { GromaDoc, Page, SceneNode } from '../core/types';
 import { absoluteRect, selectionBounds } from '../core/geometry';
+import { nodePathContours, penPathData } from '../core/pen';
 import type { Viewport } from '../core/viewport';
 import { getAssetImage, requestImageAsset } from '../io/images';
 
@@ -311,6 +312,27 @@ function drawVectorPath(
   ctx.globalAlpha = node.opacity;
   ctx.translate(x, y);
   ctx.scale(sx, sy);
+  const contours = node.pathContours?.length ? nodePathContours(node) : [];
+  if (contours.length > 0) {
+    const closed = contours.filter((contour) => contour.closed && contour.anchors.length >= 3);
+    const closedData = closed.map((contour) => penPathData(contour.anchors, true)).filter(Boolean).join(' ');
+    const allData = contours.map((contour) => penPathData(contour.anchors, contour.closed)).filter(Boolean).join(' ');
+    if (node.fills.length > 0 && closedData) {
+      makeFill(ctx, node, 0, 0, sourceW, sourceH);
+      ctx.fill(new Path2D(closedData), node.fillRule ?? 'nonzero');
+    }
+    if (paintStroke(ctx, node) && allData) {
+      ctx.stroke(new Path2D(allData));
+      const head = node.shapeKind === 'arrow' ? node.arrowHeadData : undefined;
+      const stroke = node.strokes?.[0];
+      if (head && stroke) {
+        ctx.fillStyle = stroke.color;
+        ctx.fill(new Path2D(head));
+      }
+    }
+    ctx.restore();
+    return;
+  }
   const path = new Path2D(node.pathData);
   if (node.fills.length > 0) {
     makeFill(ctx, node, 0, 0, sourceW, sourceH);

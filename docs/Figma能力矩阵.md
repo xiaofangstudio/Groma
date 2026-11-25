@@ -1,6 +1,6 @@
 # Groma × Figma 能力矩阵（执行版）
 
-> 更新：2026-11-24 ｜ 审计基线：`npm run gate` 24 个测试文件 / 146 tests 全绿；A02 全链路、A05 浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 与本页批量导出、导出弹窗单焦点重排、页缩略图不抢帧补丁、PNG/JPG/WebP 图片节点与工程资产层（含替换图片）、文本对齐/行高/斜体、C02 直线/箭头/多边形/星形与 Slice 区域导出、C03 钢笔一期与锚点编辑（拖锚点/手柄、线段插点、Delete 删点、Alt 单边、单步撤销）已落地；左栏 footer 背景固定与内容裁剪、页面“画板”计数只数 Frame、紧凑窗口顶栏文件名压缩、验收截图统一最大化；外部软件工程级导入只留入口，选区回传待补；EXE 3,284 KB，2026-11-24 22:28:12
+> 更新：2026-11-25 ｜ 审计基线：`npm run gate` 25 个测试文件 / 159 tests 全绿；C03 已落地钢笔一期/锚点编辑/多轮廓复合路径/共享顶点（`vertexId` 最小内核）/当前轮廓序号与整条轮廓删除，C04 已落地两对象四布尔 Union/Subtract/Intersect/Exclude、同父级校验与 z-order 差集（底层减上层）；A02 全链路、A05 浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 与本页批量导出、导出弹窗单焦点重排、页缩略图不抢帧补丁、PNG/JPG/WebP 图片节点与工程资产层（含替换图片）、文本对齐/行高/斜体、C02 直线/箭头/多边形/星形与 Slice 区域导出均已落地；左栏 footer 背景固定与内容裁剪、页面“画板”计数只数 Frame、紧凑窗口顶栏文件名压缩与布尔菜单、验收截图统一最大化；外部软件工程级导入只留入口，选区回传待补；EXE 3,297 KB，2026-11-25 13:16:26
 > 功能底本：[`Figma功能蒸馏参考.md`](./Figma功能蒸馏参考.md)（能力清单，不是完成清单）
 > 权威顺序：`README.md` 第零章 → 本文 → 其他规划文档
 > 一句话：**Figma 免费版是功能基线，其他工具的长处是融合层；矩阵只认双击 EXE 能跑的结果。**
@@ -78,8 +78,8 @@
 | --- | --- | --- | --- | --- | --- |
 | C01 | 选择/框选/多选/成组/对齐分布 | V、Shift 加减选、框选、Ctrl+G、6 向对齐、等距 | ✅ 已真实窗口验收 | 边缘穿透选择细节 | P2 |
 | C02 | 基础形状 | Frame、矩形、直线、椭圆、多边形、星形、三角形、箭头、Slice | ● 2026-11-24 Frame/矩形/椭圆/文字 + 直线 + 箭头（线身 + 可填充三角头，SVG 同步导出）+ 多边形/星形（`path` 参数化，边数/角数 3–12、星形内径 10–90%）+ Slice（青色虚线标注、PNG/JPG/SVG 区域裁切）已落地；三角形可用多边形 3 边生成，无独立图标 | 形状参数化扩展 | P1 |
-| C03 | 钢笔/矢量网络 | 角点/平滑点、拖手柄、增删锚点、分支路径 | ◐ 2026-11-24 一期+锚点编辑：`P` 钢笔工具、角点与对称手柄、首锚点闭合、双击/`Enter` 收尾、锚点叠层、保存重开、单图层 PNG/SVG 导出；钢笔下可拖锚点与手柄改形（`Alt` 单边）、点线段插点、选中锚点 `Delete` 删除、整段拖动单步撤销；分支路径、多路径矢量网络未做 | 分支路径、Vector Network | P1 |
-| C04 | 布尔运算 | Union/Subtract/Intersect/Exclude、Flatten、Outline stroke | ○ | 布尔节点与四快捷键 | P1 |
+| C03 | 钢笔/矢量网络 | 角点/平滑点、拖手柄、增删锚点、分支路径 | ◐ 2026-11-25 钢笔一期+锚点编辑+多轮廓+共享顶点最小内核：`P` 钢笔工具、角点与对称手柄、首锚点闭合、双击/`Enter` 收尾、锚点叠层；拖锚点/手柄（`Alt` 单边）、线段插点、`Delete` 删点、整段拖动单步撤销；同一节点内 `Alt`+点空白追加多条轮廓，`Alt`+点锚点从同一坐标起分支；`PathAnchor.vertexId` 重复即共享顶点，拖动/删点/切角同步所有同 id 锚点，右栏显示“共享顶点 N 个”；右栏显示“当前轮廓 第 N / M 条”，`Ctrl/Cmd+Delete` 删除整条轮廓（只剩 1 条时拒绝）；闭合轮廓才填，开放轮廓只描边；双击切角点/平滑点；仍缺完整 Vector Network 图边/区域填充 | 完整 Vector Network、区域填充、图边遍历 | P1 |
+| C04 | 布尔运算 | Union/Subtract/Intersect/Exclude、Flatten、Outline stroke | ◐ 2026-11-25 两对象四布尔：正好两个对象、同一父级、不得有子图层；支持矩形（圆角近似）、椭圆（48 点）、多边形/星形、闭合钢笔轮廓；贝塞尔固定 12 段 flatten；源对象按父级 `children` 顺序取 z-order，数组前为底层，差集固定“底层减上层”；结果单个 `path` 节点、`fillRule:evenodd`、名称“并集/差集/交集/排除 N”，源删除与结果插入合成一条 `structure` 历史；保存重开与 PNG/SVG 导出通过；缺 Divide/Outline/Flatten 与 3+ 对象 | 3+ 对象折叠、拍平、描边转形状、Divide | P1 |
 | C05 | 蒙版 | 形状蒙版、图层裁剪 | ○ | 蒙版节点 | P1 |
 | C06 | 图片 | 图片填充/资产、粘贴、裁剪焦点 | ◐ 2026-11-24 图片节点与工程资产层：PNG/JPG/WebP 导入、画布渲染、拖移缩放、圆角/透明度、PNG/JPG/SVG 导出、保存重开、检查器替换图片（保留位置尺寸）；区域裁剪未做 | 图片填充、裁剪焦点、粘贴图片、孤儿清理 | P1 |
 | C07 | 文本 | 富文本、字体、行高、字距、段落、列表、路径文字、链接 | ◐ 基础文本、字号、字重、左/中/右对齐、行高、斜体已落地；字体族、字距、富文本、段落、列表、路径文字未做 | 文本样式与富文本 | P1 |
@@ -186,7 +186,7 @@
 | --- | --- | --- | --- |
 | 1 | **A02 多页面与页面管理**（含拖排序、缩略图、跨页搜索、页级视口持久化） | 文件模型必须先定；否则组件库、版本历史、导出都要返工 | 建/切/改名/复制/删除/拖排序，切页恢复各自视口，缩略图与跨页搜索，撤销与保存重开；窗口截图 |
 | 2 | **A03 Sections + A05 版本历史浏览与回滚** | 页面之下需要区块；版本回滚要能看到真实快照 | A05 已落地快照列表/预览/手动存版本/回滚；A03 基础链路（创建/命名/折叠/填充/Frame 入块/PNG 整块导出）已落地，专属视觉与嵌套规则仍待补 |
-| 3 | **C03 矢量 + C04 布尔 + C05 蒙版** | 组件、图标、布尔都依赖矢量节点；这是对象模型地基 | C03 已落地钢笔、锚点/手柄、闭合/开放、锚点拖拽/插点/删点、持久化与单图层导出；下一刀补分支路径/Vector Network，再接布尔/蒙版 |
+| 3 | **C03 矢量 + C04 布尔 + C05 蒙版** | 组件、图标、布尔都依赖矢量节点；这是对象模型地基 | C03 已落地钢笔、锚点/手柄、闭合/开放、锚点拖拽/插点/删点、同节点可编辑多轮廓、共享顶点（`vertexId`）、当前轮廓序号与整条轮廓删除、角点/平滑点切换、开放轮廓只描边、持久化与单图层导出；C04 已落地两对象 Union/Subtract/Intersect/Exclude、同父级校验、按 z-order 的差集方向、结果拍平为 `path`、单步撤销/重做与保存重开导出；下一刀补 3+ 对象折叠、完整 Vector Network、Divide/Outline 与蒙版 |
 | 4 | **D01–D06 外观 + F04 样式 + F05 变量** | 先有统一 paint/style/token，再做组件库，避免每个组件各写一套颜色 | 多填充/描边/效果/四角；样式与变量能绑定、能切 Mode |
 | 5 | **E01 约束 + E02 Auto Layout** | 布局引擎要先于组件变体，否则组件尺寸规则无法闭合 | Frame 改尺寸子节点按约束响应；Auto Layout Hug/Fill/Fixed |
 | 6 | **F01–F03 组件/变体/库** | 依赖矢量、样式、变量、布局四层 | 主组件/实例/变体/覆盖/本地库 |
@@ -266,7 +266,7 @@
 - 检查器：多边形/星形显示“形状”段（边数 / 角数 + 内径%），改值调用 `setShapeParams` 并按当前 W/H 重算，只进一条撤销；箭头的 `setShapeParams` 直接拒绝，避免把三角头改坏。
 - 渲染：复用现有 path 渲染、命中、缩放与 SVG 导出，不新增第二套形状图元；箭头三角头跟随描边透明度与颜色。
 - 测试：`line.test.ts` 4 条、`arrow.test.ts` 4 条、`shapes.test.ts` 4 条；`schema.test.ts` 14 条（含切片类型与非法几何）；`svg.test.ts` 8 条（两形状闭合路径、箭头双 path、切片裁切与居中文本锚点）；`editor.test.ts` 29 条（含切片落盘/无填充/撤销）；`doc.test.ts` 5 条（画板计数忽略根级切片）。
-- C02 收口时 `npm run gate` PASS（23 个测试文件 / 135 条测试，MCP selftest 通过）；当时 EXE 3,281 KB，2026-11-24 20:57:07；前端 `index-CPsLA2Dx.css` 58.03 kB、`index-BTAErJ2y.js` 422.13 kB。当前全量见 3.7：24 文件 / 146 条。
+- C02 收口时 `npm run gate` PASS（23 个测试文件 / 135 条测试，MCP selftest 通过）；当时 EXE 3,281 KB，2026-11-24 20:57:07；前端 `index-CPsLA2Dx.css` 58.03 kB、`index-BTAErJ2y.js` 422.13 kB。当前全量见 3.12：25 文件 / 159 条。
 - 真实 EXE：`shape-final.groma` 拖出五边形/五角星，改八边形/内径 55%，保存重开仍在；`arrow-final.groma` 拖出斜向与近水平两支箭头，`scene.json` 两支都挂 `frame-1`，各有 `arrowHeadData`、`fills:[]`、2px `#221C00` 描边，保存重开三角头与方向不变；`slice-final.groma` 中切片 `slice-mwuomxf8-1` 为 X443/Y182/527×497，保存重开恢复且画板计数仍为 1。
 - UI：`shots/arrow-final-1440.png`（两支箭头与箭头检查器）、`arrow-reopen-1440.png`（重开）、`arrow-final-1280.png` / `arrow-1040.png`（紧凑窗口）；`shots/slice-reopen-1440.png`（展开图层、选中切片、青色虚线框、检查器）、`slice-export-dialog-1440.png`（切片 SVG 527×497）、`slice-compact-1040.png`（12 入口不重叠、文件名完整）、`slice-final-export-1440.png`（SVG 导出 Toast）。`shots/shapes-final-1440.png` / `shapes-final-1280.png` / `shapes-1040-inspector.png` 为多边形/星形三档。左栏 footer 实底、左右面板 `overflow:hidden`、页行与底栏“画板”只统计 Frame。
 - 切片导出实测：PNG `切片 1@1x.png` 527×497 / 14,235 B；SVG `切片 1.svg` 1,278 B，`viewBox="0 0 527 497"`，Edge 渲染与 PNG 的卡片右缘、墨色圆、标题尾“oma”、副标题残段与横条一致；导出文件不含青色虚线或“切片 1”标签。
@@ -300,7 +300,75 @@
 - 真实 EXE：复制 `pen-final.groma` 为 `pen-edit.groma`，最大化到 1707×1019 工作区、缩放到 100%，选中 `钢笔 1` 后拖动第 3 个锚点，包围盒由 377.33×427.38 变为 473.33×438.75；拖手柄改形后点线段插点，锚点 5→6，按 `Delete` 回到 5；保存后 `scene.json` 仍为闭合 5 锚点，重开锚点叠层、检查器和改写后的 `pathData` 全部恢复。
 - `Alt` 单边手柄实测：另复制 `pen-alt.groma`，按住 `Alt` 向右上拖第 3 锚点的 out 手柄，`out` 从 377.33,296.47 变为 431.33,264.47，`in` 保持 377.33,219.47 不动；`W` 由 377.33 变 431.33，保存重开保持。驱动脚本 `tools/cdp-pen-edit.mjs` / `cdp-pen-alt.mjs` 可复跑。
 - UI：`shots/pen-edit-max.png`（最大化窗口下 5 锚点、选中锚点深色描边、检查器 473.33×438.75）、`shots/pen-edit-reopen-max.png`（保存重开）、`shots/pen-alt-max.png`（`Alt` 单边手柄后 W 431.33）。`tools/shot.ps1` 新增 `-Maximized`，用 `ShowWindow(hwnd, 3)` 铺满工作区后再截图，不再用 1440×900 小窗口验收。
-- 边界：仍是单条连续路径，分支/多路径 Vector Network 未做；锚点最少 2 个，删到 2 后拒绝继续删除；手柄默认对称、`Alt` 单边是当前手感，尚未加“断开手柄”独立状态；插点按 32 段采样，极限放大时落点精度仍可能差一个采样步长；缩放后编辑把 `w/pathW` 重置为 1 的视觉跳动尚未专项压测。
+- 边界：仍是单条连续路径，分支/多路径 Vector Network 未做；锚点最少 2 个，删到 2 后拒绝继续删除；手柄默认对称、`Alt` 单边是当前手感，尚未加“断开手柄”独立状态；插点按 32 段采样，极限放大时落点精度仍可能差一个采样步长；缩放后编辑把 `w/pathW` 重置为 1 的视觉跳动尚未专项压测。（多轮廓与角点/平滑切换已在 3.8 补齐）
+
+### 3.8 C03 多轮廓复合路径 + 角点/平滑点（2026-11-24 已落地）
+
+- 数据：`PathContour { anchors: PathAnchor[]; closed: boolean }`；`SceneNode.pathContours?: PathContour[]`。单轮廓仍只写旧 `pathAnchors/pathClosed`，多轮廓才写 `pathContours` 并把第一条镜像回旧字段；schema 校验 `pathContours` 非空、每条至少 2 个合法锚点、`closed` 为布尔，旧工程无字段照常加载。
+- 几何：`penContoursGeometry` 让多条轮廓共享同一个包围盒原点，`pathData` 按每条轮廓拼一个 `M` 子路径，闭合轮廓带 `Z`；`nodePathContours` 优先读 `pathContours`，否则把旧 `pathAnchors` 包成单轮廓；`pathContoursToWorld` 逐条还原世界坐标。
+- 写入口：统一为 `commitPathContours` / `setPathContours`；`setPathAnchors` 改为只替换第一条轮廓并保留其他轮廓，避免旧调用把分支吃掉。节点 `w/h`、`pathW/pathH`、`pathData` 每次重算，拖拽仍按一次事务合并撤销。
+- 画布：锚点引用从单个索引升级为 `{ contour, index }`；命中、拖锚点/手柄、线段插点、`Delete` 删点、选中态都按具体轮廓工作；删到不足 2 个锚点时，若还有别的轮廓就整条移除并选中相邻轮廓。钢笔工具下选中一条钢笔后，`Alt`+点击空白向当前节点追加新轮廓；`Alt`+点已有锚点则以相同世界坐标起一条新分支轮廓，收尾后保持钢笔工具与节点选中。
+- 填充与描边：Canvas 与 SVG 都按轮廓拆绘制，只有闭合轮廓参与填充，开放轮廓固定 `fill="none"`、只吃节点描边；追加开放分支时若节点原本没有描边，自动补 2px `#221C00` 实线，避免开放线不可见。
+- 角点/平滑点：`togglePenAnchorType` 根据前后锚点连线生成共线等长手柄，开放端点只看唯一邻居，闭合轮廓首尾环绕；双击锚点即可切换，再双击还原角点。手柄长度取相邻距离较小值的 33%，只改局部锚点，不移动锚点本身。
+- 反馈：右栏“钢笔路径”新增“轮廓 N 条”，锚点显示总数，路径状态可显示“1 闭合 / 1 开放”；说明补“双击锚点切角/平滑；Alt + 点锚点起分支，Alt + 点空白追加轮廓”。画布底部提示同步。
+- 测试：`pen.test.ts` 10 条（多轮廓包围盒/双 `M`/缩放两轮廓、角点↔平滑手柄共线等长）；`editor.test.ts` 32 条（追加第二轮廓、更新首条保留分支）；`schema.test.ts` 15 条（合法/非法 `pathContours`）；`svg.test.ts` 10 条（新增多轮廓只填闭合、开放 `fill="none"`）。
+- 完整 `npm run gate` PASS：24 个测试文件 / 151 条测试，MCP selftest 通过；EXE 3,286 KB，2026-11-24 23:23:55；前端 `index-D--MXBsj.css` 58.48 kB、`index-DRVSHOf4.js` 441.97 kB。
+- 真实 EXE 多轮廓：复制 `pen-final.groma` 为 `pen-branch.groma`，最大化 1707×1019、100% 缩放，选中 `钢笔 1` 后 `Alt`+点击画出第二条 3 锚点开放轮廓；锚点 5→8、轮廓 1→2；拖第二轮廓首锚点、在线段插点 8→9、`Delete` 回 8，保存成功。`scene.json` 为 `pathContours` 2 条（第一条 5 锚点闭合、第二条 3 锚点开放），`pathAnchors` 仍镜像第一条 5 锚点，`pathData` 含 2 个 `M`；重开恢复 2 条/8 锚点/“1 闭合 / 1 开放”。
+- 真实共点分支：另建 `pen-branch-stroke.groma`，在 `钢笔 1` 第一轮廓第 1 锚点 `Alt`+点起笔，再点两下落笔收尾；`pathContours` 2 条，第二条 3 锚点开放、首锚 `(96.26,65.45)` 与第一条首锚完全相同；节点自动补 2px `#221C00` 描边。重开仍为 2 条/8 锚点/1 闭合 1 开放，分支线可见。
+- 真实导出：分支项目 `钢笔 1` PNG 1× 605×817（分支为黑色开放线，无隐式填充），SVG 766 B、两个 `<path>`；闭合轮廓 `fill="#D9D9D9"` + 2px 描边，开放轮廓 `fill="none"` + 2px 描边。旧的 `pen-branch` 工程没有重跑导出，`钢笔 1-2.svg` / `钢笔 1@1x-2.png` 仍是填充修正前版本，不能当成开放只描边的证据。
+- 真实角点/平滑：复制 `pen-branch.groma` 为 `pen-anchor-type.groma`，双击第一轮廓第 2 锚点，手柄清零、`H` 668.05→641.10，保存重开仍为角点；再次双击还原平滑，手柄共线，`H` 回到 680.53，保存重开保持。驱动脚本 `tools/cdp-pen-branch.mjs` / `cdp-pen-type.mjs` 可复跑。
+- UI：`shots/pen-branch-clean-max.png`（共点分支、闭合填充 + 开放黑线、右栏 2 条/8 锚点/1 闭合 1 开放）、`shots/pen-type-final2-max.png`（平滑点、两轮廓、开放轮廓只描边）、`pen-branch-stroke-svg-max.png` / `pen-branch-stroke-png-max.png`（导出）。
+- 边界：本节的分支只是“相同坐标起笔”的两条独立轮廓，拖动起点会分开；共享顶点与整条轮廓删除已在 3.9 / 3.10 补齐。平滑手柄固定等长，未支持断开手柄独立调；工程重命名目前需要同步 `scene.json` 的 `name`，只改 `project.json` 顶栏不刷新。
+
+### 3.9 C03 共享顶点（`vertexId` 最小内核）（2026-11-25 已落地）
+
+- 数据：`PathAnchor` 与 `PenAnchor` 都增加可选 `vertexId?: string`；同一节点内 id 重复即共享顶点，旧工程无 id 仍按独立锚点，schema 只要求“存在时非空字符串”，允许重复。
+- 几何：`penContoursGeometry`、`pathAnchorsToWorld`、`pathContoursToWorld`、插点/切角重建都保留 `vertexId`；新增 `syncSharedPenVertex(contours, source)` 把源锚点的 `x/y/in/out` 复制到所有同 id 锚点；新增 `removePenVertex(contours, source)` 从每条轮廓移除同 id 锚点，某条不足 2 锚点时整条移除，全部删空返回 `null`；`countSharedPenVertices` 统计跨轮廓引用的顶点数。
+- 画布：普通落点与插点生成新 `v<base36>-<seq>`；`Alt`+点已有锚点起分支时复用该锚点 id，旧锚点无 id 时先静默补 id 再起分支；拖锚点/手柄先改目标，再同步所有同 id 锚点，整次拖拽仍是一条撤销；双击切角/平滑也同步所有共享点。
+- 反馈：右栏在多轮廓时显示“当前轮廓 第 N / M 条”，有共享顶点时显示“共享顶点 N 个”；画布底部提示补 `Ctrl+Delete`。
+- 测试：`pen.test.ts` 12 条（共享 id 同步、删除共享点、几何/世界坐标保留）、`schema.test.ts` 15 条（接受共享 id、拒绝空 id）、`editor.test.ts` 33 条（共享删除与布尔事务）；完整 `npm run gate` PASS：25 个测试文件 / 157 条，MCP selftest 通过；前端 `index-BE5AWfgH.css` 58.73 kB、`index-ByhmZPB3.js` 477.66 kB；EXE 3,296 KB，2026-11-25 07:50:38。
+- 真实 EXE 共享拖动：复制 `pen-branch-stroke.groma` 为 `pen-vertex.groma`，`Alt` 点首锚起分支再落两笔，得到 3 轮廓 / 11 锚点（1 闭合 2 开放）；拖动共享首锚 +58/+36 后闭合轮廓与分支首锚由 `96.26,65.45` 同步到 `177.58,115.93`，独立第二轮廓首锚保持 `96.26,65.45`；`scene.json` 中两条轮廓首锚共享 `vertexId:"vmwvbs3cp-1"`；保存重开仍是 3/11、共享顶点 1。
+- 真实 EXE 删共享点：复制为 `pen-vertex-del.groma`，选中重叠共享锚点按 `Delete`，锚点 11→9，三条轮廓变为 4 / 3 / 2 个，`scene.json` 同步；另复制 `pen-vertex-undo.groma` 做删除后 `Ctrl+Z`，锚点 9→11、共享顶点恢复 1，保存成功。
+- 导出：`钢笔 1-3.svg` 849 B，闭合轮廓 `fill="#D9D9D9"`，开放轮廓 `fill="none"`、均 2px `#221C00`；`钢笔 1@1x-3.png` 605×817 / 28,924 B。
+- UI：`shots/pen-vertex-after-max.png`（共享拖动后）、`shots/pen-vertex-final-max.png`（保存重开）、`pen-vertex-svg-max.png` / `pen-vertex-png-max.png`（导出）、`pen-vertex-delete-max.png`（删共享点后 9 锚点）、`pen-vertex-delete-undo-max.png`（撤销回 11 锚点）。
+- 边界：这是最小共享顶点，不是完整 `VectorRegion / 区域填充 / 任意图边`；共享点只能同步坐标与手柄，没有跨轮廓的拓扑约束、自动闭合区域或图边遍历。
+
+### 3.10 C03 当前轮廓与整条轮廓删除（2026-11-25 已落地）
+
+- 选择桥：新增 `src/state/pen-selection.ts` 外部 store，`CanvasView` 同步当前锚点 `{nodeId, contour, index}`，`RightPanel` 用 `usePenAnchorSelection` 读取当前轮廓序号，不改场景数据、不产生历史。
+- 删除轮廓：钢笔工具下按 `Ctrl/Cmd+Delete` 删除当前整条轮廓；只剩 1 条时拒绝，画布 Toast 2.6 秒提示“至少保留一条轮廓”；成功时 Toast“已删除整条轮廓”，删除动作走编辑器历史，`Ctrl+Z` 只恢复这一条。
+- 真实 EXE：`pen-vertex.groma` 当前轮廓第 1/3 条，`Ctrl+Delete` 后 3 轮廓 / 11 锚点→2 轮廓 / 6 锚点；`Ctrl+Z` 恢复 3/11，保存状态“已保存”。
+- UI：右栏多轮廓时显示“当前轮廓 第 N / M 条”，提示补“`Ctrl+Delete` 删除整条轮廓”；`shots/pen-vertex-after-max.png` 可见右栏序号与共享顶点数。
+- 边界：`Delete` 仍只删一个锚点；`Ctrl+Delete` 只删当前选中轮廓，不能多选轮廓批量删；没有右键菜单/图层树入口。
+
+### 3.11 C04 最小布尔 Union / Subtract（2026-11-25 已落地，3.12 扩展为四布尔）
+
+- 依赖：新增 `polygon-clipping@0.15.7` 与 `src/polygon-clipping.d.ts`；`src/core/boolean.ts` 提供 `booleanEligibility` / `booleanPathNode`。
+- 输入：正好 2 个唯一对象，支持 `rect`（圆角用近似弧）、`ellipse`（48 点）、`polygon/star`、闭合钢笔路径；贝塞尔固定 12 段 flatten；开放路径、箭头、文本、图片、带子图层对象拒绝；对象必须至少有一条闭合轮廓。
+- 输出：结果为新 `path` 节点，`pathContours` 每个结果环一条闭合轮廓、`fillRule:"evenodd"`，复制首个对象的 fills/strokes/opacity，名称“并集 N / 差集 N”；不修改源对象。
+- 历史：`editor.booleanSelected(op)` 用一条 `structure` 历史删除两个源对象并插入结果节点；一次 `Ctrl+Z` 恢复两个源对象，`Ctrl+Shift+Z` 恢复结果。
+- 入口：TopBar 在选中 ≥2 对象时显示“并集/差集”；条件不满足时禁用，`title` 给出具体原因；成功 Toast“并集完成 / 差集完成 · 布尔结果已扁平化为折线”。
+- 测试：新增 `boolean.test.ts` 3 条、`editor.test.ts` 1 条；完整 gate 25 文件 / 157 条通过，EXE 3,296 KB，2026-11-25 07:50:38。
+- 真实 EXE Union：新建 `boolean-union.groma`，画两个重叠矩形，图层树点选 + Shift 多选；结果“并集 1”，1 轮廓 / 8 锚点 / 646×449 / `fillRule:evenodd`；一步撤销恢复两矩形，重做恢复结果；保存重开正常。
+- 真实 EXE Subtract：`boolean-subtract.groma` 结果“差集 1”，1 轮廓 / 6 锚点 / 407×379，L 形正确；同样一步撤销/重做；导出 `并集 1.svg` 324 B、`差集 1.svg` 304 B，重开工程后导出仍成功。
+- 失败态：`pen-final.groma` 选中两条钢笔（含开放路径），并集/差集均禁用，`title` 为“并集：需要至少一条闭合路径”“差集：需要至少一条闭合路径”；1280 窗口下可视文字“需两条闭合对象”与右侧缩放、导出控制不重叠；1040 最小窗口在 760px CSS 以下收起原因文字，按钮 `title` 保留原因，顶栏无溢出（viewport 679 / 工具条右界 451 / `overflow:0`）。
+- UI：`shots/boolean-union-max.png`（并集与 Toast）、`boolean-subtract-max.png`（差集 L 形）、`boolean-union-svg-max.png` / `boolean-subtract-svg-max.png`（重开导出）；后续顶栏截图见 3.12。
+- 本节为当时边界：不做 Intersect / Exclude / Divide / Outline / Flatten，不处理 3 个以上对象；差集 subject 取 `selectedIds[0]`，尚未按 z-order 归一；所有曲线固定 12 段 flatten。3.12 已补 Intersect/Exclude、同父级与 z-order，Divide/Outline/Flatten/3+ 仍未做。
+
+### 3.12 C04.2 四布尔与 z-order、紧凑菜单（2026-11-25 已落地）
+
+- 数据与算法：`BooleanOp` 扩为 `union | subtract | intersect | exclude`，`BOOLEAN_PREFIX` 固定输出“并集 / 差集 / 交集 / 排除 N”；`intersect` 用 `polygonClipping.intersection`、`exclude` 用 `polygonClipping.xor`，其余仍走同一 flatten + `polygon-clipping` 路径。
+- 输入约束：仍必须正好 2 个唯一对象，新增“必须同一父级”，不得有子图层，至少一条闭合轮廓；跨 Frame/Group 布尔直接拒绝，不做隐式提升。
+- z-order：源对象按父节点 `children` 顺序排序（数组前为底层、后为上层），`sourceIds` 与几何顺序都按 z-order；差集固定“底层减上层”，不再依赖 `selectedIds[0]` 或点选先后。
+- 输出：结果仍是单个 `path` 节点，每条结果环一条闭合轮廓、`fillRule:"evenodd"`，复制底层对象的 fills/strokes/opacity；源对象删除 + 结果插入仍合成一条 `structure` 历史，单步撤销/重做。
+- 入口：TopBar 选中 ≥2 时显示四按钮；宽屏 `.bool-wide` 四按钮文字，CSS `max-width:760px` 切到单个“布尔 ▾”按钮，点开弹出四操作菜单；菜单支持点遮罩关闭、Esc 关闭、选中对象变化自动关闭；不满足条件时按钮与菜单项均禁用，菜单内显示具体原因。
+- 测试：`boolean.test.ts` 5 条（并集、差集/内孔、交集/排除、反选 z-order、失败原因），`editor.test.ts` 33 条；完整 gate 25 文件 / 159 条通过，MCP selftest 通过；前端 `index-DNnTPhXM.css` 59.63 kB、`index-Dbvk_VDL.js` 479.35 kB；EXE 3,297 KB，2026-11-25 13:16:26。
+- 真实 EXE Intersect：`boolean-four.groma` 结果“交集 1”，1 轮廓 / 4 锚点 / 154×295 / evenodd；导出 `交集 1.svg` 286 B。
+- 真实 EXE Exclude：`boolean-exclude.groma` 结果“排除 1”，2 轮廓 / 6+6 锚点 / 646×449 / evenodd；导出 `排除 1.svg` 374 B，SVG 两个子路径且 `fill-rule="evenodd"`。
+- 真实 EXE z-order：`差集方向验收`（目录 `boolean-zorder.groma`）反选两个矩形（先点“矩形 2”再 Shift“矩形 1”）执行差集，结果仍为底层 矩形1 减上层 矩形2 的 L 形，1 轮廓 / 6 锚点 / 407×379。
+- 真实 EXE 紧凑菜单：`boolean-compact.groma`（由 `arrow-final.groma` 复制出的验收副本）在 1040×680 窗口、CSS viewport 679 下只显示“布尔 ▾”；打开菜单四操作均可用，点“并集”后生成“并集 1”（2 轮廓 / 54 锚点 / 520×480），Toast“并集完成 · 布尔结果已扁平化为折线”。
+- UI：`shots/boolean-four-wide-max.png`（最大化 1707 CSS：四按钮 + 原因到 x1211，右侧导入/导出完整）、`boolean-four-wide-1280.png`（839 CSS：四按钮到 x601，右侧缩放完整，文件名“钢笔…”可见）、`boolean-compact-1040.png`（679 CSS：单“布尔 ▾”+ 四操作菜单）、`boolean-compact-union-1040.png`（菜单执行并集结果）；三档均 `overflow:0`，无按钮挤压。
+- 边界：仍只支持正好 2 个对象，3+ 对象折叠、Divide、Outline、Flatten 未做；同父级是新限制，跨容器布尔需产品口径；曲线固定 12 段 flatten，结果不可继续编辑曲线。
 
 ---
 

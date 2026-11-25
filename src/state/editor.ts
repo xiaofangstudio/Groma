@@ -17,6 +17,7 @@ import { alignDeltas, distributeDeltas, type AlignMode, type DistributeMode } fr
 import { absolutePosition, absoluteRect, deepestFrame, topLevelSelection } from '../core/geometry';
 import { shapePath, type ShapeKind } from '../core/shapes';
 import { nodePathContours, penContoursGeometry, type PenAnchor, type PenContour } from '../core/pen';
+import { booleanPathNode, type BooleanOp } from '../core/boolean';
 
 export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'line' | 'arrow' | 'polygon' | 'star' | 'slice' | 'pen';
 export type SaveState = 'local' | 'saving' | 'saved' | 'error';
@@ -187,7 +188,7 @@ function validSelection(doc: GromaDoc, ids: string[]): string[] {
  * 钢笔路径的统一写入口：世界坐标轮廓 → 节点包围盒 → 局部锚点/复合 pathData。
  * 单轮廓仍只写 pathAnchors/pathClosed；多轮廓额外写 pathContours，并镜像第一条。
  */
-function commitPathContours(id: string, contours: PenContour[], silent: boolean): boolean {
+function commitPathContours(id: string, contours: PenContour[], silent: boolean, ensureOpenStroke = false): boolean {
   if (contours.length === 0 || contours.some((contour) => contour.anchors.length < 2)) return false;
   let changed = false;
   set((s) => {
@@ -210,6 +211,9 @@ function commitPathContours(id: string, contours: PenContour[], silent: boolean)
       pathClosed: first.closed,
       pathContours: geometry.contours.length > 1 ? geometry.contours : undefined,
     };
+    if (ensureOpenStroke && contours.some((contour) => !contour.closed) && (node.strokes?.length ?? 0) === 0) {
+      patch.strokes = [{ color: '#221C00', opacity: 1, width: 2, dash: [], cap: 'butt', join: 'miter' }];
+    }
     const after: SceneNode = { ...node, ...patch };
     if (JSON.stringify(node) === JSON.stringify(after)) return s;
     changed = true;
@@ -1043,8 +1047,8 @@ export const editor = {
   },
 
   /** 世界坐标轮廓写入口；用于分支/多轮廓路径的新增、删除与拖拽。 */
-  setPathContours(id: string, contours: PenContour[], silent = false): boolean {
-    return commitPathContours(id, contours, silent);
+  setPathContours(id: string, contours: PenContour[], silent = false, ensureOpenStroke = false): boolean {
+    return commitPathContours(id, contours, silent, ensureOpenStroke);
   },
 
   fitImageRatio(id: string): boolean {
@@ -1409,6 +1413,59 @@ export const editor = {
         future: [],
       };
     });
+  },
+
+  booleanSelected(op: BooleanOp): boolean {
+    let changed = false;
+    set((s) => {
+      const build = booleanPathNode(s.doc, s.selectedIds, op, newNodeId('path'));
+      if ('error' in build) return s;
+      const nodes = { ...s.doc.nodes };
+      const beforeNodes: Record<string, SceneNode> = {};
+      const afterNodes: Record<string, SceneNode> = {};
+      const parentIds = new Set<string>();
+      for (const sourceId of build.sourceIds) {
+        const source = s.doc.nodes[sourceId];
+        if (!source?.parentId) return s;
+        beforeNodes[sourceId] = source;
+        parentIds.add(source.parentId);
+      }
+      for (const parentId of parentIds) {
+        const parent = s.doc.nodes[parentId];
+        if (!parent) return s;
+        beforeNodes[parentId] = parent;
+      }
+      for (const sourceId of build.sourceIds) delete nodes[sourceId];
+      for (const parentId of parentIds) {
+        const parent = s.doc.nodes[parentId];
+        const children = parent.children.filter((childId) => !build.sourceIds.includes(childId));
+        if (parentId === build.parentId) {
+          const firstIndex = parent.children.indexOf(build.sourceIds[0]);
+          children.splice(Math.max(0, Math.min(firstIndex, children.length)), 0, build.node.id);
+        }
+        nodes[parentId] = { ...parent, children };
+        afterNodes[parentId] = nodes[parentId];
+      }
+      nodes[build.node.id] = build.node;
+      afterNodes[build.node.id] = build.node;
+      const entry: HistoryEntry = {
+        kind: 'structure',
+        beforeNodes,
+        afterNodes,
+        undoRemove: [build.node.id],
+        redoRemove: build.sourceIds,
+        selectionBefore: s.selectedIds,
+        selectionAfter: [build.node.id],
+      };
+      changed = true;
+      return {
+        ...withSelection(s, [build.node.id]),
+        doc: { ...s.doc, nodes },
+        past: [...s.past, entry].slice(-200),
+        future: [],
+      };
+    });
+    return changed;
   },
 
   groupSelected() {

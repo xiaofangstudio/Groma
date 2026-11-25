@@ -1,6 +1,6 @@
 # Groma UI 家族化改版记录
 
-初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-24 07:13（A08 导出弹窗单焦点重排 / 拆掉导出即打开外部应用 / 1040 批量压缩）
+初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-25 13:16（C04.2 四布尔 / z-order 差集 / 紧凑布尔菜单 / 159 tests）
 
 ## 这一轮为什么不是「美化」
 
@@ -62,6 +62,8 @@ Groma 这一轮只做三件事：把首屏变成真正能开始工作的页面�
 ### 3. 截图工具
 
 `tools/shot.ps1` 新增 `-WinWidth/-WinHeight`，只改窗口尺寸不移动窗口，用于三档验收。虚拟桌面仍在 `finally` 中关闭。
+
+2026-11-25 修掉截图黑边：`PrintWindow` 会把 Windows 不可见缩放边框（本机 DPR 1.5 为左/右/底各 11px）画成黑边。截图后按 `GetClientRect` 宽度计算边框，裁掉左右各 `border`、底部 `border`，保留顶部标题栏与客户区；复拍 2582×1550→2560×1539，左/右/底黑像素均为 0。
 
 ## 验收结果
 
@@ -647,5 +649,121 @@ Figma 能力矩阵里 C03 仍写着“渲染器尚无矢量节点”，但组件
 - 仍是单条连续路径；分支路径、多路径 Vector Network 未做。
 - 锚点最少 2 个；手柄默认对称、`Alt` 单边，独立断开手柄状态未做。
 - 插点按 32 段采样，极限放大时落点精度可能差一个采样步长；缩放后编辑把 `w/pathW` 重置为 1 的视觉跳动尚未专项压测。
+
+## C03 多轮廓复合路径 + 共点分支 + 角点/平滑点（2026-11-24 23:23）
+
+**为什么做**
+
+钢笔和锚点编辑都只能改同一条轮廓；Figma 的钢笔节点可以同时装多条子轮廓，图标、字母、镂空图形都靠它。这一刀不拆成多个图层，而是在同一个钢笔节点里放多条真正可编辑的轮廓，支持同坐标起笔分支，并补上双击锚点切换角点/平滑点。开放轮廓按 Figma 语义只描边，不参与填充。
+
+**改法**
+
+- `PathContour { anchors, closed }` 加进 `SceneNode.pathContours`；单轮廓仍只写旧 `pathAnchors/pathClosed`，多轮廓才写 `pathContours` 并镜像第一条，旧工程照常加载。
+- `penContoursGeometry` 让多轮廓共享一个包围盒原点，`pathData` 每条轮廓拼一个 `M`；`pathContoursToWorld` 逐条还原世界坐标。`editor` 统一为 `commitPathContours/setPathContours`，`setPathAnchors` 只替换第一条并保留其他。
+- `CanvasView` 的锚点引用从数字升级为 `{ contour, index }`：命中、拖锚点/手柄、线段插点、`Delete` 删点、选中态都按轮廓工作。钢笔下选中节点后，`Alt`+点空白追加一条轮廓，`Alt`+点已有锚点以同一坐标起一条分支，收尾后保持工具与选中。
+- 渲染：Canvas 与 SVG 都按轮廓拆绘制，闭合轮廓才填充，开放轮廓固定 `fill="none"`、只吃描边；追加开放分支时若节点没有描边，自动补 2px `#221C00`，避免分支线不可见。
+- `togglePenAnchorType` 按前后锚点切线生成共线等长手柄；双击锚点切平滑，再双击回角点。右栏显示“轮廓 N 条”、总锚点与“X 闭合 / Y 开放”，说明加“双击锚点切角/平滑；Alt + 点锚点起分支，Alt + 点空白追加轮廓”。
+
+**验证**
+
+- 局部：`pen.test.ts` 10 条、`schema.test.ts` 15 条、`editor.test.ts` 32 条、`svg.test.ts` 10 条通过。
+- 完整 `npm run gate` PASS：24 个测试文件 / 151 条测试；MCP selftest 通过；前端 `index-D--MXBsj.css` 58.48 kB、`index-DRVSHOf4.js` 441.97 kB；EXE 3,286 KB，2026-11-24 23:23:55。
+- 多轮廓：`pen-branch.groma` 的 `钢笔 1` 从 1 轮廓/5 锚点扩成 2 轮廓/8 锚点（第一条 5 锚点闭合、第二条 3 锚点开放）；拖第二轮廓首锚点、线段插点 8→9、`Delete` 回 8；保存重开恢复“2 条 / 8 个 / 1 闭合 / 1 开放”。
+- 共点分支：`pen-branch-stroke.groma` 在第一轮廓首锚 `Alt`+点起笔，再落两笔；第二条 3 锚点开放、首锚 `(96.26,65.45)` 与第一条首锚完全相同，节点自动补 2px 描边；PNG 605×817 显示闭合填充形状 + 开放黑线；SVG 766 B 两个 `<path>`，闭合路径有 `fill="#D9D9D9"`，开放路径 `fill="none"`，都带 2px 描边。
+- 角点/平滑：`pen-anchor-type.groma` 双击第一轮廓第 2 锚点，手柄清零、`H` 668.05→641.10，保存重开仍为角点；再双击还原平滑，`H` 680.53，保存重开保持；驱动脚本 `tools/cdp-pen-type.mjs`。
+- UI：`shots/pen-branch-clean-max.png`（共点分支、两轮廓、开放只描边）、`shots/pen-type-final2-max.png`（平滑点与开放轮廓）、`pen-branch-stroke-svg-max.png` / `pen-branch-stroke-png-max.png`。顶栏 `.topbar-left` 右界 619 = `.topbar-tools` 左界 619，13 个入口无重叠；右栏提示与底部提示完整。
+
+**边界**
+
+- 分支只是“相同坐标起笔”的两条独立轮廓，不是共享节点；拖动起点后两支会分开，真正共享节点的 Vector Network 图结构未做。
+- 没有独立“删除整条轮廓”菜单；删到只剩 1 个锚点且还有其他轮廓时会自动移除该轮廓。
+- 平滑手柄固定等长，未支持断开手柄独立调；工程重命名要同步 `scene.json` 的 `name`，只改 `project.json` 顶栏不刷新。
+
+## C03 共享顶点与整条轮廓删除（2026-11-25 07:50）
+
+**为什么做**
+
+上一节的分支只是同坐标起笔，拖起点就散；Figma 的钢笔节点需要真正的共享节点，才能让分支跟随、删点同步。同时多轮廓之后右栏只知道“有 3 条”，不知道当前在第几条，也没有整条轮廓删除入口。
+
+**改法**
+
+- `PathAnchor` / `PenAnchor` 加可选 `vertexId`；同节点重复 id 即共享顶点，旧工程无 id 照旧。schema 只校验非空，不禁止重复。
+- `pen.ts` 加 `syncSharedPenVertex`、`removePenVertex`、`countSharedPenVertices`；所有几何/世界坐标/插点/切角路径都保留 id；共享点被删时从每条轮廓移除，某条不足 2 锚点整条移除。
+- Canvas 普通落点/插点分配新 id；`Alt` 点已有锚点起分支复用 id，旧锚点无 id 先静默补齐；拖点/拖手柄、双击切角都同步同 id 锚点，整次拖拽仍是一条撤销。
+- 新增 `src/state/pen-selection.ts`：Canvas 写当前锚点 `{nodeId, contour, index}`，RightPanel 订阅显示“当前轮廓 第 N / M 条”；有共享顶点时显示“共享顶点 N 个”。
+- `Ctrl/Cmd+Delete` 删除当前整条轮廓；只剩 1 条时拒绝并 Toast“至少保留一条轮廓”；成功 Toast“已删除整条轮廓”，走一条历史。
+
+**验证**
+
+- 完整 `npm run gate` PASS：25 个测试文件 / 157 条；MCP selftest 通过；`index-BE5AWfgH.css` 58.73 kB、`index-ByhmZPB3.js` 477.66 kB；EXE 3,296 KB，2026-11-25 07:50:38。
+- `pen.test.ts` 12 条、`schema.test.ts` 15 条、`editor.test.ts` 33 条；共享 id 同步、删除共享点、几何保留与空 id 拒绝都有单测。
+- `pen-vertex.groma`：3 轮廓 / 11 锚点，共享首锚拖动 `96.26,65.45→177.58,115.93`，闭合与分支同步、独立第二轮廓不动；`scene.json` 两条轮廓首锚共享 `vmwvbs3cp-1`；保存重开仍是 3/11、共享顶点 1。
+- `pen-vertex-del.groma`：删共享锚点 11→9，三条轮廓 4/3/2；`pen-vertex-undo.groma` 删除后 `Ctrl+Z` 回 11、共享顶点恢复，保存成功。
+- `Ctrl+Delete`：3 轮廓 / 11 锚点→2/6，`Ctrl+Z` 回 3/11，保存状态“已保存”。
+- 导出：`钢笔 1-3.svg` 849 B，闭合 `fill="#D9D9D9"`、开放 `fill="none"`、均 2px；`钢笔 1@1x-3.png` 605×817 / 28,924 B。
+- UI：`shots/pen-vertex-after-max.png`、`pen-vertex-final-max.png`、`pen-vertex-svg-max.png`、`pen-vertex-png-max.png`、`pen-vertex-delete-max.png`、`pen-vertex-delete-undo-max.png`。右栏“当前轮廓 第 1 / 3 条”“共享顶点 1 个”不挤压检查器，底部提示完整。
+
+**边界**
+
+- 这是最小 `vertexId` 内核，不是完整 `VectorRegion`；没有区域填充、任意图边遍历、跨轮廓拓扑约束。
+- `Ctrl+Delete` 只删当前轮廓，不能多选批量删，没有右键菜单入口；删共享点会同时影响所有引用轮廓，这是预期行为。
+
+## C04 两对象布尔 Union / Subtract（2026-11-25 07:50）
+
+**为什么做**
+
+矢量对象模型、共享顶点与多轮廓已经能承载布尔输入；这一刀只做可验证的两对象并集/差集，先把“选两个 → 出一个结果 → 一步撤销 → 存住 → 导出去”跑通，不铺四布尔全套。
+
+**改法**
+
+- 新增 `polygon-clipping@0.15.7`、`src/polygon-clipping.d.ts`、`src/core/boolean.ts`；支持矩形（圆角近似）、椭圆（48 点）、多边形/星形、闭合钢笔路径，贝塞尔固定 12 段 flatten。
+- 输入必须正好 2 个唯一对象，对象不得有子图层，至少一条闭合轮廓；开放路径、箭头、文本、图片拒绝。
+- 结果新 `path` 节点：每条结果环一条闭合轮廓、`fillRule:"evenodd"`，复制首个对象外观，名称“并集 N / 差集 N”；源对象不动，由 `editor.booleanSelected` 在一条 `structure` 历史里删源+插结果。
+- TopBar 选中 ≥2 时显示“并集/差集”；不满足条件禁用，`title` 给具体原因；成功 Toast“并集完成 / 差集完成 · 布尔结果已扁平化为折线”。
+
+**验证**
+
+- `boolean.test.ts` 3 条、`editor.test.ts` 1 条布尔单步撤销；完整 gate 25/157 通过。
+- `boolean-union.groma`：两重叠矩形并集“并集 1”，1 轮廓 / 8 锚点 / 646×449 / evenodd；一步撤销回两矩形，重做回结果；保存重开正常。
+- `boolean-subtract.groma`：差集“差集 1”，1 轮廓 / 6 锚点 / 407×379，L 形正确；同样单步撤销/重做。
+- 导出：`并集 1.svg` 324 B、`差集 1.svg` 304 B；重开工程后再次导出成功。
+- 失败态：`pen-final.groma` 两条钢笔含开放路径，按钮禁用，title“并集：需要至少一条闭合路径”“差集：需要至少一条闭合路径”；1280 窗口可视文字“需两条闭合对象”显示，1040 最小窗口收起原因文字、保留 title，顶栏无溢出。
+- UI：`shots/boolean-union-max.png`、`boolean-subtract-max.png`、`boolean-union-svg-max.png`、`boolean-subtract-svg-max.png`。1280 顶栏工具条右界 601、可视原因到 601，右侧缩放/导出完整；1040 CSS viewport 679、工具条右界 451、`overflow:0`。后续四按钮与紧凑菜单截图见 C04.2。
+
+**边界**
+
+- 不做 Intersect/Exclude/Divide/Outline/Flatten，不处理 3+ 对象；圆角与椭圆是采样近似，曲线固定 12 段 flatten，结果不可继续编辑曲线。
+- 差集以 `selectedIds[0]` 为 subject，尚未按 z-order 归一；反选两个对象会得到相反的差集。按钮文案“从底层对象减去上层对象”与实现仍有口径差，下一刀先修这个。
+
+## C04.2 四布尔 / z-order / 紧凑菜单（2026-11-25 13:16）
+
+**为什么做**
+
+C04 最小布尔只有并集/差集，差集还听点选顺序，与 Figma 的布尔预期不一致；同时四按钮在 1040 最小窗口会挤掉右侧缩放。这一刀把四个布尔补齐，把差集方向改成按图层 z-order，并把窄窗口收成“布尔 ▾”菜单。
+
+**改法**
+
+- `BooleanOp` 扩为 `union | subtract | intersect | exclude`，输出前缀“并集/差集/交集/排除”；`intersect` 用 `intersection`、`exclude` 用 `xor`。
+- 新增同父级校验：两个对象必须属于同一父节点，跨 Frame/Group 拒绝，不做隐式提升。
+- 新增 `orderByZ`：按父节点 `children` 顺序排序（数组前为底层），`sourceIds` 与几何顺序同步；差集固定“底层减上层”，不再依赖 `selectedIds[0]`。
+- TopBar 四按钮走 `BOOLEAN_ACTIONS` 常量；`.bool-wide` 宽屏显示四按钮，CSS `max-width:760px` 隐藏并显示 `.bool-compact`“布尔 ▾”，弹出四操作菜单；点遮罩/Esc/选中变化均关闭。
+- `.bool-reason` 隐藏阈值从 760 提到 1180，1280 窗口下左栏恢复 92px、工程名可见、四按钮到 x601；最大化 1707 CSS 下四按钮 + 原因到 x1211，右侧导入/导出仍完整。
+- 修正紧凑按钮宽度：`min-width:50px` + `white-space:nowrap`，避免“布尔 ▾”在 34px 按钮里换行；菜单阴影改用实际 `0 12px 28px rgba(34,28,0,.14)`，不再引用未定义 `--shadow-pop`。
+
+**验证**
+
+- `boolean.test.ts` 5 条、`editor.test.ts` 33 条；完整 gate PASS：25 文件 / 159 条，MCP selftest 通过；`index-DNnTPhXM.css` 59.63 kB、`index-Dbvk_VDL.js` 479.35 kB；EXE 3,297 KB，2026-11-25 13:16:26。
+- `boolean-four.groma`：交集“交集 1”，1 轮廓 / 4 锚点 / 154×295；`交集 1.svg` 286 B。
+- `boolean-exclude.groma`：排除“排除 1”，2 轮廓 / 6+6 锚点 / 646×449；`排除 1.svg` 374 B，两子路径 + `fill-rule="evenodd"`。
+- `差集方向验收`：反选两矩形执行差集，仍得底层 矩形1 减上层 矩形2 的 L 形，1 轮廓 / 6 锚点 / 407×379。
+- 紧凑菜单：`boolean-compact.groma` 在 1040×680（CSS 679）下菜单四操作均可用，点并集生成“并集 1”，2 轮廓 / 54 锚点 / 520×480，Toast“并集完成”。
+- UI：`shots/boolean-four-wide-max.png`、`boolean-four-wide-1280.png`、`boolean-compact-1040.png`、`boolean-compact-union-1040.png`；三档 `overflow:0`。
+
+**边界**
+
+- 仍只支持正好 2 个对象；3+ 对象折叠、Divide、Outline、Flatten 未做。
+- 同父级是新增限制；是否允许跨容器布尔需要产品口径。
+- 曲线固定 12 段 flatten，结果不可继续编辑曲线。
+
 
 

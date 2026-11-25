@@ -279,4 +279,49 @@ describe('SVG 导出', () => {
     expect(result?.svg).toContain('d="M 0 0 L 100 0 L 100 80 Z"');
     expect(result?.svg).not.toContain('fill="#FFFFFF"');
   });
+
+  it('多轮廓只给闭合轮廓填充，开放轮廓不隐式闭合', () => {
+    const doc = createDoc('SVG 多轮廓', 300, 200);
+    const page = doc.pages[0];
+    const frameId = doc.nodes[page.rootId].children[0];
+    const anchors = [
+      { x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0 },
+      { x: 80, y: 0, inX: 80, inY: 0, outX: 80, outY: 0 },
+      { x: 80, y: 80, inX: 80, inY: 80, outX: 80, outY: 80 },
+    ];
+    const open = [
+      { x: 10, y: 90, inX: 10, inY: 90, outX: 10, outY: 90 },
+      { x: 50, y: 90, inX: 50, inY: 90, outX: 50, outY: 90 },
+      { x: 90, y: 120, inX: 90, inY: 120, outX: 90, outY: 120 },
+    ];
+    const pen: SceneNode = {
+      ...rectNode('pen-b', frameId),
+      type: 'path',
+      name: '钢笔 2',
+      x: 10,
+      y: 20,
+      w: 100,
+      h: 100,
+      pathW: 100,
+      pathH: 100,
+      pathClosed: true,
+      pathAnchors: anchors,
+      pathContours: [
+        { closed: true, anchors },
+        { closed: false, anchors: open },
+      ],
+      pathData: 'M 0 0 L 80 0 L 80 80 Z M 10 90 L 50 90 L 90 120',
+      fills: [{ type: 'solid', color: '#D9D9D9', opacity: 1 }],
+      strokes: [],
+    };
+    doc.nodes[pen.id] = pen;
+    doc.nodes[frameId].children = [pen.id];
+
+    const result = renderNodeSvg(doc, pen.id, true, 1);
+    expect(result).not.toBeNull();
+    expect(result?.svg.match(/<path /g)?.length).toBe(2);
+    expect(result?.svg).toContain('fill="#D9D9D9"');
+    expect(result?.svg).toContain('fill="none"');
+    expect(result?.svg).not.toContain('M 10 90 L 50 90 L 90 120 Z');
+  });
 });
