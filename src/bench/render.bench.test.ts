@@ -154,4 +154,65 @@ describe('渲染基准', () => {
     const thumbAverage = (performance.now() - thumbStart) / 30;
     console.log(`[thumb] 34×22 平均 ${thumbAverage.toFixed(2)}ms · 节点 ${thumbStats.nodesDrawn}/${total}`);
   });
+
+  it('600 个画板时只进入视口附近候选', () => {
+    const doc = createDoc('多画板基准', 1440, 900, undefined, false);
+    const page = doc.pages[0];
+    const root = doc.nodes[page.rootId];
+    root.children = [];
+    for (let f = 0; f < 600; f += 1) {
+      const frameId = `many-frame-${f}`;
+      const frame: SceneNode = {
+        id: frameId,
+        type: 'frame',
+        name: `画板 ${f + 1}`,
+        parentId: root.id,
+        children: [],
+        x: (f % 30) * 520,
+        y: Math.floor(f / 30) * 420,
+        w: 400,
+        h: 300,
+        rotation: 0,
+        opacity: 1,
+        visible: true,
+        locked: false,
+        clipContent: true,
+        fills: [{ type: 'solid', color: '#FFFFFF', opacity: 1 }],
+        cornerRadius: 16,
+      };
+      root.children.push(frameId);
+      doc.nodes[frameId] = frame;
+      for (let i = 0; i < 8; i += 1) {
+        const childId = `many-${f}-${i}`;
+        const child: SceneNode = {
+          ...frame,
+          id: childId,
+          type: 'rect',
+          name: `块 ${i}`,
+          parentId: frameId,
+          children: [],
+          x: 20 + i * 40,
+          y: 24,
+          w: 28,
+          h: 24,
+          fills: [{ type: 'solid', color: '#F2B705', opacity: 1 }],
+          cornerRadius: 4,
+        };
+        frame.children.push(childId);
+        doc.nodes[childId] = child;
+      }
+    }
+    const view = { w: 1420, h: 880, dpr: 1 };
+    const { ctx } = makeContext();
+    const stats = drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 1 }, view, [], { interactive: true });
+    expect(stats.nodesDrawn).toBeLessThan(100);
+
+    doc.nodes['many-frame-0'] = { ...doc.nodes['many-frame-0'], x: 200_000 };
+    const moved = drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 1 }, view, [], { interactive: true });
+    expect(moved.nodesDrawn).toBe(stats.nodesDrawn - 9);
+
+    const start = performance.now();
+    for (let i = 0; i < 30; i += 1) drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 1 }, view, []);
+    console.log(`[frames] 600画板 1420×880 平均 ${((performance.now() - start) / 30).toFixed(2)}ms · 节点 ${stats.nodesDrawn}/${Object.keys(doc.nodes).length - 2}`);
+  });
 });

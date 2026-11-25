@@ -94,6 +94,7 @@ function LayerNode({
         </button>
         <NodeIcon node={node} />
         <span className="layer-name" title={node.name}>{node.name}</span>
+        {node.isMask && <span className="mask-chip">蒙版</span>}
         <span className="layer-actions" onClick={(e) => e.stopPropagation()}>
           <button
             className={`layer-act${node.visible ? '' : ' is-on'}`}

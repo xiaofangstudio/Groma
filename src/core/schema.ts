@@ -144,6 +144,15 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
   for (const field of ['visible', 'locked', 'clipContent'] as const) {
     if (typeof node[field] !== 'boolean') issues.push(`节点 ${key} 的 ${field} 必须是布尔值`);
   }
+  if (node.isMask !== undefined && typeof node.isMask !== 'boolean') {
+    issues.push(`节点 ${key} 的 isMask 必须是布尔值`);
+  }
+  if (
+    node.maskType !== undefined &&
+    (node.maskType !== 'geometry' && node.maskType !== 'alpha' && node.maskType !== 'luminance')
+  ) {
+    issues.push(`节点 ${key} 的 maskType 非法`);
+  }
   if (node.type === 'path') {
     if (typeof node.pathData !== 'string' || node.pathData.trim().length === 0) {
       issues.push(`路径节点 ${key} 缺少 pathData`);
@@ -291,6 +300,23 @@ export function validateDoc(value: unknown): DocValidation {
       else if (!isStringArray(parent.children) || !parent.children.includes(id)) {
         issues.push(`节点 ${id} 声称父节点是 ${node.parentId}，但父节点 children 里没有它`);
       }
+    }
+  }
+
+  for (const id of nodeIds) {
+    const node = nodes[id];
+    if (!node?.isMask) continue;
+    const parent = node.parentId ? nodes[node.parentId] : undefined;
+    if (!parent) continue;
+    if (parent.type !== 'frame' && parent.type !== 'section' && parent.type !== 'group') {
+      issues.push(`蒙版 ${id} 的父级必须是画板、区块或编组`);
+      continue;
+    }
+    if (!isStringArray(node.children) || node.children.length > 0) {
+      issues.push(`蒙版 ${id} 不能包含子图层`);
+    }
+    if (node.type !== 'rect' && node.type !== 'ellipse' && node.type !== 'path') {
+      issues.push(`蒙版 ${id} 必须是矩形、椭圆或钢笔路径`);
     }
   }
 

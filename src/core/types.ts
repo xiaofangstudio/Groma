@@ -95,6 +95,10 @@ export interface SceneNode {
   visible: boolean;
   locked: boolean;
   clipContent: boolean;
+  /** 形状蒙版：该节点定义同父级中位于其上方的兄弟图层裁切区域。 */
+  isMask?: boolean;
+  /** 蒙版取像素的方式；缺省 geometry 走快速轮廓裁切。 */
+  maskType?: 'geometry' | 'alpha' | 'luminance';
   fills: Paint[];
   cornerRadius: number;
   /** 矢量路径：节点局部坐标，左上角为 0,0；pathW / pathH 记录导入时的原始尺寸。 */

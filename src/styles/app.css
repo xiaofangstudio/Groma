@@ -273,6 +273,13 @@ kbd {
   display: contents;
 }
 
+.bool-more {
+  width: auto;
+  min-width: 50px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+
 .bool-compact {
   display: none;
   width: auto;
@@ -281,9 +288,19 @@ kbd {
   white-space: nowrap;
 }
 
+.bool-menu-sep {
+  height: 1px;
+  margin: 3px 2px;
+  background: var(--line);
+}
+
 .bool-menu-wrap {
   position: relative;
   display: inline-flex;
+}
+
+.bool-compact-wrap {
+  display: none;
 }
 
 .bool-menu-shade {
@@ -933,6 +950,18 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mask-chip {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg-app);
+  color: var(--ink-dim);
+  font-size: var(--fs-11);
+  line-height: 1;
+  letter-spacing: 0.02em;
 }
 
 .layer-count {
@@ -1715,6 +1744,24 @@ kbd {
 .wide-action:hover:not(:disabled) {
   background: var(--bg-hover);
   border-color: var(--line-strong);
+}
+
+.wide-action.is-mask-on {
+  border-color: var(--brand);
+  background: rgba(242, 183, 5, 0.10);
+  color: var(--ink);
+}
+
+.mask-hint {
+  margin-top: 6px;
+}
+
+.mask-type-switch {
+  margin-top: 8px;
+}
+
+.mask-hint.is-blocked {
+  color: var(--ink-dim);
 }
 
 .wide-action kbd {
@@ -2696,9 +2743,13 @@ textarea:focus-visible,
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1180px) {
   .bool-wide {
     display: none;
+  }
+
+  .bool-compact-wrap {
+    display: inline-flex;
   }
 
   .bool-compact {

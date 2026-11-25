@@ -1,4 +1,5 @@
 import type { GromaDoc, Page, Rect, SceneNode } from './types';
+import { maskIndexForParent, pointInMask } from './mask';
 
 export function absolutePosition(doc: GromaDoc, nodeId: string): { x: number; y: number } {
   let x = 0;
@@ -53,8 +54,13 @@ function walkHit(
   if (!node.visible || node.locked) return null;
   const ax = ox + node.x;
   const ay = oy + node.y;
+  const maskIndex = maskIndexForParent(doc, node);
+  const mask = maskIndex >= 0 ? doc.nodes[node.children[maskIndex]] : undefined;
+  const outsideMask = mask ? !pointInMask(doc, mask, px, py) : false;
   if (node.type === 'group') {
     for (let i = node.children.length - 1; i >= 0; i -= 1) {
+      if (i === maskIndex) continue;
+      if (mask && i > maskIndex && outsideMask) continue;
       const child = doc.nodes[node.children[i]];
       if (!child) continue;
       const hit = walkHit(doc, child, ax, ay, px, py);
@@ -66,11 +72,14 @@ function walkHit(
   if (px < ax || py < ay || px > ax + node.w || py > ay + node.h) return null;
 
   for (let i = node.children.length - 1; i >= 0; i -= 1) {
+    if (i === maskIndex) continue;
+    if (mask && i > maskIndex && outsideMask) continue;
     const child = doc.nodes[node.children[i]];
     if (!child) continue;
     const hit = walkHit(doc, child, ax, ay, px, py);
     if (hit) return hit;
   }
+  if (mask && !mask.locked && pointInMask(doc, mask, px, py)) return mask;
   return node.type === 'page' ? null : node;
 }
 

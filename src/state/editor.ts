@@ -17,7 +17,7 @@ import { alignDeltas, distributeDeltas, type AlignMode, type DistributeMode } fr
 import { absolutePosition, absoluteRect, deepestFrame, topLevelSelection } from '../core/geometry';
 import { shapePath, type ShapeKind } from '../core/shapes';
 import { nodePathContours, penContoursGeometry, type PenAnchor, type PenContour } from '../core/pen';
-import { booleanPathNode, type BooleanOp } from '../core/boolean';
+import { vectorActionBuild, type BooleanOp, type VectorAction } from '../core/boolean';
 
 export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'line' | 'arrow' | 'polygon' | 'star' | 'slice' | 'pen';
 export type SaveState = 'local' | 'saving' | 'saved' | 'error';
@@ -1416,9 +1416,13 @@ export const editor = {
   },
 
   booleanSelected(op: BooleanOp): boolean {
+    return editor.vectorSelected(op);
+  },
+
+  vectorSelected(action: VectorAction): boolean {
     let changed = false;
     set((s) => {
-      const build = booleanPathNode(s.doc, s.selectedIds, op, newNodeId('path'));
+      const build = vectorActionBuild(s.doc, s.selectedIds, action, () => newNodeId('path'));
       if ('error' in build) return s;
       const nodes = { ...s.doc.nodes };
       const beforeNodes: Record<string, SceneNode> = {};
@@ -1435,31 +1439,41 @@ export const editor = {
         if (!parent) return s;
         beforeNodes[parentId] = parent;
       }
-      for (const sourceId of build.sourceIds) delete nodes[sourceId];
+      for (const sourceId of build.removeSourceIds) delete nodes[sourceId];
+      for (const [sourceId, patched] of Object.entries(build.sourcePatches)) {
+        nodes[sourceId] = patched;
+        afterNodes[sourceId] = patched;
+      }
       for (const parentId of parentIds) {
         const parent = s.doc.nodes[parentId];
-        const children = parent.children.filter((childId) => !build.sourceIds.includes(childId));
-        if (parentId === build.parentId) {
-          const firstIndex = parent.children.indexOf(build.sourceIds[0]);
-          children.splice(Math.max(0, Math.min(firstIndex, children.length)), 0, build.node.id);
-        }
+        const children = parent.children.filter((childId) => !build.removeSourceIds.includes(childId));
+        const firstIndex = parent.children.indexOf(build.sourceIds[0]);
+        const insertIndex = build.replaceSources
+          ? children.filter((childId) => parent.children.indexOf(childId) < firstIndex).length
+          : children.filter((childId) => {
+              const index = parent.children.indexOf(childId);
+              return index >= 0 && index <= Math.max(...build.sourceIds.map((id) => parent.children.indexOf(id)));
+            }).length;
+        children.splice(insertIndex, 0, ...build.nodes.map((node) => node.id));
         nodes[parentId] = { ...parent, children };
         afterNodes[parentId] = nodes[parentId];
       }
-      nodes[build.node.id] = build.node;
-      afterNodes[build.node.id] = build.node;
+      for (const node of build.nodes) {
+        nodes[node.id] = node;
+        afterNodes[node.id] = node;
+      }
       const entry: HistoryEntry = {
         kind: 'structure',
         beforeNodes,
         afterNodes,
-        undoRemove: [build.node.id],
-        redoRemove: build.sourceIds,
+        undoRemove: build.nodes.map((node) => node.id),
+        redoRemove: build.removeSourceIds,
         selectionBefore: s.selectedIds,
-        selectionAfter: [build.node.id],
+        selectionAfter: build.nodes.map((node) => node.id),
       };
       changed = true;
       return {
-        ...withSelection(s, [build.node.id]),
+        ...withSelection(s, build.nodes.map((node) => node.id)),
         doc: { ...s.doc, nodes },
         past: [...s.past, entry].slice(-200),
         future: [],

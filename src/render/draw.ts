@@ -1,6 +1,8 @@
 import type { GromaDoc, Page, SceneNode } from '../core/types';
 import { absoluteRect, selectionBounds } from '../core/geometry';
 import { nodePathContours, penPathData } from '../core/pen';
+import { nodeWorldRings } from '../core/boolean';
+import { maskIndexForParent, maskTypeOf } from '../core/mask';
 import type { Viewport } from '../core/viewport';
 import { getAssetImage, requestImageAsset } from '../io/images';
 
@@ -51,6 +53,138 @@ function newStats(): DrawStats {
 function intersects(ax: number, ay: number, aw: number, ah: number, bounds?: WorldBounds | null): boolean {
   if (!bounds) return true;
   return ax + aw >= bounds.left && ay + ah >= bounds.top && ax <= bounds.right && ay <= bounds.bottom;
+}
+
+const FRAME_INDEX_CELL = 512;
+const FRAME_INDEX_MAX_CELLS = 64;
+const FRAME_INDEX_MAX_QUERY_CELLS = 4096;
+const frameIndexCache = new WeakMap<GromaDoc, Map<string, FrameSpatialIndex>>();
+
+interface FrameSpatialIndex {
+  orders: string[];
+  signature: number;
+  grid: Map<string, number[]>;
+  oversized: Array<{ order: number; left: number; top: number; right: number; bottom: number }>;
+}
+
+function cellKey(cx: number, cy: number): string {
+  return `${cx},${cy}`;
+}
+
+/** 画板位置/尺寸/旋转/显隐都可能原地变化，用轻量签名让索引随编辑失效。 */
+function frameIndexSignature(doc: GromaDoc, root: SceneNode): number {
+  let hash = 2166136261;
+  const mix = (value: number) => {
+    hash = Math.imul(hash ^ (value | 0), 16777619);
+  };
+  mix(root.children.length);
+  for (const id of root.children) {
+    const node = doc.nodes[id];
+    if (!node) {
+      mix(0x7fffffff);
+      continue;
+    }
+    mix(Math.round(node.x * 100));
+    mix(Math.round(node.y * 100));
+    mix(Math.round(node.w * 100));
+    mix(Math.round(node.h * 100));
+    mix(Math.round(node.rotation * 1000));
+    mix((node.visible ? 1 : 0) | (node.isMask ? 2 : 0));
+  }
+  return hash;
+}
+
+function frameAabb(node: SceneNode): { left: number; top: number; right: number; bottom: number } {
+  const w = Math.max(1, node.w);
+  const h = Math.max(1, node.h);
+  if (!node.rotation) {
+    return { left: node.x, top: node.y, right: node.x + w, bottom: node.y + h };
+  }
+  const cx = node.x + w / 2;
+  const cy = node.y + h / 2;
+  const cos = Math.cos((node.rotation * Math.PI) / 180);
+  const sin = Math.sin((node.rotation * Math.PI) / 180);
+  const corners = [
+    [-w / 2, -h / 2],
+    [w / 2, -h / 2],
+    [w / 2, h / 2],
+    [-w / 2, h / 2],
+  ].map(([x, y]) => [cx + x * cos - y * sin, cy + x * sin + y * cos]);
+  return {
+    left: Math.min(...corners.map(([x]) => x)),
+    top: Math.min(...corners.map(([, y]) => y)),
+    right: Math.max(...corners.map(([x]) => x)),
+    bottom: Math.max(...corners.map(([, y]) => y)),
+  };
+}
+
+/** 根级画板空间索引：只扫视口覆盖的网格，不再逐块遍历全部画板。 */
+function frameIndexFor(doc: GromaDoc, root: SceneNode): FrameSpatialIndex | null {
+  if (root.children.length < 24) return null;
+  const signature = frameIndexSignature(doc, root);
+  const cached = frameIndexCache.get(doc)?.get(root.id);
+  if (cached && cached.orders === root.children && cached.signature === signature) return cached;
+
+  const grid = new Map<string, number[]>();
+  const oversized: FrameSpatialIndex['oversized'] = [];
+  for (let order = 0; order < root.children.length; order += 1) {
+    const node = doc.nodes[root.children[order]];
+    if (!node) continue;
+    if (node.isMask) return null;
+    if (!node.visible) continue;
+    const { left, top, right, bottom } = frameAabb(node);
+    const minCx = Math.floor(left / FRAME_INDEX_CELL);
+    const maxCx = Math.floor(right / FRAME_INDEX_CELL);
+    const minCy = Math.floor(top / FRAME_INDEX_CELL);
+    const maxCy = Math.floor(bottom / FRAME_INDEX_CELL);
+    if ((maxCx - minCx + 1) * (maxCy - minCy + 1) > FRAME_INDEX_MAX_CELLS) {
+      oversized.push({ order, left, top, right, bottom });
+      continue;
+    }
+    for (let cy = minCy; cy <= maxCy; cy += 1) {
+      for (let cx = minCx; cx <= maxCx; cx += 1) {
+        const key = cellKey(cx, cy);
+        const bucket = grid.get(key);
+        if (bucket) bucket.push(order);
+        else grid.set(key, [order]);
+      }
+    }
+  }
+  const index: FrameSpatialIndex = { orders: root.children, signature, grid, oversized };
+  const perDoc = frameIndexCache.get(doc) ?? new Map<string, FrameSpatialIndex>();
+  perDoc.set(root.id, index);
+  frameIndexCache.set(doc, perDoc);
+  return index;
+}
+
+function visibleFrameOrders(index: FrameSpatialIndex, bounds: WorldBounds, v: Viewport): string[] | null {
+  const pad = 48 / Math.max(v.scale, 0.01);
+  const left = bounds.left - pad;
+  const top = bounds.top - pad;
+  const right = bounds.right + pad;
+  const bottom = bounds.bottom + pad;
+  const minCx = Math.floor(left / FRAME_INDEX_CELL);
+  const maxCx = Math.floor(right / FRAME_INDEX_CELL);
+  const minCy = Math.floor(top / FRAME_INDEX_CELL);
+  const maxCy = Math.floor(bottom / FRAME_INDEX_CELL);
+  if ((maxCx - minCx + 1) * (maxCy - minCy + 1) > FRAME_INDEX_MAX_QUERY_CELLS) return null;
+
+  const hitOrders = new Set<number>();
+  for (const frame of index.oversized) {
+    if (frame.right >= left && frame.bottom >= top && frame.left <= right && frame.top <= bottom) {
+      hitOrders.add(frame.order);
+    }
+  }
+  for (let cy = minCy; cy <= maxCy; cy += 1) {
+    for (let cx = minCx; cx <= maxCx; cx += 1) {
+      const bucket = index.grid.get(cellKey(cx, cy));
+      if (!bucket) continue;
+      for (const order of bucket) hitOrders.add(order);
+    }
+  }
+  return [...hitOrders]
+    .sort((a, b) => a - b)
+    .map((order) => index.orders[order]);
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -174,10 +308,7 @@ function drawSection(
   }
 
   if (depth < (opts.maxDepth ?? Infinity)) {
-    for (const childId of node.children) {
-      const child = doc.nodes[childId];
-      if (child) drawNode(ctx, doc, child, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
-    }
+    drawChildren(ctx, doc, node, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
   }
   ctx.restore();
 }
@@ -235,10 +366,7 @@ function drawFrame(
     ctx.clip();
   }
   if (depth < (opts.maxDepth ?? Infinity)) {
-    for (const childId of node.children) {
-      const child = doc.nodes[childId];
-      if (child) drawNode(ctx, doc, child, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
-    }
+    drawChildren(ctx, doc, node, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
   }
   ctx.restore();
 }
@@ -451,6 +579,136 @@ function drawSlice(
   ctx.restore();
 }
 
+function clipToMask(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  mask: SceneNode,
+  v: Viewport,
+  ox: number,
+  oy: number,
+): boolean {
+  const rings = nodeWorldRings(doc, mask);
+  if (rings.length === 0) return false;
+  const path = new Path2D();
+  for (const ring of rings) {
+    if (ring.length < 3) continue;
+    path.moveTo((ring[0][0] + ox) * v.scale + v.x, (ring[0][1] + oy) * v.scale + v.y);
+    for (let index = 1; index < ring.length; index += 1) {
+      path.lineTo((ring[index][0] + ox) * v.scale + v.x, (ring[index][1] + oy) * v.scale + v.y);
+    }
+    path.closePath();
+  }
+  ctx.clip(path, 'evenodd');
+  return true;
+}
+
+function luminanceToAlpha(ctx: CanvasRenderingContext2D, width: number, height: number) {
+  const image = ctx.getImageData(0, 0, width, height);
+  const data = image.data;
+  for (let index = 0; index < data.length; index += 4) {
+    const alpha = data[index + 3] / 255;
+    const luminance = (0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2]) / 255;
+    data[index] = 0;
+    data[index + 1] = 0;
+    data[index + 2] = 0;
+    data[index + 3] = Math.round(255 * luminance * alpha);
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+/** Alpha/亮度蒙版需要先把上方兄弟画进离屏层，再按蒙版像素做 destination-in。 */
+function drawPixelMaskedChildren(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  parent: SceneNode,
+  mask: SceneNode,
+  startIndex: number,
+  ox: number,
+  oy: number,
+  v: Viewport,
+  opts: InternalDrawOptions,
+  bounds: WorldBounds | null | undefined,
+  depth: number,
+): boolean {
+  const source = ctx.canvas;
+  if (!source || typeof document === 'undefined' || typeof ctx.getTransform !== 'function') return false;
+  const width = source.width;
+  const height = source.height;
+  if (width <= 0 || height <= 0) return false;
+
+  const layer = document.createElement('canvas');
+  layer.width = width;
+  layer.height = height;
+  const layerCtx = layer.getContext('2d');
+  if (!layerCtx) return false;
+  const transform = ctx.getTransform();
+  layerCtx.setTransform(transform);
+  layerCtx.globalAlpha = ctx.globalAlpha;
+  for (let index = startIndex; index < parent.children.length; index += 1) {
+    const child = doc.nodes[parent.children[index]];
+    if (!child || child.isMask) continue;
+    drawNode(layerCtx, doc, child, ox, oy, v, opts, bounds, depth);
+  }
+
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = width;
+  maskCanvas.height = height;
+  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: maskTypeOf(mask) === 'luminance' });
+  if (!maskCtx) return false;
+  maskCtx.setTransform(transform);
+  drawNode(maskCtx, doc, mask, ox, oy, v, opts, bounds, depth);
+  if (maskTypeOf(mask) === 'luminance') luminanceToAlpha(maskCtx, width, height);
+
+  layerCtx.setTransform(1, 0, 0, 1, 0, 0);
+  layerCtx.globalCompositeOperation = 'destination-in';
+  layerCtx.drawImage(maskCanvas, 0, 0);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(layer, 0, 0);
+  ctx.restore();
+  return true;
+}
+
+function drawChildren(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  node: SceneNode,
+  ox: number,
+  oy: number,
+  v: Viewport,
+  opts: InternalDrawOptions,
+  bounds: WorldBounds | null | undefined,
+  depth: number,
+) {
+  if (depth >= (opts.maxDepth ?? Infinity)) return;
+  const maskIndex = maskIndexForParent(doc, node);
+  const edge = maskIndex >= 0 ? maskIndex : node.children.length;
+  for (let index = 0; index < edge; index += 1) {
+    const child = doc.nodes[node.children[index]];
+    if (!child || child.isMask) continue;
+    drawNode(ctx, doc, child, ox, oy, v, opts, bounds, depth);
+  }
+  if (maskIndex < 0) return;
+  const mask = doc.nodes[node.children[maskIndex]];
+  if (!mask) return;
+  ctx.save();
+  const pixelMasked =
+    maskTypeOf(mask) !== 'geometry' &&
+    drawPixelMaskedChildren(ctx, doc, node, mask, maskIndex + 1, ox, oy, v, opts, bounds, depth);
+  if (!pixelMasked) {
+    clipToMask(ctx, doc, mask, v, ox, oy);
+    for (let index = maskIndex + 1; index < node.children.length; index += 1) {
+      const child = doc.nodes[node.children[index]];
+      if (!child || child.isMask) continue;
+      drawNode(ctx, doc, child, ox, oy, v, opts, bounds, depth);
+    }
+  }
+  ctx.restore();
+}
+
 function drawNode(
   ctx: CanvasRenderingContext2D,
   doc: GromaDoc,
@@ -494,10 +752,7 @@ function drawNode(
   } else if (depth < (opts.maxDepth ?? Infinity)) {
     ctx.save();
     ctx.globalAlpha = node.opacity;
-    for (const childId of node.children) {
-      const child = doc.nodes[childId];
-      if (child) drawNode(ctx, doc, child, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
-    }
+    drawChildren(ctx, doc, node, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
     ctx.restore();
   }
 }
@@ -694,9 +949,15 @@ export function drawEditor(
     bottom: (contentH - v.y) / v.scale,
   };
   if (root) {
-    for (const id of root.children) {
-      const node = doc.nodes[id];
-      if (node) drawNode(ctx, doc, node, 0, 0, v, opts, bounds);
+    const index = frameIndexFor(doc, root);
+    const visible = index ? visibleFrameOrders(index, bounds, v) : null;
+    if (visible !== null) {
+      for (const id of visible) {
+        const node = doc.nodes[id];
+        if (node) drawNode(ctx, doc, node, 0, 0, v, opts, bounds);
+      }
+    } else {
+      drawChildren(ctx, doc, root, 0, 0, v, opts, bounds, 0);
     }
   }
   drawSelection(ctx, doc, selectedIds, v);
@@ -752,10 +1013,7 @@ function renderFrameRaster(
   roundRect(ctx, 0, 0, frame.w, frame.h, frame.cornerRadius);
   ctx.clip();
   const exportOpts: InternalDrawOptions = { interactive: false, exporting: true, stats: newStats() };
-  for (const childId of frame.children) {
-    const child = doc.nodes[childId];
-    if (child) drawNode(ctx, doc, child, 0, 0, { x: 0, y: 0, scale: 1 }, exportOpts);
-  }
+  drawChildren(ctx, doc, frame, 0, 0, { x: 0, y: 0, scale: 1 }, exportOpts, undefined, 0);
   ctx.restore();
 
   return {
@@ -804,10 +1062,7 @@ function renderSliceRaster(
   ctx.rect(0, 0, region.w, region.h);
   ctx.clip();
   const exportOpts: InternalDrawOptions = { interactive: false, hideChrome: true, exporting: true, stats: newStats() };
-  for (const childId of root.children) {
-    const child = doc.nodes[childId];
-    if (child) drawNode(ctx, doc, child, -region.x, -region.y, { x: 0, y: 0, scale: 1 }, exportOpts);
-  }
+  drawChildren(ctx, doc, root, -region.x, -region.y, { x: 0, y: 0, scale: 1 }, exportOpts, undefined, 0);
   ctx.restore();
 
   return {

@@ -1,6 +1,6 @@
 # Groma UI 家族化改版记录
 
-初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-25 13:16（C04.2 四布尔 / z-order 差集 / 紧凑布尔菜单 / 159 tests）
+初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-25 20:26（C04.3 Divide / Flatten / Outline stroke / 七动作矢量菜单 / 166 tests）
 
 ## 这一轮为什么不是「美化」
 
@@ -735,35 +735,96 @@ Figma 能力矩阵里 C03 仍写着“渲染器尚无矢量节点”，但组件
 - 不做 Intersect/Exclude/Divide/Outline/Flatten，不处理 3+ 对象；圆角与椭圆是采样近似，曲线固定 12 段 flatten，结果不可继续编辑曲线。
 - 差集以 `selectedIds[0]` 为 subject，尚未按 z-order 归一；反选两个对象会得到相反的差集。按钮文案“从底层对象减去上层对象”与实现仍有口径差，下一刀先修这个。
 
-## C04.2 四布尔 / z-order / 紧凑菜单（2026-11-25 13:16）
+## C04.2 四布尔 / z-order / 3+ 对象 / 紧凑菜单（2026-11-25 19:52）
 
 **为什么做**
 
-C04 最小布尔只有并集/差集，差集还听点选顺序，与 Figma 的布尔预期不一致；同时四按钮在 1040 最小窗口会挤掉右侧缩放。这一刀把四个布尔补齐，把差集方向改成按图层 z-order，并把窄窗口收成“布尔 ▾”菜单。
+C04 最小布尔只有并集/差集，差集还听点选顺序，与 Figma 的布尔预期不一致；同时四按钮在 1040 最小窗口会挤掉右侧缩放。这一刀把四个布尔补齐，把差集方向改成按图层 z-order，并把窄窗口收成“布尔 ▾”菜单；随后把输入从“正好两个”放开到 2+ 对象。
 
 **改法**
 
 - `BooleanOp` 扩为 `union | subtract | intersect | exclude`，输出前缀“并集/差集/交集/排除”；`intersect` 用 `intersection`、`exclude` 用 `xor`。
-- 新增同父级校验：两个对象必须属于同一父节点，跨 Frame/Group 拒绝，不做隐式提升。
-- 新增 `orderByZ`：按父节点 `children` 顺序排序（数组前为底层），`sourceIds` 与几何顺序同步；差集固定“底层减上层”，不再依赖 `selectedIds[0]`。
+- 输入放开到至少 2 个对象，新增同父级校验：所有对象必须属于同一父节点，跨 Frame/Group 拒绝，不做隐式提升。
+- 新增 `orderByZ`：按父节点 `children` 顺序排序（数组前为底层），`sourceIds` 与几何顺序同步；差集为“底层减其余对象并集”，不再依赖 `selectedIds[0]`。
+- 多对象：`union` / `exclude` 直接 variadic，`subtract` 底层减其余并集，`intersect` 取全部交集；不额外生成临时节点，3+ 源对象与结果仍压在一条 `structure` 历史里。
 - TopBar 四按钮走 `BOOLEAN_ACTIONS` 常量；`.bool-wide` 宽屏显示四按钮，CSS `max-width:760px` 隐藏并显示 `.bool-compact`“布尔 ▾”，弹出四操作菜单；点遮罩/Esc/选中变化均关闭。
 - `.bool-reason` 隐藏阈值从 760 提到 1180，1280 窗口下左栏恢复 92px、工程名可见、四按钮到 x601；最大化 1707 CSS 下四按钮 + 原因到 x1211，右侧导入/导出仍完整。
 - 修正紧凑按钮宽度：`min-width:50px` + `white-space:nowrap`，避免“布尔 ▾”在 34px 按钮里换行；菜单阴影改用实际 `0 12px 28px rgba(34,28,0,.14)`，不再引用未定义 `--shadow-pop`。
 
 **验证**
 
-- `boolean.test.ts` 5 条、`editor.test.ts` 33 条；完整 gate PASS：25 文件 / 159 条，MCP selftest 通过；`index-DNnTPhXM.css` 59.63 kB、`index-Dbvk_VDL.js` 479.35 kB；EXE 3,297 KB，2026-11-25 13:16:26。
+- `boolean.test.ts` 6 条、`editor.test.ts` 34 条；完整 gate PASS：25 文件 / 161 条，MCP selftest 通过；前端 `index-DNnTPhXM.css` 59.63 kB、`index-B_OAYmV-.js` 479.39 kB；EXE 3,297 KB，2026-11-25 19:52:36。
 - `boolean-four.groma`：交集“交集 1”，1 轮廓 / 4 锚点 / 154×295；`交集 1.svg` 286 B。
 - `boolean-exclude.groma`：排除“排除 1”，2 轮廓 / 6+6 锚点 / 646×449；`排除 1.svg` 374 B，两子路径 + `fill-rule="evenodd"`。
 - `差集方向验收`：反选两矩形执行差集，仍得底层 矩形1 减上层 矩形2 的 L 形，1 轮廓 / 6 锚点 / 407×379。
 - 紧凑菜单：`boolean-compact.groma` 在 1040×680（CSS 679）下菜单四操作均可用，点并集生成“并集 1”，2 轮廓 / 54 锚点 / 520×480，Toast“并集完成”。
-- UI：`shots/boolean-four-wide-max.png`、`boolean-four-wide-1280.png`、`boolean-compact-1040.png`、`boolean-compact-union-1040.png`；三档 `overflow:0`。
+- 三对象：`boolean-three.groma` 选中“黄色卡片 + 墨色圆 + 墨色横条”，同一 1040 紧凑菜单点并集生成“并集 1”，3 轮廓 / 102 锚点 / 580×480，三个源对象全部消失；core 另测三对象并集 17500、差集 7200、交集 3600，editor 测三源一步撤销/重做。
+- UI：`shots/boolean-four-wide-max.png`、`boolean-four-wide-1280.png`、`boolean-compact-1040.png`、`boolean-compact-union-1040.png`、`boolean-three-1040.png`；三档 `overflow:0`。
 
 **边界**
 
-- 仍只支持正好 2 个对象；3+ 对象折叠、Divide、Outline、Flatten 未做。
+- 3+ 对象已支持；Divide、Outline、Flatten 由 C04.3 补齐。
 - 同父级是新增限制；是否允许跨容器布尔需要产品口径。
 - 曲线固定 12 段 flatten，结果不可继续编辑曲线。
+
+## C04.3 Divide / Flatten / Outline stroke / 七动作矢量菜单（2026-11-25 20:26）
+
+**为什么做**
+
+四布尔与 3+ 对象只覆盖了“合并/相减/相交/排除”，Figma 里同一组菜单还有 Divide、Flatten、Outline stroke。加到同一排会把 1440 窗口的左栏工程名挤成“Gro…”，所以这一刀同时重排入口：宽屏四布尔 + “更多 ▾”，窄屏收成一个“矢量 ▾”七项菜单，并且让单对象也能进入 Outline。
+
+**改法**
+
+- 动作常量拆为 `BOOLEAN_ACTIONS`（并集/差集/交集/排除）+ `EXTRA_ACTIONS`（分割/拍平/描边）+ `VECTOR_ACTIONS` 合表；字段统一为 `action: VectorAction`，不再用 `op`。
+- `showVector = selectedIds.length >= 1`，`showBoolean = selectedIds.length >= 2`：单对象只显示“更多 ▾”（宽屏）或“矢量 ▾”（窄屏），四布尔按钮不出现；Outline 可执行，Divide/Flatten 禁用并给出“布尔需要至少两个对象”。
+- 宽屏 `.bool-wide` 显示四布尔 + `.bool-more`“更多 ▾”，菜单三项（分割/拍平/描边）；窄屏 `.bool-compact-wrap` 显示单个 `.bool-compact`“矢量 ▾”，菜单七项，四布尔与额外三项之间插入 `.bool-menu-sep` 分隔线。
+- 断点从四布尔时代的 760 提到 **1180**：1440 窗口（CSS 946）改为单“矢量 ▾”，工程名完整；最大化（CSS 1707）仍保持四布尔 + “更多 ▾”；1040（CSS 679）保持单按钮，七项菜单完整可见。
+- 菜单项逐动作调用 `readiness(action)`：四布尔用 `union` 的统一校验，额外三项用各自的 `vectorActionEligibility`；禁用项 `title` 给具体原因，菜单在全部禁用时底部显示首条原因。
+- 单对象 Outline 的插入位置在源对象之后（`replaceSources=false`），四布尔/Divide/Flatten 的插入位置在最低源对象原索引前（`replaceSources=true`）；一次操作仍只产生一条 `structure` 历史。
+
+**验证**
+
+- `boolean.test.ts` 9 条、`editor.test.ts` 36 条，定向 45 条通过；完整 gate PASS：25 文件 / 166 条，MCP selftest 通过；前端 `index-bURbZLJI.css` 59.82 kB、`index-CUR12QF0.js` 484.68 kB；EXE 3,299 KB，2026-11-25 20:26:05。
+- Divide：`vector-divide.groma` 选中“黄色卡片 + 墨色横条”，1707 CSS 从“更多 ▾ → 分割”得到“分割 1/2/3”三条路径，Toast“分割完成”；导出“分割 1.svg”320×200 / 519 B。1040 从七项菜单执行同样成功。
+- Flatten：`vector-flatten.groma` 同两对象执行“拍平”，只剩“拍平 1”，2 轮廓 / 32 锚点 / 380×260 / nonzero；导出 SVG 634 B、2 子路径、`fill-rule="nonzero"`。
+- Outline：`vector-outline.groma` 单对象加 12px 红描边执行“描边”，新增“描边 1”，2 轮廓 / 104 锚点 / 332×212，源描边清空；导出 SVG 1,723 B、2 子路径；1040 单对象菜单同样可用。
+- UI：`shots/vector-divide-max.png`（1707：四布尔+更多 + 三条分割结果）、`vector-menu-compact-1040.png`（679：七项菜单）、`vector-divide-1040.png`（679：菜单执行分割）、`vector-menu-1440.png`（946：单“矢量 ▾”、工程名完整）、`vector-outline-max.png`、`vector-outline-1040.png`、`vector-flatten-max.png`、`vector-divide-svg-max.png`、`vector-flatten-svg-max.png`、`vector-outline-svg-max.png`。
+
+**边界**
+
+- Outline 是自研描边带近似：miter 上限 4×half、超限回退 bevel、round 16 边形；虚线/开放轮廓直接拒绝。
+- Flatten 的重叠轮廓靠 `nonzero` 覆盖，不是把重叠区切成新环；曲线仍固定 12 段 flatten，结果不可继续编辑贝塞尔。
+- Divide 最多 8 个输入；跨父级不隐式提升。
+- 描边带在圆角处可能产生零面积退化环，`nodeFromWorldRings` 已按面积 `<=1e-6` 过滤；圆角描边验收为 2 轮廓。
+
+## C05 几何形状蒙版（2026-11-25）
+
+**为什么做**
+
+C04 收口后，Figma 免费版还缺“把形状当蒙版裁掉上方图层”的基础能力。没有它，图片裁切、异形窗口和海报遮罩只能靠导出到外部软件。这一刀只做几何蒙版，保持对象模型简单：一个普通图层打 `isMask`，同容器上方兄弟被它裁切。
+
+**改法**
+
+- 数据只加一个 `isMask?: boolean`，旧工程不需要迁移；`schema` 校验布尔类型、父级、类型与无子图层。删除上层后留下的惰性蒙版允许保存/重开（渲染为空裁切），避免正常编辑把工程写成不可打开。
+- `src/core/mask.ts` 统一资格与几何：`maskEligibility` 给 UI 原因，`maskIndexForParent` 找最上面的可见蒙版，`pointInMask` 按 `evenodd` 判定点是否在轮廓内（含内孔）。
+- 画布 `drawChildren` 变成所有容器的唯一子图层循环：先画蒙版下方，再用世界 rings 建 `Path2D` 裁切，最后画上方；蒙版自身不绘制。
+- SVG 用 `clipPath + path fill-rule="evenodd"` 包住上方兄弟；画板 PNG/JPG、切片 PNG/JPG 与组合图层 PNG 也统一走 canvas 蒙版路径。这里修过一个真实问题：首版 PNG 画板导出仍用旧 child 循环，导出图没有蒙版；改为 `drawChildren` 并给 `clipToMask` 补 `ox/oy` 坐标偏移后，PNG 与画布、SVG 一致。
+- 命中测试 `walkHit` 在蒙版外跳过被裁切的上方兄弟，蒙版自身仍可通过图层树或空白蒙版区域选中；右侧检查器新增“蒙版”分组，启用时按钮变“取消蒙版”并显示“裁切上方 N 个图层”；图层行加“蒙版”小标签。
+- 启用/取消都走 `editor.applyPatch`，各产生一条历史，不新造命令类型；隐藏蒙版不裁切，锁定蒙版仍裁切。
+
+**验证**
+
+- `mask.test.ts` 4 条：资格/唯一性、矩形与椭圆点包含、命中过滤、SVG clipPath；完整测试 26 文件 / 171 条通过；完整 `npm run gate` PASS，MCP selftest 通过，CSS 60.16 kB、JS 488.56 kB、EXE 3,300 KB（2026-11-25 21:01:54）。
+- 真实 EXE `mask-demo.groma`：椭圆蒙版裁切“蓝色大图层 + 蒙版内文字”，右栏“用作蒙版” → 图层出现“蒙版”、提示“裁切上方 2 个图层”；`Ctrl+Z` 回到未蒙版，重做恢复。
+- 三档 UI：`shots/mask-final-max.png`（1707 CSS，右栏完整）、`mask-1440.png`（946 CSS，蒙版标签与按钮可见）、`mask-1040.png`（679 CSS，按钮仍可见）。1040 下右栏信息多，蒙版提示位于滚动区底部，属于既有检查器滚动行为。
+- 导出：`桌面 1440.svg` 1,713 B，含 `groma-mask-1`、`fill-rule="evenodd"`，浏览器渲染为椭圆窗口；`桌面 1440@1x-2.png` 与 SVG 画面一致。首版 PNG 未裁切的问题已在同一刀修复并复验。
+
+**边界**
+
+- 只有几何蒙版：不读取蒙版填充的透明度，不做 Alpha/亮度蒙版、羽化、扩展、蒙版组或多个蒙版串联。
+- 文本/图片不能直接当蒙版；跨父级不提升。蒙版仍是普通图层，可移动/缩放/改圆角，但不参与布尔运算。
+
+
 
 
 

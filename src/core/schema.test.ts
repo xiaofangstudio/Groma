@@ -303,4 +303,43 @@ describe('场景校验', () => {
     expect(error).toContain('保留键');
     expect(error).toContain('不可从任何页面根节点到达');
   });
+
+  it('校验形状蒙版的父级与类型，允许删除上层后的惰性蒙版', () => {
+    const doc = brokenDoc();
+    const root = doc.nodes[doc.pages[0].rootId];
+    const frame = doc.nodes[root.children[0]];
+    const mask: SceneNode = {
+      ...frame,
+      id: 'mask-x',
+      type: 'rect',
+      name: '蒙版',
+      parentId: frame.id,
+      children: [],
+      x: 20,
+      y: 20,
+      w: 100,
+      h: 100,
+      isMask: true,
+      fills: [],
+    };
+    const top: SceneNode = { ...mask, id: 'top-x', name: '上层', isMask: undefined, x: 0, y: 0, w: 300, h: 300 };
+    frame.children = ['mask-x', 'top-x'];
+    doc.nodes['mask-x'] = mask;
+    doc.nodes['top-x'] = top;
+    expect(firstError(doc)).toBe('');
+
+    frame.children = ['top-x', 'mask-x'];
+    expect(firstError(doc)).toBe('');
+
+    frame.children = ['mask-x', 'top-x', 'mask-y'];
+    doc.nodes['mask-y'] = { ...mask, id: 'mask-y' };
+    expect(firstError(doc)).toBe('');
+
+    frame.children = ['mask-x', 'top-x'];
+    doc.nodes['mask-x'] = { ...mask, type: 'text', isMask: true };
+    expect(firstError(doc)).toContain('必须是矩形、椭圆或钢笔路径');
+
+    doc.nodes['mask-x'] = { ...mask, maskType: 'soft' as never };
+    expect(firstError(doc)).toContain('maskType');
+  });
 });

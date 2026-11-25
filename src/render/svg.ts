@@ -1,6 +1,8 @@
 import type { GromaDoc, Paint, SceneNode } from '../core/types';
 import { absoluteRect } from '../core/geometry';
 import { nodePathContours, penPathData } from '../core/pen';
+import { nodeWorldRings } from '../core/boolean';
+import { maskIndexForParent, maskTypeOf } from '../core/mask';
 import { getAssetDataUrl } from '../io/images';
 
 export interface SvgExport {
@@ -76,6 +78,63 @@ function strokeAttrs(node: SceneNode): string {
 
 function rectAttrs(x: number, y: number, w: number, h: number, radius: number): string {
   return `x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}"${radius > 0 ? ` rx="${n(radius)}"` : ''}`;
+}
+
+function ringsToPath(doc: GromaDoc, mask: SceneNode, originX: number, originY: number): string {
+  return nodeWorldRings(doc, mask)
+    .filter((ring) => ring.length >= 3)
+    .map((ring) => {
+      const points = ring.map(([x, y]) => `${n(x - originX)} ${n(y - originY)}`);
+      return `M ${points.join(' L ')} Z`;
+    })
+    .join(' ');
+}
+
+function emitChildren(
+  doc: GromaDoc,
+  node: SceneNode,
+  originX: number,
+  originY: number,
+  clipIndex: { value: number },
+  defs: Defs,
+  hideChrome: boolean,
+): string {
+  const maskIndex = maskIndexForParent(doc, node);
+  const below = node.children
+    .slice(0, maskIndex >= 0 ? maskIndex : node.children.length)
+    .filter((id) => !doc.nodes[id]?.isMask)
+    .map((id) => {
+      const child = doc.nodes[id];
+      return child ? emitNode(doc, child, originX, originY, clipIndex, defs, hideChrome) : '';
+    })
+    .join('\n');
+  if (maskIndex < 0) return below;
+  const mask = doc.nodes[node.children[maskIndex]];
+  if (!mask) return below;
+  const above = node.children
+    .slice(maskIndex + 1)
+    .filter((id) => !doc.nodes[id]?.isMask)
+    .map((id) => {
+      const child = doc.nodes[id];
+      return child ? emitNode(doc, child, originX, originY, clipIndex, defs, hideChrome) : '';
+    })
+    .join('\n');
+  const path = ringsToPath(doc, mask, originX, originY);
+  const type = maskTypeOf(mask);
+  if (!path && type === 'geometry') return `${below}${above}`;
+  clipIndex.value += 1;
+  if (type === 'geometry') {
+    const clipId = `groma-mask-${clipIndex.value}`;
+    defs.items.push(`<clipPath id="${clipId}"><path d="${esc(path)}" fill-rule="evenodd" /></clipPath>`);
+    return `${below}<g clip-path="url(#${clipId})">${above}</g>`;
+  }
+  const maskId = `groma-mask-${clipIndex.value}`;
+  const maskContent = emitNode(doc, mask, originX, originY, clipIndex, defs, true);
+  const maskType = type === 'alpha' ? 'alpha' : 'luminance';
+  defs.items.push(
+    `<mask id="${maskId}" maskUnits="userSpaceOnUse" x="-100000" y="-100000" width="200000" height="200000" mask-type="${maskType}" style="mask-type:${maskType}">${maskContent}</mask>`,
+  );
+  return `${below}<g mask="url(#${maskId})">${above}</g>`;
 }
 
 function emitNode(
@@ -164,12 +223,7 @@ function emitNode(
       return `<text x="${n(textX)}" y="${n(y)}" font-family="${esc(family)}" font-size="${n(fs)}" font-weight="${n(node.fontWeight ?? 500)}"${italic} text-anchor="${anchor}" ${paintAttrs(node, defs)} dominant-baseline="text-before-edge">${spans}</text>`;
     }
 
-    const childSvg = node.children
-      .map((id) => {
-        const child = doc.nodes[id];
-        return child ? emitNode(doc, child, originX, originY, clipIndex, defs, hideChrome) : '';
-      })
-      .join('\n');
+    const childSvg = emitChildren(doc, node, originX, originY, clipIndex, defs, hideChrome);
 
     if (node.type === 'frame' || node.type === 'section') {
       const fill = fillOf(node);
@@ -216,6 +270,7 @@ export function renderSliceSvg(
   const clipIndex = { value: 0 };
   const defs: Defs = { items: [], seq: 0 };
   const children = root.children
+    .filter((id) => !doc.nodes[id]?.isMask)
     .map((id) => {
       const child = doc.nodes[id];
       return child ? emitNode(doc, child, region.x, region.y, clipIndex, defs, true) : '';
@@ -281,12 +336,7 @@ export function renderFrameSvg(
     : `<rect x="0" y="0" width="${n(frame.w)}" height="${n(frame.h)}" fill="${esc(fill?.color ?? '#FFFFFF')}" />`;
   const clipIndex = { value: 0 };
   const defs: Defs = { items: [], seq: 0 };
-  const children = frame.children
-    .map((id) => {
-      const child = doc.nodes[id];
-      return child ? emitNode(doc, child, origin.x, origin.y, clipIndex, defs) : '';
-    })
-    .join('\n');
+  const children = emitChildren(doc, frame, origin.x, origin.y, clipIndex, defs, false);
   const defsBlock = defs.items.length > 0 ? `<defs>${defs.items.join('')}</defs>` : '';
   const body = frame.clipContent
     ? (() => {

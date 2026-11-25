@@ -45,14 +45,15 @@ async function main() {
   console.log('EXPAND', expanded);
   await sleep(260);
 
+  const three = process.env.BOOL_THREE === '1';
+  const labels = three ? ['黄色卡片', '墨色圆', '墨色横条'] : ['黄色卡片', '墨色横条'];
   const rows = await evaluate(`(() => {
-    const pick = (label) => [...document.querySelectorAll('.layer-row')].find((row) => row.innerText.includes(label));
-    const first = pick('黄色卡片');
-    const second = pick('墨色横条');
-    if (!first || !second) return { ok: false, labels: [...document.querySelectorAll('.layer-row')].map((row) => row.innerText.trim()) };
-    first.click();
-    second.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
-    return { ok: true };
+    const labels = ${JSON.stringify(labels)};
+    const items = labels.map((label) => [...document.querySelectorAll('.layer-row')].find((row) => row.innerText.includes(label)));
+    if (items.some((item) => !item)) return { ok: false, labels: [...document.querySelectorAll('.layer-row')].map((row) => row.innerText.trim()) };
+    items[0].click();
+    for (const item of items.slice(1)) item.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+    return { ok: true, count: items.length };
   })()`);
   console.log('SELECT', JSON.stringify(rows));
   if (!rows.ok) throw new Error('没有找到可布尔的图层');
@@ -60,7 +61,7 @@ async function main() {
   console.log('STATUS', JSON.stringify(await evaluate(`document.querySelector('.statusbar')?.innerText.slice(0, 160)`)));
 
   const compact = await evaluate(`(() => {
-    const target = document.querySelector('[aria-label="布尔运算"]');
+    const target = document.querySelector('[aria-label="矢量运算"]');
     if (!target || !target.offsetParent) return null;
     const rect = target.getBoundingClientRect();
     return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };

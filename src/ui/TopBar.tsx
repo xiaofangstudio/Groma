@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { Fragment, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { editor, useEditor } from '../state/editor';
-import { booleanEligibility, type BooleanOp } from '../core/boolean';
+import { vectorActionEligibility, type BooleanOp, type VectorAction } from '../core/boolean';
 import { renameProject } from '../io/project';
 import { parseSvgDrawing } from '../io/importSvg';
 import { applySvgImport } from '../io/applySvgImport';
@@ -31,12 +31,20 @@ import {
   IconUndo,
 } from './icons';
 
-const BOOLEAN_ACTIONS: Array<{ op: BooleanOp; label: string; hint: string }> = [
-  { op: 'union', label: '并集', hint: '合并两个闭合对象' },
-  { op: 'subtract', label: '差集', hint: '从底层对象减去上层对象' },
-  { op: 'intersect', label: '交集', hint: '只保留两个对象的重叠部分' },
-  { op: 'exclude', label: '排除', hint: '保留两个对象不重叠的部分' },
+const BOOLEAN_ACTIONS: Array<{ action: VectorAction; label: string; hint: string }> = [
+  { action: 'union', label: '并集', hint: '合并所选闭合对象' },
+  { action: 'subtract', label: '差集', hint: '从底层对象减去其余对象' },
+  { action: 'intersect', label: '交集', hint: '只保留所有对象的重叠部分' },
+  { action: 'exclude', label: '排除', hint: '保留所有对象不重叠的部分' },
 ];
+
+const EXTRA_ACTIONS: Array<{ action: VectorAction; label: string; hint: string }> = [
+  { action: 'divide', label: '分割', hint: '按所有重叠边界拆成多个区域' },
+  { action: 'flatten', label: '拍平', hint: '合并为一个多轮廓路径' },
+  { action: 'outline', label: '描边', hint: '把实线描边转为填色路径' },
+];
+
+const VECTOR_ACTIONS = [...BOOLEAN_ACTIONS, ...EXTRA_ACTIONS];
 
 export function TopBar() {
   const s = useEditor();
@@ -59,12 +67,17 @@ export function TopBar() {
   }, [toast]);
 
   const scalePct = Math.round(s.viewport.scale * 100);
-  const booleanReady = booleanEligibility(s.doc, s.selectedIds);
+  const booleanReady = vectorActionEligibility(s.doc, s.selectedIds, 'union');
   const showBoolean = s.selectedIds.length >= 2;
+  const showVector = s.selectedIds.length >= 1;
+  const readiness = (action: VectorAction) =>
+    action === 'divide' || action === 'flatten' || action === 'outline'
+      ? vectorActionEligibility(s.doc, s.selectedIds, action)
+      : booleanReady;
 
   useEffect(() => {
-    if (!showBoolean) setBoolMenuOpen(false);
-  }, [showBoolean]);
+    if (!showVector) setBoolMenuOpen(false);
+  }, [showVector]);
 
   useEffect(() => {
     if (!boolMenuOpen) return;
@@ -75,25 +88,79 @@ export function TopBar() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [boolMenuOpen]);
 
-  function runBoolean(op: BooleanOp) {
-    if (!booleanReady.ok) {
-      setToast({ title: '无法执行布尔', detail: booleanReady.reason });
+  function runVector(action: VectorAction) {
+    const ready = readiness(action);
+    if (!ready.ok) {
+      setToast({ title: '无法执行矢量操作', detail: ready.reason });
       return;
     }
-    if (editor.booleanSelected(op)) {
-      const title: Record<BooleanOp, string> = {
+    if (editor.vectorSelected(action)) {
+      const titles: Record<VectorAction, string> = {
         union: '并集完成',
         subtract: '差集完成',
         intersect: '交集完成',
         exclude: '排除完成',
+        divide: '分割完成',
+        flatten: '拍平完成',
+        outline: '描边转形状完成',
       };
-      setToast({
-        title: title[op],
-        detail: '布尔结果已扁平化为折线',
-      });
+      const details: Record<VectorAction, string> = {
+        union: '布尔结果已扁平化为折线',
+        subtract: '布尔结果已扁平化为折线',
+        intersect: '布尔结果已扁平化为折线',
+        exclude: '布尔结果已扁平化为折线',
+        divide: '已拆成独立区域路径',
+        flatten: '已合并为单个多轮廓路径',
+        outline: '描边已转为填色路径',
+      };
+      setToast({ title: titles[action], detail: details[action] });
     } else {
-      setToast({ title: '无法执行布尔', detail: '结果为空或对象没有父级' });
+      setToast({ title: '无法执行矢量操作', detail: '结果为空或对象没有父级' });
     }
+  }
+
+  function runBoolean(op: BooleanOp) {
+    runVector(op);
+  }
+
+  function renderVectorMenu(actions: typeof VECTOR_ACTIONS, label: string) {
+    if (!boolMenuOpen) return null;
+    const blocked = actions.map((item) => readiness(item.action)).filter((item) => !item.ok);
+    return (
+      <>
+        <button
+          className="bool-menu-shade"
+          aria-label="关闭矢量菜单"
+          tabIndex={-1}
+          onClick={() => setBoolMenuOpen(false)}
+        />
+        <div className="bool-menu" role="menu" aria-label={label}>
+          {actions.map((item, index) => {
+            const ready = readiness(item.action);
+            return (
+              <Fragment key={item.action}>
+                {index === BOOLEAN_ACTIONS.length && <span className="bool-menu-sep" />}
+                <button
+                  className="bool-menu-item"
+                  role="menuitem"
+                  disabled={!ready.ok}
+                  title={ready.ok ? item.hint : ready.reason}
+                  onClick={() => {
+                    runVector(item.action);
+                    setBoolMenuOpen(false);
+                  }}
+                >
+                  {item.label}
+                </button>
+              </Fragment>
+            );
+          })}
+          {blocked.length === actions.length && blocked[0] && (
+            <span className="bool-menu-reason">{blocked[0].reason}</span>
+          )}
+        </div>
+      </>
+    );
   }
 
   function commitName() {
@@ -294,65 +361,50 @@ export function TopBar() {
           >
             <IconRedo size={15} />
           </button>
-          {showBoolean && (
+          {showVector && (
             <>
               <span className="tool-sep" />
               <span className="bool-wide">
-                {BOOLEAN_ACTIONS.map((action) => (
+                {showBoolean && BOOLEAN_ACTIONS.map((item) => (
                   <button
-                    key={action.op}
+                    key={item.action}
                     className="tool-btn bool-btn"
-                    title={booleanReady.ok ? `${action.label}：${action.hint}` : `${action.label}：${booleanReady.reason}`}
-                    aria-label={action.label}
+                    title={booleanReady.ok ? `${item.label}：${item.hint}` : `${item.label}：${booleanReady.reason}`}
+                    aria-label={item.label}
                     disabled={!booleanReady.ok}
-                    onClick={() => runBoolean(action.op)}
+                    onClick={() => runBoolean(item.action as BooleanOp)}
                   >
-                    {action.label}
+                    {item.label}
                   </button>
                 ))}
+                <span className="bool-menu-wrap">
+                  <button
+                    className="tool-btn bool-btn bool-more"
+                    title="分割 / 拍平 / 描边转形状"
+                    aria-label="更多矢量操作"
+                    aria-expanded={boolMenuOpen}
+                    onClick={() => setBoolMenuOpen((open) => !open)}
+                  >
+                    更多 ▾
+                  </button>
+                  {renderVectorMenu(EXTRA_ACTIONS, '更多矢量操作')}
+                </span>
               </span>
-              <span className="bool-menu-wrap">
+              <span className="bool-menu-wrap bool-compact-wrap">
                 <button
                   className="tool-btn bool-btn bool-compact"
-                  title={booleanReady.ok ? '布尔运算：并集 / 差集 / 交集 / 排除' : `布尔运算：${booleanReady.reason}`}
-                  aria-label="布尔运算"
+                  title="并集 / 差集 / 交集 / 排除 / 分割 / 拍平 / 描边"
+                  aria-label="矢量运算"
                   aria-expanded={boolMenuOpen}
                   onClick={() => setBoolMenuOpen((open) => !open)}
                 >
-                  布尔 ▾
+                  矢量 ▾
                 </button>
-                {boolMenuOpen && (
-                  <>
-                    <button
-                      className="bool-menu-shade"
-                      aria-label="关闭布尔菜单"
-                      tabIndex={-1}
-                      onClick={() => setBoolMenuOpen(false)}
-                    />
-                    <div className="bool-menu" role="menu" aria-label="布尔运算">
-                      {BOOLEAN_ACTIONS.map((action) => (
-                        <button
-                          key={action.op}
-                          className="bool-menu-item"
-                          role="menuitem"
-                          disabled={!booleanReady.ok}
-                          title={booleanReady.ok ? action.hint : booleanReady.reason}
-                          onClick={() => {
-                            runBoolean(action.op);
-                            setBoolMenuOpen(false);
-                          }}
-                        >
-                          {action.label}
-                        </button>
-                      ))}
-                      {!booleanReady.ok && <span className="bool-menu-reason">{booleanReady.reason}</span>}
-                    </div>
-                  </>
-                )}
+                {renderVectorMenu(VECTOR_ACTIONS, '矢量运算')}
               </span>
-              {!booleanReady.ok && (
+              {showBoolean && !booleanReady.ok && (
                 <span className="bool-reason" title={booleanReady.reason}>
-                  需两条闭合对象
+                  需≥2 同父对象
                 </span>
               )}
             </>

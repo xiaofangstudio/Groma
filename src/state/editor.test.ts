@@ -46,6 +46,76 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[resultId!]).toBeTruthy();
   });
 
+  it('三对象布尔合并为一条历史，一步撤销恢复全部源对象', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 50, y: 0, w: 100, h: 100 });
+    const c = editor.addNode({ type: 'rect', parentId: rootId(), x: 75, y: 0, w: 100, h: 100 });
+    editor.select(a);
+    editor.select(b, true);
+    editor.select(c, true);
+    expect(getState().selectedIds).toHaveLength(3);
+    expect(editor.booleanSelected('union')).toBe(true);
+    const resultId = getState().selectedId;
+    expect(getState().doc.nodes[a]).toBeUndefined();
+    expect(getState().doc.nodes[b]).toBeUndefined();
+    expect(getState().doc.nodes[c]).toBeUndefined();
+    expect(getState().doc.nodes[resultId!].pathContours?.length).toBe(1);
+
+    editor.undo();
+    expect(getState().doc.nodes[a]).toBeTruthy();
+    expect(getState().doc.nodes[b]).toBeTruthy();
+    expect(getState().doc.nodes[c]).toBeTruthy();
+    expect(getState().doc.nodes[resultId!]).toBeUndefined();
+
+    editor.redo();
+    expect(getState().doc.nodes[a]).toBeUndefined();
+    expect(getState().doc.nodes[b]).toBeUndefined();
+    expect(getState().doc.nodes[c]).toBeUndefined();
+    expect(getState().doc.nodes[resultId!]).toBeTruthy();
+  });
+
+  it('分割生成多个区域并一步撤销全部恢复', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 50, y: 0, w: 100, h: 100 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.vectorSelected('divide')).toBe(true);
+    const resultIds = getState().selectedIds;
+    expect(resultIds).toHaveLength(3);
+    expect(getState().doc.nodes[a]).toBeUndefined();
+    expect(getState().doc.nodes[b]).toBeUndefined();
+    expect(resultIds.every((id) => getState().doc.nodes[id]?.name.startsWith('分割 '))).toBe(true);
+
+    editor.undo();
+    expect(getState().doc.nodes[a]).toBeTruthy();
+    expect(getState().doc.nodes[b]).toBeTruthy();
+    expect(resultIds.every((id) => !getState().doc.nodes[id])).toBe(true);
+
+    editor.redo();
+    expect(getState().doc.nodes[a]).toBeUndefined();
+    expect(resultIds.every((id) => getState().doc.nodes[id])).toBe(true);
+  });
+
+  it('描边转形状清空源描边，并一步撤销恢复', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    editor.applyPatch(a, {
+      strokes: [{ color: '#FF0000', opacity: 1, width: 10, dash: [], cap: 'butt', join: 'miter' }],
+    });
+    editor.select(a);
+    expect(editor.vectorSelected('outline')).toBe(true);
+    const resultId = getState().selectedId;
+    expect(getState().doc.nodes[a].strokes).toHaveLength(0);
+    expect(getState().doc.nodes[resultId!]?.fills?.[0]).toMatchObject({ type: 'solid', color: '#FF0000' });
+
+    editor.undo();
+    expect(getState().doc.nodes[a].strokes?.[0]?.width).toBe(10);
+    expect(getState().doc.nodes[resultId!]).toBeUndefined();
+
+    editor.redo();
+    expect(getState().doc.nodes[a].strokes).toHaveLength(0);
+    expect(getState().doc.nodes[resultId!]).toBeTruthy();
+  });
+
   it('直线以 path 节点落盘，默认无填充并带描边', () => {
     const id = editor.addNode({
       type: 'path',

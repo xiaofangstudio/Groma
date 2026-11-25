@@ -15,6 +15,7 @@ import {
 } from '../core/paint';
 import { dashForKind, dashKind, formatDash, parseDashInput, type DashKind } from '../core/stroke';
 import { countSharedPenVertices } from '../core/pen';
+import { maskEligibility, maskTypeOf } from '../core/mask';
 import { usePenAnchorSelection } from '../state/pen-selection';
 import { absolutePosition, absoluteRect, selectionBounds, topLevelSelection } from '../core/geometry';
 import { countArtboards } from '../core/doc';
@@ -757,6 +758,7 @@ function SliceInspector({ node }: { node: SceneNode }) {
 }
 
 function ShapeInspector({ node }: { node: SceneNode }) {
+  const s = useEditor();
   const penSelection = usePenAnchorSelection();
   const stroke = node.strokes?.[0];
   const isText = node.type === 'text';
@@ -777,6 +779,8 @@ function ShapeInspector({ node }: { node: SceneNode }) {
   const penAnchorTotal = penContours.reduce((sum, contour) => sum + contour.anchors.length, 0);
   const penSharedTotal = countSharedPenVertices(penContours);
   const strokeDash = stroke ? dashKind(stroke.dash) : 'solid';
+  const maskCandidate = node.type === 'rect' || node.type === 'ellipse' || (node.type === 'path' && node.shapeKind !== 'arrow');
+  const maskState = maskCandidate || node.isMask ? maskEligibility(s.doc, node.id) : null;
 
   const patchStroke = (patch: Partial<NonNullable<SceneNode['strokes']>[number]>) => {
     if (!stroke) return;
@@ -1075,6 +1079,57 @@ function ShapeInspector({ node }: { node: SceneNode }) {
           />
         </div>
       </section>
+
+      {maskState && (
+        <section className="ins-section">
+          <h3 className="ins-title">蒙版</h3>
+          <button
+            className={`wide-action${node.isMask ? ' is-mask-on' : ''}`}
+            disabled={node.locked || (!node.isMask && !maskState.ok)}
+            title={!node.isMask && !maskState.ok ? maskState.reason : undefined}
+            onClick={() =>
+              editor.applyPatch(node.id, {
+                isMask: !node.isMask,
+                ...(node.isMask ? {} : { maskType: node.maskType ?? 'geometry' }),
+              })
+            }
+          >
+            <span>{node.isMask ? '取消蒙版' : '用作蒙版'}</span>
+          </button>
+          {node.isMask && (
+            <div className="fill-type-switch mask-type-switch" role="group" aria-label="蒙版类型">
+              {([
+                ['geometry', '轮廓'],
+                ['alpha', 'Alpha'],
+                ['luminance', '亮度'],
+              ] as const).map(([type, label]) => (
+                <button
+                  key={type}
+                  className={`fill-type-btn${maskTypeOf(node) === type ? ' is-on' : ''}`}
+                  disabled={node.locked}
+                  title={
+                    type === 'geometry'
+                      ? '按轮廓硬裁切，最快'
+                      : type === 'alpha'
+                        ? '按蒙版图层的透明度裁切'
+                        : '按蒙版图层的亮度裁切'
+                  }
+                  onClick={() => editor.applyPatch(node.id, { maskType: type })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className={`ins-hint mask-hint${!node.isMask && !maskState.ok ? ' is-blocked' : ''}`}>
+            {node.isMask
+              ? `已作为蒙版，裁切上方 ${maskState.aboveIds?.length ?? 0} 个图层`
+              : maskState.ok
+                ? '将裁切同容器中位于其上方的图层'
+                : maskState.reason}
+          </div>
+        </section>
+      )}
 
       <div className="ins-hint">{node.locked ? '节点已锁定，属性编辑已停用' : '拖动移动 · 角点缩放 · Delete 删除'}</div>
     </>

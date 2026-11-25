@@ -73,14 +73,14 @@ async function main() {
       boolSubtract: rect('[aria-label="差集"]'),
       boolIntersect: rect('[aria-label="交集"]'),
       boolExclude: rect('[aria-label="排除"]'),
-      boolCompact: rect('[aria-label="布尔运算"]'),
+      boolCompact: rect('[aria-label="矢量运算"]'),
       reason: rect('.bool-reason'),
       reasonText: document.querySelector('.bool-reason')?.innerText ?? '',
       overflow: document.documentElement.scrollWidth - innerWidth
     };
   })()`)));
   const compact = await evaluate(`(() => {
-    const node = document.querySelector('[aria-label="布尔运算"]');
+    const node = document.querySelector('[aria-label="矢量运算"]');
     if (!node || !node.offsetParent) return null;
     const rect = node.getBoundingClientRect();
     return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };

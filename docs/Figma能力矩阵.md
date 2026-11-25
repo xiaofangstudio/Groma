@@ -1,6 +1,6 @@
 # Groma × Figma 能力矩阵（执行版）
 
-> 更新：2026-11-25 ｜ 审计基线：`npm run gate` 25 个测试文件 / 159 tests 全绿；C03 已落地钢笔一期/锚点编辑/多轮廓复合路径/共享顶点（`vertexId` 最小内核）/当前轮廓序号与整条轮廓删除，C04 已落地两对象四布尔 Union/Subtract/Intersect/Exclude、同父级校验与 z-order 差集（底层减上层）；A02 全链路、A05 浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 与本页批量导出、导出弹窗单焦点重排、页缩略图不抢帧补丁、PNG/JPG/WebP 图片节点与工程资产层（含替换图片）、文本对齐/行高/斜体、C02 直线/箭头/多边形/星形与 Slice 区域导出均已落地；左栏 footer 背景固定与内容裁剪、页面“画板”计数只数 Frame、紧凑窗口顶栏文件名压缩与布尔菜单、验收截图统一最大化；外部软件工程级导入只留入口，选区回传待补；EXE 3,297 KB，2026-11-25 13:16:26
+> 更新：2026-11-25 ｜ 审计基线：`npm run gate` 26 个测试文件 / 173 tests 全绿；C03 已落地钢笔一期/锚点编辑/多轮廓复合路径/共享顶点（`vertexId` 最小内核）/当前轮廓序号与整条轮廓删除，C04 已落地多对象四布尔 Union/Subtract/Intersect/Exclude、同父级校验与 z-order 差集（底层减其余并集），并补齐 Divide / Flatten / Outline stroke；C05 已落地几何形状蒙版与 Alpha/亮度蒙版，多画板画布加入可见区空间索引；A02 全链路、A05 浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 与本页批量导出、导出弹窗单焦点重排、页缩略图不抢帧补丁、PNG/JPG/WebP 图片节点与工程资产层（含替换图片）、文本对齐/行高/斜体、C02 直线/箭头/多边形/星形与 Slice 区域导出均已落地；左栏 footer 背景固定与内容裁剪、页面“画板”计数只数 Frame、顶栏宽屏四布尔+“更多 ▾”与窄屏“矢量 ▾”七项菜单、验收截图统一最大化；外部软件工程级导入只留入口，选区回传待补；EXE 3,301 KB，2026-11-25 21:56:18
 > 功能底本：[`Figma功能蒸馏参考.md`](./Figma功能蒸馏参考.md)（能力清单，不是完成清单）
 > 权威顺序：`README.md` 第零章 → 本文 → 其他规划文档
 > 一句话：**Figma 免费版是功能基线，其他工具的长处是融合层；矩阵只认双击 EXE 能跑的结果。**
@@ -79,8 +79,8 @@
 | C01 | 选择/框选/多选/成组/对齐分布 | V、Shift 加减选、框选、Ctrl+G、6 向对齐、等距 | ✅ 已真实窗口验收 | 边缘穿透选择细节 | P2 |
 | C02 | 基础形状 | Frame、矩形、直线、椭圆、多边形、星形、三角形、箭头、Slice | ● 2026-11-24 Frame/矩形/椭圆/文字 + 直线 + 箭头（线身 + 可填充三角头，SVG 同步导出）+ 多边形/星形（`path` 参数化，边数/角数 3–12、星形内径 10–90%）+ Slice（青色虚线标注、PNG/JPG/SVG 区域裁切）已落地；三角形可用多边形 3 边生成，无独立图标 | 形状参数化扩展 | P1 |
 | C03 | 钢笔/矢量网络 | 角点/平滑点、拖手柄、增删锚点、分支路径 | ◐ 2026-11-25 钢笔一期+锚点编辑+多轮廓+共享顶点最小内核：`P` 钢笔工具、角点与对称手柄、首锚点闭合、双击/`Enter` 收尾、锚点叠层；拖锚点/手柄（`Alt` 单边）、线段插点、`Delete` 删点、整段拖动单步撤销；同一节点内 `Alt`+点空白追加多条轮廓，`Alt`+点锚点从同一坐标起分支；`PathAnchor.vertexId` 重复即共享顶点，拖动/删点/切角同步所有同 id 锚点，右栏显示“共享顶点 N 个”；右栏显示“当前轮廓 第 N / M 条”，`Ctrl/Cmd+Delete` 删除整条轮廓（只剩 1 条时拒绝）；闭合轮廓才填，开放轮廓只描边；双击切角点/平滑点；仍缺完整 Vector Network 图边/区域填充 | 完整 Vector Network、区域填充、图边遍历 | P1 |
-| C04 | 布尔运算 | Union/Subtract/Intersect/Exclude、Flatten、Outline stroke | ◐ 2026-11-25 两对象四布尔：正好两个对象、同一父级、不得有子图层；支持矩形（圆角近似）、椭圆（48 点）、多边形/星形、闭合钢笔轮廓；贝塞尔固定 12 段 flatten；源对象按父级 `children` 顺序取 z-order，数组前为底层，差集固定“底层减上层”；结果单个 `path` 节点、`fillRule:evenodd`、名称“并集/差集/交集/排除 N”，源删除与结果插入合成一条 `structure` 历史；保存重开与 PNG/SVG 导出通过；缺 Divide/Outline/Flatten 与 3+ 对象 | 3+ 对象折叠、拍平、描边转形状、Divide | P1 |
-| C05 | 蒙版 | 形状蒙版、图层裁剪 | ○ | 蒙版节点 | P1 |
+| C04 | 布尔运算 | Union/Subtract/Intersect/Exclude、Flatten、Outline stroke | ● 2026-11-25 多对象四布尔 + Divide/Flatten/Outline：至少两个对象、同一父级、不得有子图层；支持矩形（圆角近似）、椭圆（48 点）、多边形/星形、闭合钢笔轮廓；贝塞尔固定 12 段 flatten；四布尔支持 3+ 对象，按父级 `children` 取 z-order（数组前为底层），差集为“底层减其余对象并集”；Divide 对 2–8 个对象枚举全部非空子集，逐块抠出互不重叠区域，复制最高层对象外观；Flatten 把所有闭合轮廓合成一个 `fillRule:nonzero` 的 `path`，复制底层外观；Outline 把每条实线描边按宽度转填色带（miter/bevel/round 近似），源描边清空；结果均单步撤销/重做，保存重开与 PNG/SVG 导出通过 | 更精确的 join/虚线转轮廓 | P1 |
+| C05 | 蒙版 | 形状蒙版、图层裁剪、Alpha/亮度蒙版 | ◐ 2026-11-25 已落地几何形状蒙版，并补 Alpha/亮度蒙版：同容器单蒙版、裁切上方兄弟，画布/SVG/PNG/JPG/命中一致；右栏“轮廓 / Alpha / 亮度”切换，Canvas 离屏合成，SVG 输出 `mask-type`；蒙版组、图像蒙版、羽化/扩展未做 | 蒙版组、图像蒙版、羽化 | P1 |
 | C06 | 图片 | 图片填充/资产、粘贴、裁剪焦点 | ◐ 2026-11-24 图片节点与工程资产层：PNG/JPG/WebP 导入、画布渲染、拖移缩放、圆角/透明度、PNG/JPG/SVG 导出、保存重开、检查器替换图片（保留位置尺寸）；区域裁剪未做 | 图片填充、裁剪焦点、粘贴图片、孤儿清理 | P1 |
 | C07 | 文本 | 富文本、字体、行高、字距、段落、列表、路径文字、链接 | ◐ 基础文本、字号、字重、左/中/右对齐、行高、斜体已落地；字体族、字距、富文本、段落、列表、路径文字未做 | 文本样式与富文本 | P1 |
 | C08 | Slice 切图 | 独立导出区域 | ● 2026-11-24 独立 `slice` 节点 + `K` 工具，画布青色虚线框与“切片 N”标签；导出按切片矩形裁切真实画面，PNG/JPG 位图、SVG 以切片尺寸建 `viewBox` + clipPath，切片自身不进导出；当前只支持单个矩形，不支持批量切片网格 | 切片嵌套与批量扩展 | P2 |
@@ -94,7 +94,7 @@
 | D03 | 效果 | 投影/内阴影/图层模糊/背景模糊，多效果 | ○ | 效果列表 | P1 |
 | D04 | 圆角 | 四角独立、缩放圆角 | ◐ 统一圆角 | 四角独立 | P1 |
 | D05 | 混合/透明度 | 全套 blend mode、整体透明度 | ◐ 仅透明度 | blend mode | P2 |
-| D06 | 轮廓/扁平化 | Outline stroke、Flatten | ○ 依赖矢量引擎 | 随矢量一起做 | P1 |
+| D06 | 轮廓/扁平化 | Outline stroke、Flatten | ◐ 2026-11-25 随 C04.3 落地：Outline stroke 与 Flatten 已可从矢量菜单执行，支持单对象描边转形状；虚线/开放轮廓描边仍拒绝 | 更精确的 join、虚线转轮廓 | P1 |
 
 ### 1.5 布局
 
@@ -186,7 +186,7 @@
 | --- | --- | --- | --- |
 | 1 | **A02 多页面与页面管理**（含拖排序、缩略图、跨页搜索、页级视口持久化） | 文件模型必须先定；否则组件库、版本历史、导出都要返工 | 建/切/改名/复制/删除/拖排序，切页恢复各自视口，缩略图与跨页搜索，撤销与保存重开；窗口截图 |
 | 2 | **A03 Sections + A05 版本历史浏览与回滚** | 页面之下需要区块；版本回滚要能看到真实快照 | A05 已落地快照列表/预览/手动存版本/回滚；A03 基础链路（创建/命名/折叠/填充/Frame 入块/PNG 整块导出）已落地，专属视觉与嵌套规则仍待补 |
-| 3 | **C03 矢量 + C04 布尔 + C05 蒙版** | 组件、图标、布尔都依赖矢量节点；这是对象模型地基 | C03 已落地钢笔、锚点/手柄、闭合/开放、锚点拖拽/插点/删点、同节点可编辑多轮廓、共享顶点（`vertexId`）、当前轮廓序号与整条轮廓删除、角点/平滑点切换、开放轮廓只描边、持久化与单图层导出；C04 已落地两对象 Union/Subtract/Intersect/Exclude、同父级校验、按 z-order 的差集方向、结果拍平为 `path`、单步撤销/重做与保存重开导出；下一刀补 3+ 对象折叠、完整 Vector Network、Divide/Outline 与蒙版 |
+| 3 | **C03 矢量 + C04 布尔 + C05 蒙版** | 组件、图标、布尔都依赖矢量节点；这是对象模型地基 | C03 已落地钢笔、锚点/手柄、闭合/开放、锚点拖拽/插点/删点、同节点可编辑多轮廓、共享顶点（`vertexId`）、当前轮廓序号与整条轮廓删除、角点/平滑点切换、开放轮廓只描边、持久化与单图层导出；C04 已落地多对象（2+）Union/Subtract/Intersect/Exclude、同父级校验、按 z-order 的差集方向，并补齐 Divide / Flatten / Outline stroke、单步撤销/重做与保存重开导出；C05 已落地几何形状蒙版与 Alpha/亮度蒙版，画布/SVG/PNG/JPG 一致；下一刀补蒙版组、图像蒙版、羽化与完整 Vector Network |
 | 4 | **D01–D06 外观 + F04 样式 + F05 变量** | 先有统一 paint/style/token，再做组件库，避免每个组件各写一套颜色 | 多填充/描边/效果/四角；样式与变量能绑定、能切 Mode |
 | 5 | **E01 约束 + E02 Auto Layout** | 布局引擎要先于组件变体，否则组件尺寸规则无法闭合 | Frame 改尺寸子节点按约束响应；Auto Layout Hug/Fill/Fixed |
 | 6 | **F01–F03 组件/变体/库** | 依赖矢量、样式、变量、布局四层 | 主组件/实例/变体/覆盖/本地库 |
@@ -266,7 +266,7 @@
 - 检查器：多边形/星形显示“形状”段（边数 / 角数 + 内径%），改值调用 `setShapeParams` 并按当前 W/H 重算，只进一条撤销；箭头的 `setShapeParams` 直接拒绝，避免把三角头改坏。
 - 渲染：复用现有 path 渲染、命中、缩放与 SVG 导出，不新增第二套形状图元；箭头三角头跟随描边透明度与颜色。
 - 测试：`line.test.ts` 4 条、`arrow.test.ts` 4 条、`shapes.test.ts` 4 条；`schema.test.ts` 14 条（含切片类型与非法几何）；`svg.test.ts` 8 条（两形状闭合路径、箭头双 path、切片裁切与居中文本锚点）；`editor.test.ts` 29 条（含切片落盘/无填充/撤销）；`doc.test.ts` 5 条（画板计数忽略根级切片）。
-- C02 收口时 `npm run gate` PASS（23 个测试文件 / 135 条测试，MCP selftest 通过）；当时 EXE 3,281 KB，2026-11-24 20:57:07；前端 `index-CPsLA2Dx.css` 58.03 kB、`index-BTAErJ2y.js` 422.13 kB。当前全量见 3.12：25 文件 / 159 条。
+- C02 收口时 `npm run gate` PASS（23 个测试文件 / 135 条测试，MCP selftest 通过）；当时 EXE 3,281 KB，2026-11-24 20:57:07；前端 `index-CPsLA2Dx.css` 58.03 kB、`index-BTAErJ2y.js` 422.13 kB。当前全量见 3.13：25 文件 / 166 条。
 - 真实 EXE：`shape-final.groma` 拖出五边形/五角星，改八边形/内径 55%，保存重开仍在；`arrow-final.groma` 拖出斜向与近水平两支箭头，`scene.json` 两支都挂 `frame-1`，各有 `arrowHeadData`、`fills:[]`、2px `#221C00` 描边，保存重开三角头与方向不变；`slice-final.groma` 中切片 `slice-mwuomxf8-1` 为 X443/Y182/527×497，保存重开恢复且画板计数仍为 1。
 - UI：`shots/arrow-final-1440.png`（两支箭头与箭头检查器）、`arrow-reopen-1440.png`（重开）、`arrow-final-1280.png` / `arrow-1040.png`（紧凑窗口）；`shots/slice-reopen-1440.png`（展开图层、选中切片、青色虚线框、检查器）、`slice-export-dialog-1440.png`（切片 SVG 527×497）、`slice-compact-1040.png`（12 入口不重叠、文件名完整）、`slice-final-export-1440.png`（SVG 导出 Toast）。`shots/shapes-final-1440.png` / `shapes-final-1280.png` / `shapes-1040-inspector.png` 为多边形/星形三档。左栏 footer 实底、左右面板 `overflow:hidden`、页行与底栏“画板”只统计 Frame。
 - 切片导出实测：PNG `切片 1@1x.png` 527×497 / 14,235 B；SVG `切片 1.svg` 1,278 B，`viewBox="0 0 527 497"`，Edge 渲染与 PNG 的卡片右缘、墨色圆、标题尾“oma”、副标题残段与横条一致；导出文件不含青色虚线或“切片 1”标签。
@@ -353,22 +353,55 @@
 - 真实 EXE Subtract：`boolean-subtract.groma` 结果“差集 1”，1 轮廓 / 6 锚点 / 407×379，L 形正确；同样一步撤销/重做；导出 `并集 1.svg` 324 B、`差集 1.svg` 304 B，重开工程后导出仍成功。
 - 失败态：`pen-final.groma` 选中两条钢笔（含开放路径），并集/差集均禁用，`title` 为“并集：需要至少一条闭合路径”“差集：需要至少一条闭合路径”；1280 窗口下可视文字“需两条闭合对象”与右侧缩放、导出控制不重叠；1040 最小窗口在 760px CSS 以下收起原因文字，按钮 `title` 保留原因，顶栏无溢出（viewport 679 / 工具条右界 451 / `overflow:0`）。
 - UI：`shots/boolean-union-max.png`（并集与 Toast）、`boolean-subtract-max.png`（差集 L 形）、`boolean-union-svg-max.png` / `boolean-subtract-svg-max.png`（重开导出）；后续顶栏截图见 3.12。
-- 本节为当时边界：不做 Intersect / Exclude / Divide / Outline / Flatten，不处理 3 个以上对象；差集 subject 取 `selectedIds[0]`，尚未按 z-order 归一；所有曲线固定 12 段 flatten。3.12 已补 Intersect/Exclude、同父级与 z-order，Divide/Outline/Flatten/3+ 仍未做。
+- 本节为当时边界：不做 Intersect / Exclude / Divide / Outline / Flatten，不处理 3 个以上对象；差集 subject 取 `selectedIds[0]`，尚未按 z-order 归一；所有曲线固定 12 段 flatten。3.12 已补 Intersect/Exclude、同父级与 z-order 与 3+，3.13 已补 Divide/Outline/Flatten。
 
-### 3.12 C04.2 四布尔与 z-order、紧凑菜单（2026-11-25 已落地）
+### 3.12 C04.2 四布尔、3+ 对象与 z-order、紧凑菜单（2026-11-25 已落地）
 
 - 数据与算法：`BooleanOp` 扩为 `union | subtract | intersect | exclude`，`BOOLEAN_PREFIX` 固定输出“并集 / 差集 / 交集 / 排除 N”；`intersect` 用 `polygonClipping.intersection`、`exclude` 用 `polygonClipping.xor`，其余仍走同一 flatten + `polygon-clipping` 路径。
-- 输入约束：仍必须正好 2 个唯一对象，新增“必须同一父级”，不得有子图层，至少一条闭合轮廓；跨 Frame/Group 布尔直接拒绝，不做隐式提升。
-- z-order：源对象按父节点 `children` 顺序排序（数组前为底层、后为上层），`sourceIds` 与几何顺序都按 z-order；差集固定“底层减上层”，不再依赖 `selectedIds[0]` 或点选先后。
+- 输入约束：至少 2 个唯一对象，必须同一父级，不得有子图层，至少一条闭合轮廓；跨 Frame/Group 布尔直接拒绝，不做隐式提升。
+- z-order：源对象按父节点 `children` 顺序排序（数组前为底层、后为上层），`sourceIds` 与几何顺序都按 z-order；差集为“底层减其余对象并集”，不再依赖 `selectedIds[0]` 或点选先后。
+- 多对象：`union` / `exclude` 直接 variadic，`subtract` 底层减其余并集，`intersect` 取全部对象交集；3+ 对象仍只产生一个结果节点和一条 `structure` 历史。
 - 输出：结果仍是单个 `path` 节点，每条结果环一条闭合轮廓、`fillRule:"evenodd"`，复制底层对象的 fills/strokes/opacity；源对象删除 + 结果插入仍合成一条 `structure` 历史，单步撤销/重做。
-- 入口：TopBar 选中 ≥2 时显示四按钮；宽屏 `.bool-wide` 四按钮文字，CSS `max-width:760px` 切到单个“布尔 ▾”按钮，点开弹出四操作菜单；菜单支持点遮罩关闭、Esc 关闭、选中对象变化自动关闭；不满足条件时按钮与菜单项均禁用，菜单内显示具体原因。
-- 测试：`boolean.test.ts` 5 条（并集、差集/内孔、交集/排除、反选 z-order、失败原因），`editor.test.ts` 33 条；完整 gate 25 文件 / 159 条通过，MCP selftest 通过；前端 `index-DNnTPhXM.css` 59.63 kB、`index-Dbvk_VDL.js` 479.35 kB；EXE 3,297 KB，2026-11-25 13:16:26。
+- 入口（本节当时）：TopBar 选中 ≥2 时显示四按钮；宽屏 `.bool-wide` 四按钮文字，CSS `max-width:760px` 切到单个“布尔 ▾”按钮；3.13 已改为 7 动作、断点 1180。
+- 测试：`boolean.test.ts` 6 条（并集、差集/内孔、交集/排除、反选 z-order、三对象折叠、失败原因），`editor.test.ts` 34 条；完整 gate 25 文件 / 161 条通过，MCP selftest 通过；前端 `index-DNnTPhXM.css` 59.63 kB、`index-B_OAYmV-.js` 479.39 kB；EXE 3,297 KB，2026-11-25 19:52:36。
 - 真实 EXE Intersect：`boolean-four.groma` 结果“交集 1”，1 轮廓 / 4 锚点 / 154×295 / evenodd；导出 `交集 1.svg` 286 B。
 - 真实 EXE Exclude：`boolean-exclude.groma` 结果“排除 1”，2 轮廓 / 6+6 锚点 / 646×449 / evenodd；导出 `排除 1.svg` 374 B，SVG 两个子路径且 `fill-rule="evenodd"`。
 - 真实 EXE z-order：`差集方向验收`（目录 `boolean-zorder.groma`）反选两个矩形（先点“矩形 2”再 Shift“矩形 1”）执行差集，结果仍为底层 矩形1 减上层 矩形2 的 L 形，1 轮廓 / 6 锚点 / 407×379。
 - 真实 EXE 紧凑菜单：`boolean-compact.groma`（由 `arrow-final.groma` 复制出的验收副本）在 1040×680 窗口、CSS viewport 679 下只显示“布尔 ▾”；打开菜单四操作均可用，点“并集”后生成“并集 1”（2 轮廓 / 54 锚点 / 520×480），Toast“并集完成 · 布尔结果已扁平化为折线”。
-- UI：`shots/boolean-four-wide-max.png`（最大化 1707 CSS：四按钮 + 原因到 x1211，右侧导入/导出完整）、`boolean-four-wide-1280.png`（839 CSS：四按钮到 x601，右侧缩放完整，文件名“钢笔…”可见）、`boolean-compact-1040.png`（679 CSS：单“布尔 ▾”+ 四操作菜单）、`boolean-compact-union-1040.png`（菜单执行并集结果）；三档均 `overflow:0`，无按钮挤压。
-- 边界：仍只支持正好 2 个对象，3+ 对象折叠、Divide、Outline、Flatten 未做；同父级是新限制，跨容器布尔需产品口径；曲线固定 12 段 flatten，结果不可继续编辑曲线。
+- 真实 EXE 三对象：`boolean-three.groma` 选中“黄色卡片 + 墨色圆 + 墨色横条”三个同父级对象，1040 紧凑菜单点并集生成“并集 1”，3 轮廓 / 102 锚点 / 580×480，三个源对象全部消失，仍有且仅有一条可撤销历史。
+- UI：`shots/boolean-four-wide-max.png`（最大化 1707 CSS：四按钮 + 原因到 x1211，右侧导入/导出完整）、`boolean-four-wide-1280.png`（839 CSS：四按钮到 x601，右侧缩放完整，文件名“钢笔…”可见）、`boolean-compact-1040.png`（679 CSS：单“布尔 ▾”+ 四操作菜单）、`boolean-compact-union-1040.png`（菜单执行两对象并集）、`boolean-three-1040.png`（菜单执行三对象并集）；三档均 `overflow:0`，无按钮挤压。
+- 边界：3+ 对象已支持；Divide、Outline、Flatten 由 3.13 补齐。同父级仍是限制，跨容器布尔需产品口径；曲线固定 12 段 flatten，结果不可继续编辑曲线。
+
+### 3.13 C04.3 Divide / Flatten / Outline stroke（2026-11-25 已落地）
+
+- 统一入口与数据：`VectorAction = BooleanOp | "divide" | "flatten" | "outline"`；`vectorActionEligibility` 先做同父级、无子图层、闭合轮廓、唯一对象校验，再按动作要求检查对象数；`vectorActionBuild(doc, ids, action, nextId)` 返回 `nodes / sourceIds / removeSourceIds / sourcePatches / parentId / replaceSources`。旧 `booleanPathNode` 保留为单结果兼容包装。
+- Divide：按父级 `children` 的 z-order 对 2–8 个对象枚举全部非空子集（`mask = 1..(1<<n)-1`）；每个子集先求 `intersection`，再减去子集外所有对象的 `union`，得到互不重叠区域；每块复制该子集最高层对象的 fills/strokes/opacity，名称“分割 N”，源对象全部删除。空区域跳过；超过 8 个对象拒绝。
+- Flatten：把所有源对象的闭合轮廓直接合并为一个 `path`，`fillRule:"nonzero"`，复制底层对象的 fills/strokes/opacity，名称“拍平 N”，源对象删除。重叠轮廓靠 nonzero 覆盖，SVG 同步写 `fill-rule="nonzero"`。
+- Outline：对每条实线描边按 `width` 生成描边带：逐边四边形 + 每个凸角的 join 几何（miter 上限 4×half，超限回退 bevel；bevel 三角；round 16 边形），再逐块 union；结果只填充描边颜色/透明度、无描边，名称“描边 N”。每个源对象的每条实线 stroke 生成一个节点；源对象清空 `strokes`，若 `fills` 为空则删除源对象，否则保留填充。虚线、开放轮廓、零描边拒绝；至少 1 个对象即可执行。
+- 历史：`editor.vectorSelected(action)` 支持一次插入多个结果节点与 `sourcePatches`，只产生一条 `structure` 历史；`replaceSources=true` 时结果插到最低源对象原索引前；Outline 插到最高源对象之后；`redoRemove=removeSourceIds`、`undoRemove=所有新节点 id`。`editor.booleanSelected(op)` 保留并委托给 `vectorSelected`。
+- 稳健性：`nodeFromWorldRings` 过滤面积 `<=1e-6` 的退化环。圆角描边带被 `polygon-clipping` 留下零面积三角时不会成为第 3 条轮廓；描边验收因此稳定为 2 轮廓。
+- UI：7 个矢量动作。宽屏（CSS >1180）显示四布尔 + “更多 ▾”（分割/拍平/描边）；窄屏（CSS ≤1180）只显示单个“矢量 ▾”，菜单七项按“布尔 / 分割 / 拍平 / 描边”分组并带分隔线；点遮罩、Esc、选中对象变化关闭；单对象也显示“矢量 ▾”，Outline 可用，Divide/Flatten 禁用并给原因。
+- 测试：`boolean.test.ts` 9 条（含 Divide 三区域面积、Flatten 2 轮廓/nonzero、Outline 圆角描边 2 轮廓与源描边清理），`editor.test.ts` 36 条（含 Divide/Outline 一步撤销重做）；定向 45 条通过。完整 `npm run gate` PASS：25 文件 / 166 条，MCP selftest 通过；前端 `index-bURbZLJI.css` 59.82 kB、`index-CUR12QF0.js` 484.68 kB；EXE 3,299 KB，2026-11-25 20:26:05。
+- 真实 EXE Divide：`vector-divide.groma`（`arrow-final.groma` 副本，矩形 2 改为与黄色卡片重叠）在最大化 1707 CSS 下选中“黄色卡片 + 墨色横条”，点“更多 ▾ → 分割”：3 个源对象变成“分割 1/2/3”三条闭合路径，全部选中，Toast“分割完成 · 已拆成独立区域路径”；导出“分割 1.svg”320×200 / 519 B，单轮廓、`fill-rule="evenodd"`。1040 窗口（679 CSS）从“矢量 ▾”七项菜单执行同一操作，同样得到 3 条结果。
+- 真实 EXE Flatten：`vector-flatten.groma` 同两对象执行“拍平”：只剩“拍平 1”，2 轮廓 / 32 锚点 / 380×260 / `fillRule:nonzero`，源两对象消失；导出“拍平 1.svg”634 B，`fill-rule="nonzero"`、2 个子路径。
+- 真实 EXE Outline：`vector-outline.groma` 单对象“黄色卡片”加 12px 红色 miter 描边，执行“描边”：新增“描边 1”，2 轮廓 / 104 锚点 / 332×212，填充 `#FF0000`、无描边；源卡片保留填充、`strokes` 清空；导出“描边 1.svg”1,723 B、2 个子路径。1040 窄屏单对象同样从“矢量 ▾”执行成功。
+- UI：`shots/vector-divide-max.png`（1707 CSS：四布尔+更多、3 条分割结果）、`vector-divide-1040.png`（679 CSS：单“矢量 ▾”）、`vector-menu-compact-1040.png`（七项菜单完整）、`vector-menu-1440.png`（946 CSS：单“矢量 ▾”，文件名完整）、`vector-outline-max.png`、`vector-outline-1040.png`、`vector-flatten-max.png`；导出 Toast 见 `vector-divide-svg-max.png`、`vector-flatten-svg-max.png`、`vector-outline-svg-max.png`。
+- 边界：Outline 是自研描边带近似，不是 clipper 级布尔；miter 4×half 上限、bevel 三角、round 16 边形；虚线直接拒绝。Flatten 产生的重叠轮廓依赖 nonzero 渲染，曲线仍按 12 段 flatten，结果不可继续编辑贝塞尔曲线。Divide 最多 8 个输入，跨父级不隐式提升。
+
+### 3.14 C05 形状蒙版 + Alpha/亮度蒙版（2026-11-25 已落地）
+
+- 数据：`SceneNode.isMask?: boolean` 与 `maskType?: 'geometry' | 'alpha' | 'luminance'`，缺省 `geometry`；`src/core/mask.ts` 提供 `maskEligibility`、`maskIndexForParent`、`maskForParent`、`maskTypeOf`、`pointInMask`。蒙版必须位于 `frame / section / group` 内，草稿层不能有子图层，必须是 `rect / ellipse / path` 且至少一条闭合轮廓；UI 启用时同父级只允许一个蒙版，且上方必须存在可裁切图层。`schema` 校验父级、类型、`maskType` 枚举与无子图层；删除上层后留下的惰性蒙版仍可保存/重开，不会让工程损坏。
+- 语义：蒙版节点自身不绘制，只裁切同父级中位于其上方的兄弟；下方图层不受影响。隐藏蒙版不裁切；锁定蒙版仍裁切。多个轮廓按 `evenodd` 处理，保留路径内孔。轮廓蒙版只取几何；Alpha 蒙版读取蒙版图层的像素透明度；亮度蒙版按 `0.2126R + 0.7152G + 0.0722B` 乘以原 alpha 转成遮罩强度。
+- 画布：`drawChildren` 统一处理同父级子图层；几何蒙版用世界坐标 rings 建 `Path2D`，`ctx.clip(path,"evenodd")` 后绘制上方兄弟。Alpha/亮度走 `drawPixelMaskedChildren`：把上方兄弟与蒙版分别画到同尺寸离屏 canvas，`destination-in` 合成后贴回主画布；离屏层继承当前变换与全局 alpha，嵌套容器、画板/区块/编组与编辑器根循环共用。若浏览器缺少离屏或 `getTransform`，退化为几何轮廓裁切，不中断绘制。
+- 导出：SVG 几何蒙版用 `<defs><clipPath><path fill-rule="evenodd">` + `<g clip-path>`；Alpha/亮度输出 `<mask maskUnits="userSpaceOnUse" mask-type="alpha|luminance" style="mask-type:...">`，再用 `<g mask="url(#...)">` 包住上方兄弟。画板 PNG/JPG、切片 PNG/JPG、组合图层 PNG 都走同一套 canvas 蒙版裁剪。画板自身 `clipContent` 与蒙版裁剪可叠加。
+- 命中：`walkHit` 在蒙版外跳过上方兄弟，避免点到看不见的区域；蒙版自身仍可通过图层树选中，空白蒙版区域也可在画布上点选。**Alpha/亮度命中仍按几何轮廓，不逐像素判定**，这是当前实现边界。
+- UI：右栏“蒙版”分组提供“用作蒙版 / 取消蒙版”，禁用时显示具体原因；启用后出现“轮廓 / Alpha / 亮度”三段切换，默认轮廓，并显示“裁切上方 N 个图层”。图层行显示“蒙版”小标签。入口只在候选形状出现，不铺常驻面板。
+- 历史：复用 `editor.applyPatch`，启用/取消/切换类型各一条 patch 历史；`Ctrl+Z` 一步恢复。
+- 多画板可见区：根级画板加空间索引（`FRAME_INDEX_CELL=512`，单画板最多 64 格，超大画板进 oversized 列表，查询最多 4096 格，视口外扩 48 屏幕像素）。每帧只取视口覆盖网格里的画板候选，再按原 z-order 绘制；索引按画板位置/尺寸/旋转/显隐生成轻量签名，拖动或缩放后自动失效重建。少于 24 个根节点、或根上有蒙版时退回原来的完整 `drawChildren`。600 画板 × 8 子节点、1420×880 视口：30 次平均 **0.14ms**，只绘制 **57 / 5,399** 个节点。
+- 测试：`src/core/mask.test.ts` 5 条（资格与唯一性、矩形/椭圆点包含、命中过滤、几何 SVG clipPath、Alpha/亮度 SVG mask）；`schema.test.ts` 16 条（含非法 `maskType`、蒙版父级/类型、惰性/重复蒙版可保存）；`render.bench.test.ts` 2 条（5000 节点 + 600 画板索引/失效）。完整 `npm run gate` PASS，26 文件 / 173 条通过，MCP selftest 通过；CSS `index-BCHVFPQA.css` 60.20 kB、JS `index-q3BrKtEN.js` 492.94 kB；EXE 3,301 KB，2026-11-25 21:56:18。
+- 真实 EXE：`mask-demo.groma` 用椭圆几何蒙版裁切“蓝色大图层 + 蒙版内文字”两层；最大化截图见 `shots/mask-final-max.png`，1440 见 `mask-1440.png`，1040 见 `mask-1040.png`。启用后图层显示“蒙版”，右栏提示“裁切上方 2 个图层”；`Ctrl+Z` 恢复未蒙版，重做恢复蒙版。Alpha/亮度在真实窗口的验收仍待补。
+- 真实导出：画板 SVG `桌面 1440.svg` 1,713 B，含 `groma-mask-1` clipPath 与 `fill-rule="evenodd"`，浏览器渲染为椭圆窗口；PNG `桌面 1440@1x-2.png` 1,440×900，画面与 SVG 一致（修复了首版 PNG 导出未走蒙版路径的问题）。
+- 边界：不做蒙版组、多个蒙版串联、羽化/扩展、跨父级提升；文本/图片不能直接作为蒙版。复制图层可能带出第二个 `isMask`，渲染只取最上面一个可见蒙版，其余蒙版节点不绘制。Alpha/亮度使用整窗离屏 canvas，多个大蒙版会放大内存与合成成本，后续应按可视包围盒裁小。命中仍是几何。空间索引只作用于根级画板，非裁剪容器若子图层大量越界，仍以画板自身外接框参与候选，边界待补。
 
 ---
 
