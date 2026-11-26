@@ -44,6 +44,24 @@ describe('SVG 导出', () => {
     expect(result?.svg).toContain('rx="6"');
   });
 
+  it('投影与整层模糊输出 SVG filter，并按节点包裹', () => {
+    const doc = createDoc('SVG 效果', 400, 300);
+    const page = doc.pages[0];
+    const frameId = doc.nodes[page.rootId].children[0];
+    const node = rectNode('rect-effect', frameId);
+    node.effects = [
+      { type: 'drop-shadow', x: 0, y: 8, blur: 16, color: '#221C00', opacity: 0.25, visible: true },
+      { type: 'layer-blur', blur: 6, visible: true },
+    ];
+    doc.nodes[node.id] = node;
+    doc.nodes[frameId].children = [node.id];
+    const result = renderFrameSvg(doc, frameId, false, 1);
+    expect(result?.svg).toContain('<filter id="groma-effect-1"');
+    expect(result?.svg).toContain('feDropShadow in="eff-base" dx="0" dy="8" stdDeviation="8" flood-color="#221C00" flood-opacity="0.25"');
+    expect(result?.svg).toContain('feGaussianBlur in="SourceGraphic" stdDeviation="3" result="eff-main"');
+    expect(result?.svg).toContain('<g filter="url(#groma-effect-1)"><rect');
+  });
+
   it('透明背景不会补白底，文本内容按 XML 转义', () => {
     const doc = createDoc('SVG 透明', 200, 120);
     const page = doc.pages[0];

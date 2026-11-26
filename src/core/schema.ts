@@ -59,6 +59,22 @@ function validateStroke(value: unknown): boolean {
   return true;
 }
 
+function validateEffect(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (!isFiniteNumber(value.blur) || value.blur < 0 || value.blur > 1000) return false;
+  if (typeof value.visible !== 'boolean') return false;
+  if (value.type === 'layer-blur') return true;
+  if (value.type !== 'drop-shadow') return false;
+  return (
+    isFiniteNumber(value.x) &&
+    isFiniteNumber(value.y) &&
+    typeof value.color === 'string' &&
+    isFiniteNumber(value.opacity) &&
+    value.opacity >= 0 &&
+    value.opacity <= 1
+  );
+}
+
 function validatePathAnchor(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const vertexOk =
@@ -140,6 +156,12 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
   }
   if (node.strokes !== undefined && (!Array.isArray(node.strokes) || !node.strokes.every(validateStroke))) {
     issues.push(`节点 ${key} 的 strokes 必须是合法的描边数组`);
+  }
+  if (
+    node.effects !== undefined &&
+    (!Array.isArray(node.effects) || node.effects.length > 12 || !node.effects.every(validateEffect))
+  ) {
+    issues.push(`节点 ${key} 的 effects 必须是合法的效果数组`);
   }
   for (const field of ['visible', 'locked', 'clipContent'] as const) {
     if (typeof node[field] !== 'boolean') issues.push(`节点 ${key} 的 ${field} 必须是布尔值`);

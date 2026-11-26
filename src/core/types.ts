@@ -90,6 +90,19 @@ export interface ImageCrop {
   h: number;
 }
 
+/** 图层效果；先支持投影与整层模糊，内阴影/背景模糊留后续。 */
+export type Effect =
+  | {
+      type: 'drop-shadow';
+      x: number;
+      y: number;
+      blur: number;
+      color: string;
+      opacity: number;
+      visible: boolean;
+    }
+  | { type: 'layer-blur'; blur: number; visible: boolean };
+
 export interface SceneNode {
   id: string;
   type: NodeType;
@@ -147,6 +160,8 @@ export interface SceneNode {
   paragraphSpacing?: number;
   /** 简单列表：项目符号 / 阿拉伯数字；缺省无。 */
   listStyle?: 'none' | 'bullet' | 'number';
+  /** 图层效果列表；缺省无效果。 */
+  effects?: Effect[];
 }
 
 export interface Page {

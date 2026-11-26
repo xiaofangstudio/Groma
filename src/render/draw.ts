@@ -5,10 +5,36 @@ import { nodeWorldRings } from '../core/boolean';
 import { maskIndexForParent, maskTypeOf } from '../core/mask';
 import { imageCropOf, imageSourceRect, FULL_IMAGE_CROP } from '../core/image';
 import { imageFillBox } from '../core/imageFill';
+import { activeEffects, effectsFilter, effectsPadding, shadowColor } from '../core/effects';
 import type { Viewport } from '../core/viewport';
 import { getAssetImage, requestImageAsset } from '../io/images';
 
 export const RULER = 20;
+
+/** 总览缩放下，小于该屏幕像素的叶子细节已不可辨认，直接跳过。 */
+const OVERVIEW_LOD_SCALE = 0.5;
+const OVERVIEW_LOD_MIN_PIXEL = 4;
+const OVERVIEW_CHROME_SCALE = 0.3;
+/** 低倍总览仍要看见画板里的色块：把每块画板压成一张小图，平移/缩放时只贴图。 */
+const OVERVIEW_BITMAP_SCALE = 0.2;
+const OVERVIEW_BITMAP_BYTES = 64 * 1024 * 1024;
+/** 首次总览不把几百块画板一次画完：每帧只补 6 块，其余先用画板底色占位。 */
+const OVERVIEW_BUILD_PER_FRAME = 6;
+interface OverviewFrameEntry {
+  canvas: HTMLCanvasElement;
+  dpr: number;
+  scale: number;
+  /** 建图时的整棵子树对象引用；任何子节点被改都会换对象，据此只重建这一块。 */
+  refs: SceneNode[];
+}
+let overviewFrameCache = new Map<string, OverviewFrameEntry>();
+let overviewFrameCacheBytes = 0;
+
+/** 图片资产异步到位后，缩略图里的图片会变；只在这时整批失效。 */
+export function invalidateOverviewFrameCache() {
+  overviewFrameCache.clear();
+  overviewFrameCacheBytes = 0;
+}
 
 export interface ViewSize {
   w: number;
@@ -28,6 +54,8 @@ export interface DrawOptions {
   interactive?: boolean;
   /** 裁剪模式下该图片按整张源图绘制，方便看到框外待恢复内容。 */
   cropPreviewId?: string | null;
+  /** 缩放到很低时跳过屏幕尺寸过小的叶子节点，避免百块画板的细节拖慢总览。 */
+  minPixelSize?: number;
 }
 
 export interface DrawStats {
@@ -35,11 +63,17 @@ export interface DrawStats {
   nodesCulled: number;
   shadowPasses: number;
   gridDots: number;
+  /** 低倍总览还剩多少块画板缩略图未建；CanvasView 据此续帧，不阻塞第一次打开。 */
+  overviewPending: number;
+  /** 本次实际新建/重建的画板缩略图数量，用于验证只重建改动画板。 */
+  overviewBuilt: number;
 }
 
 interface InternalDrawOptions {
   interactive: boolean;
   stats: DrawStats;
+  /** 总览缩放下跳过画板阴影与名称，避免几百块画板的总览被高成本装饰拖慢。 */
+  overview?: boolean;
   /** 缩略图只画到有限层，34×22 下更深的细节不可见。 */
   maxDepth?: number;
   /** 缩略图跳过投影后小于该像素尺寸的节点。 */
@@ -48,11 +82,17 @@ interface InternalDrawOptions {
   hideChrome?: boolean;
   /** 导出/缩略图重绘时跳过切片虚线等纯编辑标记。 */
   exporting?: boolean;
+  /** 效果离屏层与主画布使用同一像素密度，避免高分屏投影糊。 */
+  effectScale?: number;
+  /** 离屏效果层内不画画板名等编辑标签。 */
+  effectsLayer?: boolean;
   cropPreviewId?: string | null;
+  /** 总览缩略图的每帧建图预算；预算用完后由 CanvasView 下一帧继续。 */
+  overviewBuild?: { remaining: number };
 }
 
 function newStats(): DrawStats {
-  return { nodesDrawn: 0, nodesCulled: 0, shadowPasses: 0, gridDots: 0 };
+  return { nodesDrawn: 0, nodesCulled: 0, shadowPasses: 0, gridDots: 0, overviewPending: 0, overviewBuilt: 0 };
 }
 
 function intersects(ax: number, ay: number, aw: number, ah: number, bounds?: WorldBounds | null): boolean {
@@ -366,7 +406,7 @@ function drawSection(
     ctx.stroke();
   }
 
-  if (!opts.hideChrome && v.scale >= 0.15 && w > 24) {
+  if (!opts.hideChrome && !opts.effectsLayer && v.scale >= 0.15 && w > 24) {
     ctx.globalAlpha = 1;
     ctx.font = '600 12px "Segoe UI", "Microsoft YaHei UI", sans-serif';
     ctx.fillStyle = '#6D685E';
@@ -401,7 +441,7 @@ function drawFrame(
 
   ctx.save();
   ctx.globalAlpha = node.opacity;
-  if (artboard && !opts.interactive && !opts.hideChrome) {
+  if (artboard && !opts.interactive && !opts.hideChrome && !opts.overview) {
     ctx.shadowColor = 'rgba(34, 28, 0, 0.10)';
     ctx.shadowBlur = 18;
     ctx.shadowOffsetY = 6;
@@ -421,7 +461,7 @@ function drawFrame(
     ctx.stroke();
   }
 
-  if (artboard && !opts.interactive && !opts.hideChrome && v.scale > 0.05) {
+  if (artboard && !opts.interactive && !opts.hideChrome && !opts.effectsLayer && !opts.overview && v.scale > 0.05) {
     ctx.globalAlpha = 1;
     ctx.font = '12px "Segoe UI", "Microsoft YaHei UI", sans-serif';
     ctx.fillStyle = '#6D685E';
@@ -836,6 +876,201 @@ function drawChildren(
   ctx.restore();
 }
 
+function drawNodeCore(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  node: SceneNode,
+  ox: number,
+  oy: number,
+  v: Viewport,
+  opts: InternalDrawOptions,
+  bounds: WorldBounds | null | undefined,
+  depth: number,
+) {
+  if (node.type === 'frame') {
+    drawFrame(ctx, doc, node, ox, oy, v, opts, bounds, depth);
+  } else if (node.type === 'section') {
+    drawSection(ctx, doc, node, ox, oy, v, opts, bounds, depth);
+  } else if (node.type === 'slice') {
+    drawSlice(ctx, node, ox, oy, v, opts);
+  } else if (node.type === 'path') {
+    drawVectorPath(ctx, doc, node, ox, oy, v);
+  } else if (node.type === 'image') {
+    drawImageNode(ctx, doc, node, ox, oy, v, opts.cropPreviewId);
+  } else if (node.type === 'rect' || node.type === 'ellipse' || node.type === 'text') {
+    drawShape(ctx, doc, node, ox, oy, v);
+  } else if (depth < (opts.maxDepth ?? Infinity)) {
+    ctx.save();
+    ctx.globalAlpha = node.opacity;
+    drawChildren(ctx, doc, node, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
+    ctx.restore();
+  }
+}
+
+/**
+ * 效果层把节点先画到离屏画布，再在主画布上投影/模糊。
+ * 这样圆角矩形、文字、图片、画板与组合的轮廓都按同一份 alpha 处理，
+ * 不会出现 Canvas 原生阴影只跟第一笔 fill 走的错位。
+ */
+function drawNodeWithEffects(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  node: SceneNode,
+  ox: number,
+  oy: number,
+  v: Viewport,
+  opts: InternalDrawOptions,
+  bounds: WorldBounds | null | undefined,
+  depth: number,
+  effects: ReturnType<typeof activeEffects>,
+) {
+  const x = (ox + node.x) * v.scale + v.x;
+  const y = (oy + node.y) * v.scale + v.y;
+  const w = node.w * v.scale;
+  const h = node.h * v.scale;
+  const pad = effectsPadding(effects);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    drawNodeCore(ctx, doc, node, ox, oy, v, opts, bounds, depth);
+    return;
+  }
+  const left = Math.floor(x - pad);
+  const top = Math.floor(y - pad);
+  const width = Math.ceil(w + pad * 2);
+  const height = Math.ceil(h + pad * 2);
+  const maxScale = Math.min(4096 / Math.max(1, width), 4096 / Math.max(1, height));
+  const scale = Math.max(0.25, Math.min(opts.effectScale ?? 1, maxScale));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const layer = canvas.getContext('2d');
+  if (!layer) {
+    drawNodeCore(ctx, doc, node, ox, oy, v, opts, bounds, depth);
+    return;
+  }
+  layer.setTransform(scale, 0, 0, scale, 0, 0);
+  layer.translate(-left, -top);
+  drawNodeCore(layer, doc, node, ox, oy, v, { ...opts, effectsLayer: true }, bounds, depth);
+
+  const layerBlur = effectsFilter(effects);
+  for (const effect of effects) {
+    if (effect.type !== 'drop-shadow') continue;
+    const shadow = document.createElement('canvas');
+    shadow.width = canvas.width;
+    shadow.height = canvas.height;
+    const shadowCtx = shadow.getContext('2d');
+    if (!shadowCtx) continue;
+    shadowCtx.drawImage(canvas, 0, 0);
+    shadowCtx.globalCompositeOperation = 'source-in';
+    shadowCtx.fillStyle = shadowColor(effect);
+    shadowCtx.fillRect(0, 0, shadow.width, shadow.height);
+    ctx.save();
+    ctx.filter = layerBlur ? `blur(${Math.max(0, effect.blur)}px) ${layerBlur}` : `blur(${Math.max(0, effect.blur)}px)`;
+    ctx.drawImage(shadow, left + effect.x, top + effect.y, width, height);
+    ctx.restore();
+    opts.stats.shadowPasses += 1;
+  }
+
+  ctx.save();
+  if (layerBlur) ctx.filter = layerBlur;
+  ctx.drawImage(canvas, left, top, width, height);
+  ctx.restore();
+}
+
+function collectOverviewRefs(doc: GromaDoc, node: SceneNode): SceneNode[] {
+  const out: SceneNode[] = [];
+  const stack: SceneNode[] = [node];
+  while (stack.length) {
+    const current = stack.pop() as SceneNode;
+    out.push(current);
+    for (let i = current.children.length - 1; i >= 0; i -= 1) {
+      const child = doc.nodes[current.children[i]];
+      if (child) stack.push(child);
+    }
+  }
+  return out;
+}
+
+function overviewRefsMatch(doc: GromaDoc, node: SceneNode, refs: SceneNode[]): boolean {
+  let index = 0;
+  const stack: SceneNode[] = [node];
+  while (stack.length) {
+    const current = stack.pop() as SceneNode;
+    if (refs[index] !== current) return false;
+    index += 1;
+    for (let i = current.children.length - 1; i >= 0; i -= 1) {
+      const child = doc.nodes[current.children[i]];
+      if (!child) return false;
+      stack.push(child);
+    }
+  }
+  return index === refs.length;
+}
+
+function drawOverviewFrameBitmap(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  node: SceneNode,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  v: Viewport,
+  opts: InternalDrawOptions,
+): boolean {
+  const dpr = Math.min(2, Math.max(1, opts.effectScale ?? 1));
+  if (typeof document === 'undefined') return false;
+  const bucket = Math.min(OVERVIEW_BITMAP_SCALE, Math.max(0.02, Math.floor(v.scale * 20) / 20));
+  const key = `${doc.name}\u0000${node.parentId ?? ''}\u0000${node.id}\u0000${bucket.toFixed(2)}\u0000${dpr.toFixed(2)}`;
+  let entry = overviewFrameCache.get(key);
+  if (entry && overviewRefsMatch(doc, node, entry.refs)) {
+    ctx.drawImage(entry.canvas, x, y, w, h);
+    return true;
+  }
+  // 手势中先沿用旧图或画板底色，不在拖拽帧里新建 50 个子节点的小图。
+  if (opts.interactive) return false;
+  const build = opts.overviewBuild;
+  if (build && build.remaining <= 0) {
+    opts.stats.overviewPending += 1;
+    return false;
+  }
+
+  const base = Math.min(2048, Math.max(1, Math.round(node.w * bucket * dpr)));
+  const heightPx = Math.min(2048, Math.max(1, Math.round(node.h * bucket * dpr)));
+  if (!Number.isFinite(base) || !Number.isFinite(heightPx) || base <= 0 || heightPx <= 0) return false;
+  if (!entry && overviewFrameCacheBytes + base * heightPx * 4 > OVERVIEW_BITMAP_BYTES) {
+    overviewFrameCache.clear();
+    overviewFrameCacheBytes = 0;
+  }
+  const bytes = base * heightPx * 4;
+  if (entry) {
+    overviewFrameCacheBytes -= entry.canvas.width * entry.canvas.height * 4;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = base;
+  canvas.height = heightPx;
+  const layer = canvas.getContext('2d');
+  if (!layer) return false;
+  layer.setTransform(base / Math.max(1, node.w * bucket), 0, 0, heightPx / Math.max(1, node.h * bucket), 0, 0);
+  drawFrame(layer, doc, node, 0, 0, {
+    x: -node.x * bucket,
+    y: -node.y * bucket,
+    scale: bucket,
+  }, {
+    interactive: true,
+    hideChrome: true,
+    overview: false,
+    effectScale: dpr,
+    stats: newStats(),
+  });
+  entry = { canvas, dpr, scale: bucket, refs: collectOverviewRefs(doc, node) };
+  overviewFrameCache.set(key, entry);
+  overviewFrameCacheBytes += bytes;
+  opts.stats.overviewBuilt += 1;
+  if (build) build.remaining -= 1;
+  ctx.drawImage(entry.canvas, x, y, w, h);
+  return true;
+}
+
 function drawNode(
   ctx: CanvasRenderingContext2D,
   doc: GromaDoc,
@@ -856,32 +1091,30 @@ function drawNode(
     return;
   }
   const min = opts.minPixelSize;
-  if (min && node.type !== 'page' && node.type !== 'group') {
+  if (min && node.type !== 'page' && node.type !== 'frame' && node.type !== 'section') {
     const px = Math.max(node.w * v.scale, node.h * v.scale);
     if (px > 0 && px < min) {
       opts.stats.nodesCulled += 1;
       return;
     }
   }
-  opts.stats.nodesDrawn += 1;
-  if (node.type === 'frame') {
-    drawFrame(ctx, doc, node, ox, oy, v, opts, bounds, depth);
-  } else if (node.type === 'section') {
-    drawSection(ctx, doc, node, ox, oy, v, opts, bounds, depth);
-  } else if (node.type === 'slice') {
-    drawSlice(ctx, node, ox, oy, v, opts);
-  } else if (node.type === 'path') {
-    drawVectorPath(ctx, doc, node, ox, oy, v);
-  } else if (node.type === 'image') {
-    drawImageNode(ctx, doc, node, ox, oy, v, opts.cropPreviewId);
-  } else if (node.type === 'rect' || node.type === 'ellipse' || node.type === 'text') {
-    drawShape(ctx, doc, node, ox, oy, v);
-  } else if (depth < (opts.maxDepth ?? Infinity)) {
-    ctx.save();
-    ctx.globalAlpha = node.opacity;
-    drawChildren(ctx, doc, node, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
-    ctx.restore();
+  if (opts.overview && v.scale < OVERVIEW_BITMAP_SCALE && node.type === 'frame' && node.rotation === 0 && doc.nodes[node.parentId ?? '']?.type === 'page' && !activeEffects(node).length) {
+    const x = (ox + node.x) * v.scale + v.x;
+    const y = (oy + node.y) * v.scale + v.y;
+    const w = node.w * v.scale;
+    const h = node.h * v.scale;
+    if (drawOverviewFrameBitmap(ctx, doc, node, x, y, w, h, v, opts)) {
+      opts.stats.nodesDrawn += 1;
+      return;
+    }
   }
+  opts.stats.nodesDrawn += 1;
+  const effects = node.type === 'page' || node.type === 'slice' ? [] : activeEffects(node);
+  if (effects.length > 0) {
+    drawNodeWithEffects(ctx, doc, node, ox, oy, v, opts, bounds, depth, effects);
+    return;
+  }
+  drawNodeCore(ctx, doc, node, ox, oy, v, opts, bounds, depth);
 }
 
 function drawSelection(ctx: CanvasRenderingContext2D, doc: GromaDoc, selectedIds: string[], v: Viewport) {
@@ -1053,10 +1286,16 @@ export function drawEditor(
 ): DrawStats {
   const { w, h, dpr } = view;
   const stats = newStats();
+  const overviewLod = v.scale < OVERVIEW_LOD_SCALE;
+  const overviewChrome = v.scale < OVERVIEW_CHROME_SCALE;
   const opts: InternalDrawOptions = {
     interactive: options?.interactive === true,
     cropPreviewId: options?.cropPreviewId ?? null,
+    effectScale: dpr,
     stats,
+    overview: overviewChrome,
+    minPixelSize: options?.minPixelSize ?? (overviewLod ? OVERVIEW_LOD_MIN_PIXEL : 0),
+    overviewBuild: overviewChrome ? { remaining: OVERVIEW_BUILD_PER_FRAME } : undefined,
   };
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = page.background;
@@ -1143,7 +1382,7 @@ function renderFrameRaster(
   ctx.save();
   roundRect(ctx, 0, 0, frame.w, frame.h, frame.cornerRadius);
   ctx.clip();
-  const exportOpts: InternalDrawOptions = { interactive: false, exporting: true, stats: newStats() };
+  const exportOpts: InternalDrawOptions = { interactive: false, exporting: true, effectScale: safeScale, stats: newStats() };
   drawChildren(ctx, doc, frame, 0, 0, { x: 0, y: 0, scale: 1 }, exportOpts, undefined, 0);
   ctx.restore();
 
@@ -1192,7 +1431,7 @@ function renderSliceRaster(
   ctx.beginPath();
   ctx.rect(0, 0, region.w, region.h);
   ctx.clip();
-  const exportOpts: InternalDrawOptions = { interactive: false, hideChrome: true, exporting: true, stats: newStats() };
+  const exportOpts: InternalDrawOptions = { interactive: false, hideChrome: true, exporting: true, effectScale: safeScale, stats: newStats() };
   drawChildren(ctx, doc, root, -region.x, -region.y, { x: 0, y: 0, scale: 1 }, exportOpts, undefined, 0);
   ctx.restore();
 

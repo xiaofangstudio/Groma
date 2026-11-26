@@ -127,7 +127,8 @@ export function EditorShell() {
           editor.setZoomPercent(100);
         } else if (e.code === 'Digit1' || e.code === 'Digit2') {
           e.preventDefault();
-          editor.fitAll();
+          if (e.code === 'Digit2') editor.fitSelection();
+          else editor.fitAll();
         }
         return;
       }

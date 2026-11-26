@@ -14,7 +14,7 @@ import { clampScale, fitRect, zoomAt, type Viewport } from '../core/viewport';
 import type { ProjectUiState } from './project-ui';
 import type { ImportedNode, SvgImport } from '../io/importSvg';
 import { alignDeltas, distributeDeltas, type AlignMode, type DistributeMode } from '../core/align';
-import { absolutePosition, absoluteRect, deepestFrame, topLevelSelection } from '../core/geometry';
+import { absolutePosition, absoluteRect, deepestFrame, selectionBounds, topLevelSelection } from '../core/geometry';
 import { shapePath, type ShapeKind } from '../core/shapes';
 import { nodePathContours, penContoursGeometry, type PenAnchor, type PenContour } from '../core/pen';
 import { vectorActionBuild, type BooleanOp, type VectorAction } from '../core/boolean';
@@ -572,6 +572,23 @@ export const editor = {
     const target = computeFit(state);
     set((s) => ({ ...s, needsFit: false }));
     animateViewportTo(target);
+  },
+
+  fitSelection() {
+    stopViewportAnimation();
+    if (state.viewSize.w <= 0) return;
+    const ids = validSelection(state.doc, state.selectedIds);
+    if (ids.length === 0) {
+      this.fitAll();
+      return;
+    }
+    const bounds = selectionBounds(state.doc, ids);
+    if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
+      this.fitAll();
+      return;
+    }
+    set((s) => ({ ...s, needsFit: false }));
+    animateViewportTo(fitRect(bounds, state.viewSize.w, state.viewSize.h));
   },
 
   setCanvasSize(w: number, h: number) {

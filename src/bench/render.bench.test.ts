@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createDoc } from '../core/doc';
 import { fitRect } from '../core/viewport';
-import { drawEditor, drawPageThumbnail } from '../render/draw';
+import { drawEditor, drawPageThumbnail, invalidateOverviewFrameCache } from '../render/draw';
 import type { GromaDoc, Page, SceneNode } from '../core/types';
 
 function makeDoc(): { doc: GromaDoc; page: Page } {
@@ -78,6 +78,8 @@ function makeContext() {
     font: '',
     textBaseline: 'alphabetic',
     textAlign: 'left',
+    filter: '',
+    globalCompositeOperation: 'source-over',
   };
   const methods = [
     'setTransform',
@@ -101,6 +103,7 @@ function makeContext() {
     'ellipse',
     'setLineDash',
     'rotate',
+    'drawImage',
   ];
   for (const name of methods) {
     ctx[name] = () => {
@@ -207,6 +210,12 @@ describe('渲染基准', () => {
     const stats = drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 1 }, view, [], { interactive: true });
     expect(stats.nodesDrawn).toBeLessThan(100);
 
+    // 10% 总览：画板保留，画板内 2.8px 的细节直接跳过，不为不可见像素做绘制。
+    const overview = drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 0.1 }, view, [], { interactive: true });
+    expect(overview.nodesDrawn).toBeLessThan(600);
+    expect(overview.nodesCulled).toBeGreaterThan(4000);
+    expect(overview.shadowPasses).toBe(0);
+
     doc.nodes['many-frame-0'] = { ...doc.nodes['many-frame-0'], x: 200_000 };
     const moved = drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 1 }, view, [], { interactive: true });
     expect(moved.nodesDrawn).toBe(stats.nodesDrawn - 9);
@@ -214,5 +223,34 @@ describe('渲染基准', () => {
     const start = performance.now();
     for (let i = 0; i < 30; i += 1) drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 1 }, view, []);
     console.log(`[frames] 600画板 1420×880 平均 ${((performance.now() - start) / 30).toFixed(2)}ms · 节点 ${stats.nodesDrawn}/${Object.keys(doc.nodes).length - 2}`);
+  });
+
+  it('百画板总览：小图分帧补齐，编辑只重建一块', () => {
+    invalidateOverviewFrameCache();
+    const { doc, page } = makeDoc();
+    const { ctx } = makeContext();
+    vi.stubGlobal('document', {
+      createElement: () => ({ width: 0, height: 0, getContext: () => ctx }),
+    });
+    try {
+      const view = { w: 1420, h: 880, dpr: 1 };
+      const overview = { x: 0, y: 0, scale: 0.1 };
+      let stats = drawEditor(ctx, doc, page, overview, view, []);
+      expect(stats.overviewBuilt).toBe(6);
+      expect(stats.overviewPending).toBe(44);
+
+      for (let i = 0; i < 8; i += 1) stats = drawEditor(ctx, doc, page, overview, view, []);
+      expect(stats.overviewPending).toBe(0);
+      expect(stats.overviewBuilt).toBe(2);
+
+      const before = doc.nodes['bench-0-0'];
+      doc.nodes['bench-0-0'] = { ...before, x: before.x + 1 };
+      stats = drawEditor(ctx, doc, page, overview, view, []);
+      expect(stats.overviewBuilt).toBe(1);
+      expect(stats.overviewPending).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+      invalidateOverviewFrameCache();
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { RULER, drawEditor, drawRulers, type DrawStats } from '../render/draw';import { screenToWorld } from '../core/viewport';
+import { RULER, drawEditor, drawRulers, invalidateOverviewFrameCache, type DrawStats } from '../render/draw';import { screenToWorld, zoomAt, type Viewport } from '../core/viewport';
 import { hitTestGuide, guideScreenPosition } from '../core/guides';
 import { arrowGeometry } from '../core/arrow';
 import { lineGeometry } from '../core/line';
@@ -192,6 +192,7 @@ export function CanvasView() {
   const dprRef = useRef(1);
   const lastStatsRef = useRef<DrawStats | null>(null);
   const panCacheRef = useRef<{ canvas: HTMLCanvasElement; pageBg: string } | null>(null);
+  const zoomPreviewRef = useRef<{ cache: { canvas: HTMLCanvasElement; pageBg: string }; base: Viewport; target: Viewport } | null>(null);
   const panRafRef = useRef(0);
   const panDeltaRef = useRef({ x: 0, y: 0 });
   const wheelRafRef = useRef(0);
@@ -297,17 +298,20 @@ export function CanvasView() {
     return Math.max(1, Math.min(raw, 2, budget));
   }
 
-  function capturePanCache() {
+  function captureContentCache(): { canvas: HTMLCanvasElement; pageBg: string } | null {
     const canvas = canvasRef.current;
-    if (!canvas || viewSize.w < RULER + 1 || viewSize.h < RULER + 1) return;
+    const current = getState();
+    const width = current.viewSize.w;
+    const height = current.viewSize.h;
+    if (!canvas || width < RULER + 1 || height < RULER + 1) return null;
     const dpr = dprRef.current;
-    const contentW = viewSize.w - RULER;
-    const contentH = viewSize.h - RULER;
+    const contentW = width - RULER;
+    const contentH = height - RULER;
     const cache = document.createElement('canvas');
     cache.width = Math.max(1, Math.round(contentW * dpr));
     cache.height = Math.max(1, Math.round(contentH * dpr));
     const ctx = cache.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return null;
     ctx.drawImage(
       canvas,
       Math.round(RULER * dpr),
@@ -319,7 +323,12 @@ export function CanvasView() {
       cache.width,
       cache.height,
     );
-    panCacheRef.current = { canvas: cache, pageBg: page.background };
+    const currentPage = current.doc.pages.find((p) => p.id === current.pageId) ?? current.doc.pages[0];
+    return { canvas: cache, pageBg: currentPage?.background ?? page.background };
+  }
+
+  function capturePanCache() {
+    panCacheRef.current = captureContentCache();
   }
 
   function drawPanPreview(dx: number, dy: number) {
@@ -345,8 +354,52 @@ export function CanvasView() {
     drawRulers(ctx, v, viewSize.w, viewSize.h);
   }
 
-  function schedulePanPreview(dx: number, dy: number) {
-    panDeltaRef.current = { x: dx, y: dy };
+  function drawZoomPreview(z: { cache: { canvas: HTMLCanvasElement; pageBg: string }; base: Viewport; target: Viewport }) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const current = getState();
+    const dpr = dprRef.current;
+    const contentW = current.viewSize.w - RULER;
+    const contentH = current.viewSize.h - RULER;
+    const ratio = z.target.scale / Math.max(z.base.scale, 0.0001);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = z.cache.pageBg;
+    ctx.fillRect(0, 0, current.viewSize.w, current.viewSize.h);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(RULER, RULER, contentW, contentH);
+    ctx.clip();
+    // 缩放过程中只缩放上一帧的位图：锚点、位置与最终视口一致，停手后再按真实矢量重画。
+    ctx.drawImage(
+      z.cache.canvas,
+      RULER + z.target.x - z.base.x * ratio,
+      RULER + z.target.y - z.base.y * ratio,
+      contentW * ratio,
+      contentH * ratio,
+    );
+    ctx.restore();
+    drawRulers(ctx, z.target, current.viewSize.w, current.viewSize.h);
+  }
+
+  function flushZoomPreview() {
+    const z = zoomPreviewRef.current;
+    if (!z) return;
+    zoomPreviewRef.current = null;
+    if (wheelEndRef.current) {
+      window.clearTimeout(wheelEndRef.current);
+      wheelEndRef.current = 0;
+    }
+    interactingRef.current = false;
+    setInteracting(false);
+    if (z.target.x !== z.base.x || z.target.y !== z.base.y || z.target.scale !== z.base.scale) {
+      editor.setViewport(z.target);
+    }
+  }
+
+  function schedulePanPreview(dx: number, dy: number) {    panDeltaRef.current = { x: dx, y: dy };
     if (panRafRef.current) return;
     panRafRef.current = window.requestAnimationFrame(() => {
       panRafRef.current = 0;
@@ -373,7 +426,10 @@ export function CanvasView() {
   }, []);
 
   useEffect(() => {
-    return subscribeImages(() => setAssetTick((tick) => tick + 1));
+    return subscribeImages(() => {
+      invalidateOverviewFrameCache();
+      setAssetTick((tick) => tick + 1);
+    });
   }, []);
 
   useEffect(() => {
@@ -383,6 +439,7 @@ export function CanvasView() {
     canvas.style.height = `${viewSize.h}px`;
     const dpr = pickDpr();
     let raf = 0;
+    let warmRaf = 0;
     const render = () => {
       raf = 0;
       const pw = Math.max(1, Math.round(viewSize.w * dpr));
@@ -394,15 +451,24 @@ export function CanvasView() {
       const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
       if (!ctx) return;
       dprRef.current = dpr;
-      lastStatsRef.current = drawEditor(ctx, doc, page, viewport, { w: viewSize.w, h: viewSize.h, dpr }, selectedIds, {
+      const stats = drawEditor(ctx, doc, page, viewport, { w: viewSize.w, h: viewSize.h, dpr }, selectedIds, {
         interactive: interacting,
         cropPreviewId: s.cropId,
       });
+      lastStatsRef.current = stats;
+      // 首次进入百画板总览：每帧只补 12 张画板小图，剩余下一帧继续，首帧不等整批画完。
+      if (stats.overviewPending > 0 && !interacting && !warmRaf) {
+        warmRaf = window.requestAnimationFrame(() => {
+          warmRaf = 0;
+          render();
+        });
+      }
     };
     // 拖动/缩放时一次事件可能触发多次状态更新，合并到下一帧只画一次。
     raf = window.requestAnimationFrame(render);
     return () => {
       if (raf) window.cancelAnimationFrame(raf);
+      if (warmRaf) window.cancelAnimationFrame(warmRaf);
     };
   }, [doc, page, viewport, selectedIds, viewSize.w, viewSize.h, interacting, assetTick, s.cropId]);
 
@@ -413,8 +479,7 @@ export function CanvasView() {
       if (wheelEndRef.current) window.clearTimeout(wheelEndRef.current);
       wheelEndRef.current = window.setTimeout(() => {
         wheelEndRef.current = 0;
-        interactingRef.current = false;
-        setInteracting(false);
+        flushZoomPreview();
       }, 180);
     };
     const onWheel = (e: WheelEvent) => {
@@ -432,6 +497,12 @@ export function CanvasView() {
         delta: (pending?.delta ?? 0) + e.deltaY,
         ctrl: e.ctrlKey,
       };
+      if (!zoomPreviewRef.current) {
+        const cache = captureContentCache();
+        if (!cache) return;
+        const base = getState().viewport;
+        zoomPreviewRef.current = { cache, base, target: base };
+      }
       if (!interactingRef.current) {
         interactingRef.current = true;
         setInteracting(true);
@@ -443,9 +514,11 @@ export function CanvasView() {
         wheelRafRef.current = 0;
         const p = wheelRef.current;
         wheelRef.current = null;
-        if (!p || panRef.current) return;
+        const z = zoomPreviewRef.current;
+        if (!p || !z || panRef.current) return;
         const factor = Math.exp(-p.delta * (p.ctrl ? 0.003 : 0.0015));
-        editor.zoomAtPoint(p.x, p.y, factor);
+        z.target = zoomAt(z.target, p.x, p.y, factor);
+        drawZoomPreview(z);
       });
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
@@ -943,6 +1016,7 @@ export function CanvasView() {
   }, [s.tool, s.selectedIds, s.doc]);
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
+    flushZoomPreview();
     const p = contentPoint(e);
     if (e.button === 0 && !spaceRef.current && (p.x < 0 || p.y < 0)) {
       const rulerState = getState();

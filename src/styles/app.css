@@ -883,6 +883,8 @@ kbd {
 .layer-page,
 .layer-row {
   height: 30px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 30px;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1527,6 +1529,53 @@ kbd {
 .image-fill-thumb:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.effects-block {
+  display: grid;
+  gap: 8px;
+}
+
+.effect-card {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-panel);
+}
+
+.effect-card.is-off {
+  opacity: 0.62;
+}
+
+.effect-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.effect-type {
+  flex: 1;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  color: var(--ink-body);
+}
+
+.effect-remove {
+  color: var(--ink-dim);
+}
+
+.effect-card .field-grid {
+  margin-top: 4px;
+}
+
+.effect-add-row {
+  display: flex;
+  gap: 6px;
+}
+
+.effect-add-row .mini-action {
+  flex: 1;
 }
 
 .ins-error {

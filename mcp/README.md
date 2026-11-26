@@ -34,19 +34,29 @@ Claude Desktop / 其它兼容 MCP 的客户端：
 }
 ```
 
-## 工具
+## 工具（19 个）
 
 | 工具 | 用途 | 写盘 |
 | --- | --- | --- |
+| `groma_capabilities` | 版本、支持类型、批量上限与未支持能力 | 否 |
 | `groma_list_projects` | 列出本地工程 | 否 |
 | `groma_project_summary` | 工程摘要、画板包围盒 | 否 |
 | `groma_read_scene` | 读取并校验 scene.json | 否 |
+| `groma_list_nodes` | 按父节点/类型/关键词列节点，默认 200 条 | 否 |
+| `groma_read_node` | 精确读单个节点及父节点/页面 | 否 |
 | `groma_snapshot_info` | 工程实际路径与快照数 | 否 |
 | `groma_create_project` | 新建 `.groma` 工程 | `dryRun=false` |
 | `groma_add_frame` | 新增画板 | `dryRun=false` |
-| `groma_update_node` | 改位置/尺寸/圆角/透明度/显隐/填充 | `dryRun=false` |
+| `groma_create_frame_grid` | 一次建 rows×cols 画板网格，最多 500 块 | `dryRun=false` |
+| `groma_add_node` | 新增矩形/椭圆/文本/画板/区块/切片 | `dryRun=false` |
+| `groma_add_page` | 新增页面，可带默认画板 | `dryRun=false` |
+| `groma_update_page` | 改页面名称 / 画布背景 | `dryRun=false` |
+| `groma_update_node` | 改位置/尺寸/旋转/圆角/透明度/显隐/裁剪/填充/文本/效果 | `dryRun=false` |
+| `groma_update_nodes` | 一次批量改最多 200 个节点，只写一次盘、只留一份快照 | `dryRun=false` |
+| `groma_update_effects` | 整体替换投影与整层模糊（最多 12 条） | `dryRun=false` |
+| `groma_reorder_node` | 把图层移到指定索引 / 最上 / 最下 | `dryRun=false` |
 | `groma_duplicate_frame` | 复制画板 | `dryRun=false` |
-| `groma_delete_node` | 删除画板及子树 | `dryRun=false` |
+| `groma_delete_node` | 删除节点及子树 | `dryRun=false` |
 
 ## 约定
 

@@ -490,7 +490,12 @@ export function TopBar() {
           <button className="zoom-btn" title="放大" aria-label="放大" onClick={() => editor.setZoomPercent(scalePct * 1.25)}>
             <IconPlus size={14} />
           </button>
-          <button className="zoom-btn" title="适应画板 Shift+1" aria-label="适应画板" onClick={() => editor.fitAll()}>
+          <button
+            className="zoom-btn"
+            title="适应画板 Shift+1 · 适应选区 Shift+2"
+            aria-label="适应画板或选区"
+            onClick={() => editor.fitSelection()}
+          >
             <IconFit size={14} />
           </button>
         </div>

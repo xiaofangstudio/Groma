@@ -115,13 +115,39 @@ export function createDefaultDoc(name) {
   };
   }
 
-const NODE_TYPES = new Set(['page', 'frame', 'rect', 'ellipse', 'text', 'group']);
+const NODE_TYPES = new Set(['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'group', 'slice']);
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 function requireNumber(value, label, min = -Infinity, max = Infinity) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
     throw new Error(`${label} 必须是 ${min}–${max} 范围内的有限数字`);
   }
+}
+
+/** 与前端 Effect 一致：投影与整层模糊，最多 12 条。 */
+export function normalizeEffects(value) {
+  if (!Array.isArray(value)) throw new Error('effects 必须是数组');
+  if (value.length > 12) throw new Error('一个节点最多 12 条效果');
+  return value.map((effect, index) => {
+    if (!effect || typeof effect !== 'object' || Array.isArray(effect)) throw new Error(`第 ${index + 1} 条效果不是对象`);
+    if (effect.type === 'drop-shadow') {
+      requireNumber(effect.x, `effects[${index}].x`);
+      requireNumber(effect.y, `effects[${index}].y`);
+      requireNumber(effect.blur, `effects[${index}].blur`, 0, 1000);
+      requireNumber(effect.opacity, `effects[${index}].opacity`, 0, 1);
+      if (typeof effect.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(effect.color)) {
+        throw new Error(`effects[${index}].color 必须是 #RRGGBB`);
+      }
+      if (typeof effect.visible !== 'boolean') throw new Error(`effects[${index}].visible 必须是布尔值`);
+      return { type: 'drop-shadow', x: effect.x, y: effect.y, blur: effect.blur, color: effect.color.toUpperCase(), opacity: effect.opacity, visible: effect.visible };
+    }
+    if (effect.type === 'layer-blur') {
+      requireNumber(effect.blur, `effects[${index}].blur`, 0, 1000);
+      if (typeof effect.visible !== 'boolean') throw new Error(`effects[${index}].visible 必须是布尔值`);
+      return { type: 'layer-blur', blur: effect.blur, visible: effect.visible };
+    }
+    throw new Error(`effects[${index}].type 不受支持`);
+  });
 }
 
 export function validateScene(scene) {
@@ -180,7 +206,13 @@ export function validateScene(scene) {
       if (typeof node.text !== 'string') throw new Error(`文本节点 ${key} 缺少 text`);
       requireNumber(node.fontSize, `${key}.fontSize`, 0);
       requireNumber(node.fontWeight, `${key}.fontWeight`, 0);
+      if (node.letterSpacing !== undefined) requireNumber(node.letterSpacing, `${key}.letterSpacing`);
+      if (node.paragraphSpacing !== undefined) requireNumber(node.paragraphSpacing, `${key}.paragraphSpacing`, 0);
+      if (node.listStyle !== undefined && !['none', 'bullet', 'number'].includes(node.listStyle)) {
+        throw new Error(`${key}.listStyle 不受支持`);
+      }
     }
+    if (node.effects !== undefined) normalizeEffects(node.effects);
   }
 
   const owners = new Map();
@@ -366,15 +398,265 @@ export function addFrame(scene, { name, x, y, w = 1440, h = 900, fill = '#FFFFFF
   return frame;
 }
 
+export function addFrameGrid(scene, {
+  rows = 10,
+  cols = 10,
+  w = 1440,
+  h = 900,
+  gapX = 80,
+  gapY = 80,
+  x = 0,
+  y = 0,
+  namePrefix = '画板',
+  fill = '#FFFFFF',
+} = {}) {
+  const r = Math.round(Number(rows));
+  const c = Math.round(Number(cols));
+  if (!Number.isInteger(r) || r < 1 || r > 100) throw new Error('rows 必须是 1–100 的整数');
+  if (!Number.isInteger(c) || c < 1 || c > 50) throw new Error('cols 必须是 1–50 的整数');
+  const total = r * c;
+  if (total > 500) throw new Error('一次最多建 500 块画板');
+  requireNumber(w, 'w', 1);
+  requireNumber(h, 'h', 1);
+  requireNumber(gapX, 'gapX', 0);
+  requireNumber(gapY, 'gapY', 0);
+  requireNumber(x, 'x');
+  requireNumber(y, 'y');
+  if (typeof fill !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(fill)) throw new Error('fill 必须是 #RRGGBB');
+  const root = rootOf(scene);
+  const existing = root.children.map((id) => scene.nodes[id]).filter((n) => n?.type === 'frame').length;
+  const prefix = String(namePrefix || '画板').trim().slice(0, 24) || '画板';
+  const ids = [];
+  for (let row = 0; row < r; row += 1) {
+    for (let col = 0; col < c; col += 1) {
+      let n = 1;
+      while (scene.nodes[`frame-${n}`]) n += 1;
+      const id = `frame-${n}`;
+      const frame = {
+        id,
+        type: 'frame',
+        name: `${prefix} ${row + 1}-${col + 1}`,
+        parentId: root.id,
+        children: [],
+        x: x + col * (w + gapX),
+        y: y + row * (h + gapY),
+        w,
+        h,
+        rotation: 0,
+        opacity: 1,
+        visible: true,
+        locked: false,
+        clipContent: true,
+        fills: [{ type: 'solid', color: fill.toUpperCase(), opacity: 1 }],
+        cornerRadius: 0,
+      };
+      scene.nodes[id] = frame;
+      ids.push(id);
+    }
+  }
+  root.children.push(...ids);
+  return {
+    count: ids.length,
+    rows: r,
+    cols: c,
+    existing,
+    ids,
+    bounds: {
+      x,
+      y,
+      w: c * w + Math.max(0, c - 1) * gapX,
+      h: r * h + Math.max(0, r - 1) * gapY,
+    },
+  };
+}
+
+export function updatePageConfig(scene, { pageId = null, name = null, background = null } = {}) {
+  const page = pageId ? scene.pages.find((p) => p.id === pageId) : scene.pages[0];
+  if (!page) throw new Error(`页面不存在：${pageId}`);
+  if (name !== null && name !== undefined) {
+    const nextName = String(name).trim().slice(0, 40);
+    if (!nextName) throw new Error('页面名称不能为空');
+    page.name = nextName;
+    const root = scene.nodes[page.rootId];
+    if (root) root.name = nextName;
+  }
+  if (background !== null && background !== undefined) {
+    if (typeof background !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(background)) {
+      throw new Error('background 必须是 #RRGGBB');
+    }
+    page.background = background.toUpperCase();
+  }
+  return { pageId: page.id, name: page.name, background: page.background, rootId: page.rootId };
+}
+
+export function addNode(scene, {
+  parentId,
+  type,
+  name,
+  x = 0,
+  y = 0,
+  w = 320,
+  h = 200,
+  fill = null,
+  cornerRadius = 0,
+  text = '文本',
+  fontSize = 24,
+  fontWeight = 600,
+  letterSpacing = 0,
+  lineHeight = 1.2,
+  paragraphSpacing = 0,
+  listStyle = 'none',
+} = {}) {
+  const allowed = new Set(['frame', 'section', 'rect', 'ellipse', 'text', 'slice']);
+  if (!allowed.has(type)) throw new Error(`MCP 只能新增 ${[...allowed].join(' / ')}`);
+  const parent = findNode(scene, parentId);
+  if (parent.type === 'slice' || parent.type === 'text' || parent.type === 'rect' || parent.type === 'ellipse') {
+    throw new Error('文本、矩形、椭圆与切片不能作为父节点');
+  }
+  const id = nextId(scene, type);
+  const label = type === 'frame' ? '画板' : type === 'section' ? '区块' : type === 'rect' ? '矩形' : type === 'ellipse' ? '椭圆' : type === 'slice' ? '切片' : '文本';
+  const node = {
+    id,
+    type,
+    name: name || `${label} ${id.split('-').pop()}`,
+    parentId: parent.id,
+    children: [],
+    x,
+    y,
+    w: Math.max(1, w),
+    h: Math.max(1, h),
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    locked: false,
+    clipContent: type === 'frame',
+    fills: type === 'section' || type === 'slice' ? [] : [{ type: 'solid', color: String(fill ?? (type === 'text' ? '#221C00' : '#D9D9D9')).toUpperCase(), opacity: 1 }],
+    cornerRadius: Math.max(0, cornerRadius),
+  };
+  if (type === 'text') {
+    node.text = text;
+    node.fontSize = Math.max(1, fontSize);
+    node.fontWeight = Math.max(1, fontWeight);
+    node.letterSpacing = letterSpacing;
+    node.lineHeight = Math.max(0.1, lineHeight);
+    node.paragraphSpacing = Math.max(0, paragraphSpacing);
+    node.listStyle = listStyle;
+  }
+  parent.children.push(id);
+  scene.nodes[id] = node;
+  return node;
+}
+
+export function addPage(scene, { name, background = '#E9E8E4', frameName = null, w = 1440, h = 900 } = {}) {
+  const existing = scene.pages.length;
+  let n = existing + 1;
+  while (scene.pages.some((p) => p.id === `page-${n}`)) n += 1;
+  const pageId = `page-${n}`;
+  const rootId = nextId(scene, 'root');
+  const page = { id: pageId, name: name || `页面 ${existing + 1}`, rootId, background };
+  const root = {
+    id: rootId,
+    type: 'page',
+    name: page.name,
+    parentId: null,
+    children: [],
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    locked: false,
+    clipContent: false,
+    fills: [],
+    cornerRadius: 0,
+  };
+  scene.nodes[rootId] = root;
+  scene.pages.push(page);
+  let frame = null;
+  if (frameName) {
+    frame = addNode(scene, {
+      parentId: rootId,
+      type: 'frame',
+      name: frameName,
+      x: 0,
+      y: 0,
+      w,
+      h,
+      fill: '#FFFFFF',
+    });
+  }
+  return { page, root, frame };
+}
+
+export function listNodes(scene, { rootId = null, type = null, query = '', limit = 200 } = {}) {
+  const start = rootId || scene.pages[0].rootId;
+  if (!scene.nodes[start]) throw new Error(`起始节点不存在：${start}`);
+  const max = Math.min(1000, Math.max(1, Number(limit) || 200));
+  const needle = String(query || '').trim().toLowerCase();
+  const out = [];
+  const stack = [{ id: start, depth: 0 }];
+  while (stack.length && out.length < max) {
+    const item = stack.pop();
+    const node = scene.nodes[item.id];
+    if (!node) continue;
+    const matchType = !type || node.type === type;
+    const matchQuery = !needle || node.name.toLowerCase().includes(needle) || (node.text || '').toLowerCase().includes(needle);
+    if (item.depth > 0 && matchType && matchQuery) {
+      out.push({
+        id: node.id,
+        type: node.type,
+        name: node.name,
+        parentId: node.parentId,
+        depth: item.depth,
+        x: node.x,
+        y: node.y,
+        w: node.w,
+        h: node.h,
+        visible: node.visible,
+        locked: node.locked,
+        children: node.children.length,
+        ...(node.type === 'text' ? { text: node.text, fontSize: node.fontSize, fontWeight: node.fontWeight } : {}),
+        ...(node.effects?.length ? { effects: node.effects.length } : {}),
+      });
+    }
+    for (let i = node.children.length - 1; i >= 0; i -= 1) stack.push({ id: node.children[i], depth: item.depth + 1 });
+  }
+  return { total: Object.keys(scene.nodes).length, returned: out.length, truncated: out.length >= max, nodes: out };
+}
+
+export function reorderNode(scene, nodeId, index) {
+  const node = findNode(scene, nodeId);
+  if (node.parentId === null) throw new Error('页面根节点不能重排');
+  const parent = scene.nodes[node.parentId];
+  const current = parent.children.indexOf(nodeId);
+  if (current < 0) throw new Error('节点不在父节点 children 中');
+  parent.children.splice(current, 1);
+  let target;
+  if (index === 'front') target = parent.children.length;
+  else if (index === 'back') target = 0;
+  else {
+    requireNumber(index, 'index', 0, parent.children.length);
+    target = Math.round(index);
+  }
+  parent.children.splice(target, 0, nodeId);
+  return { nodeId, parentId: parent.id, index: target, siblings: parent.children.length };
+}
+
+
 export function updateNode(scene, nodeId, patch) {
   const node = findNode(scene, nodeId);
-  const allowed = ['name', 'x', 'y', 'w', 'h', 'cornerRadius', 'opacity', 'visible', 'locked'];
+  const allowed = [
+    'name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'opacity', 'visible', 'locked', 'clipContent',
+    'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle',
+  ];
   const next = { ...node };
   for (const key of allowed) {
     if (patch[key] !== undefined) next[key] = patch[key];
   }
   if (typeof next.name !== 'string' || !next.name) throw new Error('节点名称不能为空');
-  for (const key of ['x', 'y', 'w', 'h', 'cornerRadius', 'opacity']) {
+  for (const key of ['x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'opacity']) {
     if (typeof next[key] !== 'number' || !Number.isFinite(next[key])) throw new Error(`${key} 必须是有限数字`);
   }
   if (next.w !== undefined) next.w = Math.max(1, next.w);
@@ -382,11 +664,45 @@ export function updateNode(scene, nodeId, patch) {
   if (next.cornerRadius !== undefined) next.cornerRadius = Math.max(0, next.cornerRadius);
   if (next.opacity !== undefined) next.opacity = Math.min(1, Math.max(0, next.opacity));
   if (typeof next.visible !== 'boolean' || typeof next.locked !== 'boolean') throw new Error('visible/locked 必须是布尔值');
+  if (typeof next.clipContent !== 'boolean') throw new Error('clipContent 必须是布尔值');
   if (patch.fillColor !== undefined) {
     next.fills = [{ type: 'solid', color: String(patch.fillColor).toUpperCase(), opacity: 1 }];
   }
+  if (patch.effects !== undefined) {
+    next.effects = normalizeEffects(patch.effects);
+    if (!next.effects.length) delete next.effects;
+  }
+  if (next.type === 'text') {
+    if (typeof next.text !== 'string') throw new Error('text 必须是字符串');
+    requireNumber(next.fontSize, 'fontSize', 1);
+    requireNumber(next.fontWeight, 'fontWeight', 1);
+    if (next.letterSpacing !== undefined) requireNumber(next.letterSpacing, 'letterSpacing');
+    if (next.lineHeight !== undefined) requireNumber(next.lineHeight, 'lineHeight', 0.1);
+    if (next.paragraphSpacing !== undefined) requireNumber(next.paragraphSpacing, 'paragraphSpacing', 0);
+    if (next.listStyle !== undefined && !['none', 'bullet', 'number'].includes(next.listStyle)) {
+      throw new Error('listStyle 必须是 none / bullet / number');
+    }
+  }
   scene.nodes[nodeId] = next;
   return next;
+}
+
+export function updateNodes(scene, changes) {
+  if (!Array.isArray(changes) || changes.length === 0) throw new Error('changes 必须是非空数组');
+  if (changes.length > 200) throw new Error('一次最多改 200 个节点');
+  const seen = new Set();
+  for (const change of changes) {
+    if (!change || typeof change.nodeId !== 'string') throw new Error('每项必须带 nodeId');
+    if (seen.has(change.nodeId)) throw new Error(`同一批里重复节点：${change.nodeId}`);
+    seen.add(change.nodeId);
+    findNode(scene, change.nodeId);
+  }
+  // 先从所有 id 校验完（上面的 findNode），再开始改，避免批量中途才失败。
+  const updated = [];
+  for (const change of changes) {
+    updated.push(updateNode(scene, change.nodeId, change.patch ?? {}));
+  }
+  return updated;
 }
 
 export function duplicateFrame(scene, nodeId) {

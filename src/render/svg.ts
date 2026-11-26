@@ -5,6 +5,7 @@ import { nodeWorldRings } from '../core/boolean';
 import { maskIndexForParent, maskTypeOf } from '../core/mask';
 import { imageCropOf, isFullImageCrop } from '../core/image';
 import { imageFillBox } from '../core/imageFill';
+import { activeEffects } from '../core/effects';
 import { getAssetDataUrl } from '../io/images';
 
 export interface SvgExport {
@@ -110,6 +111,42 @@ function ringsToPath(doc: GromaDoc, mask: SceneNode, originX: number, originY: n
       return `M ${points.join(' L ')} Z`;
     })
     .join(' ');
+}
+
+/** 把节点效果输出成一个 SVG filter；多投影用 feMerge 叠在原文上。 */
+function effectsFilterId(node: SceneNode, defs: Defs): string | null {
+  const effects = activeEffects(node);
+  if (effects.length === 0) return null;
+  const layerBlur = effects
+    .filter((effect) => effect.type === 'layer-blur')
+    .reduce((radius, effect) => Math.max(radius, effect.blur), 0);
+  const shadows = effects.filter((effect) => effect.type === 'drop-shadow');
+  if (layerBlur <= 0 && shadows.length === 0) return null;
+
+  defs.seq += 1;
+  const id = `groma-effect-${defs.seq}`;
+  const parts: string[] = [];
+  const base = layerBlur > 0 ? 'eff-base' : 'SourceAlpha';
+  if (layerBlur > 0) {
+    parts.push(`<feGaussianBlur in="SourceAlpha" stdDeviation="${n(layerBlur / 2)}" result="eff-base" />`);
+  }
+  const shadowResults = shadows.map((effect, index) => {
+    const result = `eff-shadow-${index}`;
+    parts.push(
+      `<feDropShadow in="${base}" dx="${n(effect.x)}" dy="${n(effect.y)}" stdDeviation="${n(effect.blur / 2)}" flood-color="${esc(effect.color)}" flood-opacity="${n(effect.opacity)}" result="${result}" />`,
+    );
+    return result;
+  });
+  if (layerBlur > 0) {
+    parts.push(`<feGaussianBlur in="SourceGraphic" stdDeviation="${n(layerBlur / 2)}" result="eff-main" />`);
+  }
+  const main = layerBlur > 0 ? 'eff-main' : 'SourceGraphic';
+  const mergeNodes = [...shadowResults.map((result) => `<feMergeNode in="${result}" />`), `<feMergeNode in="${main}" />`].join('');
+  parts.push(`<feMerge>${mergeNodes}</feMerge>`);
+  defs.items.push(
+    `<filter id="${id}" x="-100%" y="-100%" width="300%" height="300%" color-interpolation-filters="sRGB">${parts.join('')}</filter>`,
+  );
+  return id;
 }
 
 function emitChildren(
@@ -308,7 +345,9 @@ function emitNode(
     return childSvg;
   })();
 
-  return opacity ? `<g${opacity}>${body}</g>` : body;
+  const effectId = node.type === 'page' || node.type === 'slice' ? null : effectsFilterId(node, defs);
+  const rendered = effectId ? `<g filter="url(#${effectId})">${body}</g>` : body;
+  return opacity ? `<g${opacity}>${rendered}</g>` : rendered;
 }
 
 /**

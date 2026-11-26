@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
 import { getAssetDataUrl, getImageProjectId, importImageAsset } from '../io/images';
-import type { Paint, PaintStop, SceneNode, StrokeCap, StrokeJoin } from '../core/types';
+import type { Effect, Paint, PaintStop, SceneNode, StrokeCap, StrokeJoin } from '../core/types';
+import { DEFAULT_DROP_SHADOW, DEFAULT_LAYER_BLUR } from '../core/effects';
 import {
   addGradientStop,
   isGradientPaint,
@@ -857,6 +858,110 @@ function ImageFillEditor({ node }: { node: SceneNode }) {
   );
 }
 
+function EffectsEditor({ node }: { node: SceneNode }) {
+  const effects = node.effects ?? [];
+  const disabled = node.locked;
+
+  function patchEffect(index: number, next: Effect) {
+    editor.applyPatch(node.id, { effects: effects.map((effect, i) => (i === index ? next : effect)) });
+  }
+
+  function removeEffect(index: number) {
+    const next = effects.filter((_, i) => i !== index);
+    editor.applyPatch(node.id, { effects: next.length > 0 ? next : undefined });
+  }
+
+  function addEffect(effect: Effect) {
+    editor.applyPatch(node.id, { effects: [...effects, effect] });
+  }
+
+  return (
+    <section className="ins-section">
+      <h3 className="ins-title">效果</h3>
+      <div className="effects-block">
+        {effects.map((effect, index) => (
+          <div className={`effect-card${effect.visible ? '' : ' is-off'}`} key={`${effect.type}-${index}`}>
+            <div className="effect-head">
+              <span className="effect-type">{effect.type === 'drop-shadow' ? '投影' : '整层模糊'}</span>
+              <button
+                className="mini-action"
+                disabled={disabled}
+                onClick={() => patchEffect(index, { ...effect, visible: !effect.visible })}
+              >
+                {effect.visible ? '隐藏' : '显示'}
+              </button>
+              <button className="mini-action effect-remove" disabled={disabled} onClick={() => removeEffect(index)}>
+                移除
+              </button>
+            </div>
+            {effect.type === 'drop-shadow' ? (
+              <>
+                <ColorField
+                  color={effect.color}
+                  opacity={effect.opacity}
+                  disabled={disabled}
+                  onCommit={(hex) => patchEffect(index, { ...effect, color: hex })}
+                  onOpacity={(value) => patchEffect(index, { ...effect, opacity: value })}
+                />
+                <div className="field-grid">
+                  <NumField
+                    label="X"
+                    value={effect.x}
+                    disabled={disabled}
+                    onCommit={(n) => patchEffect(index, { ...effect, x: n })}
+                  />
+                  <NumField
+                    label="Y"
+                    value={effect.y}
+                    disabled={disabled}
+                    onCommit={(n) => patchEffect(index, { ...effect, y: n })}
+                  />
+                  <NumField
+                    label="模糊"
+                    value={effect.blur}
+                    min={0}
+                    max={1000}
+                    disabled={disabled}
+                    onCommit={(n) => patchEffect(index, { ...effect, blur: n })}
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="field-grid">
+                <NumField
+                  label="半径"
+                  value={effect.blur}
+                  min={0}
+                  max={1000}
+                  disabled={disabled}
+                  onCommit={(n) => patchEffect(index, { ...effect, blur: n })}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+        {effects.length === 0 && <p className="ins-note">给图层加投影或整层模糊；效果会一起进入 PNG / SVG 导出。</p>}
+        <div className="effect-add-row">
+          <button
+            className="mini-action"
+            disabled={disabled}
+            onClick={() => addEffect({ ...DEFAULT_DROP_SHADOW })}
+          >
+            ＋ 投影
+          </button>
+          <button
+            className="mini-action"
+            disabled={disabled}
+            onClick={() => addEffect({ ...DEFAULT_LAYER_BLUR })}
+          >
+            ＋ 模糊
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function FrameInspector({ node }: { node: SceneNode }) {
   return (
     <>
@@ -896,6 +1001,8 @@ function FrameInspector({ node }: { node: SceneNode }) {
         <FillEditor node={node} fallbackColor="#FFFFFF" />
         <Row label="混合" value="正常" />
       </section>
+
+      <EffectsEditor node={node} />
 
       <div className="ins-hint">{node.locked ? '画板已锁定，属性编辑已停用' : 'Ctrl+Z 撤销 · Shift+1 适应画板'}</div>
     </>
@@ -1277,6 +1384,8 @@ function ShapeInspector({ node }: { node: SceneNode }) {
         )}
       </section>
 
+      <EffectsEditor node={node} />
+
       <section className="ins-section">
         <h3 className="ins-title">外观</h3>
         <div className="field-grid">
@@ -1490,6 +1599,8 @@ function ImageInspector({ node }: { node: SceneNode }) {
         </div>
       </section>
 
+      <EffectsEditor node={node} />
+
       <div className="ins-hint">
         {node.locked
           ? '图片已锁定，属性编辑已停用'
@@ -1655,6 +1766,8 @@ function GroupInspector({ node }: { node: SceneNode }) {
         <Row label="宽高" value={`${fmt(abs.w)} × ${fmt(abs.h)}`} />
         <Row label="子图层" value={`${childCount} 个`} />
       </section>
+
+      <EffectsEditor node={node} />
 
       <section className="ins-section">
         <h3 className="ins-title">整理</h3>

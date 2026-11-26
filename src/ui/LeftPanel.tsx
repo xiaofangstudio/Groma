@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
 import { childrenOf, countArtboards } from '../core/doc';
 import { searchPageNodes, type NodeSearchHit } from '../core/search';
@@ -41,7 +41,7 @@ function NodeIcon({ node, type }: { node?: SceneNode; type?: NodeType }) {
   return <IconPage size={14} />;
 }
 
-function LayerNode({
+const LayerNode = memo(function LayerNode({
   node,
   depth,
   doc,
@@ -128,7 +128,7 @@ function LayerNode({
       ))}
     </>
   );
-}
+});
 
 function countType(doc: GromaDoc, id: string, type: SceneNode['type']): number {
   const node = doc.nodes[id];
@@ -143,10 +143,10 @@ export function LeftPanel() {
   const page = s.doc.pages.find((p) => p.id === s.pageId) ?? s.doc.pages[0];
   const root = s.doc.nodes[page.rootId];
   const top = root ? childrenOf(s.doc, root.id) : [];
-  const frameCount = countType(s.doc, page.rootId, 'frame');
-  const sectionCount = countType(s.doc, page.rootId, 'section');
+  const frameCount = useMemo(() => countType(s.doc, page.rootId, 'frame'), [s.doc, page.rootId]);
+  const sectionCount = useMemo(() => countType(s.doc, page.rootId, 'section'), [s.doc, page.rootId]);
   const total = Object.keys(s.doc.nodes).length - s.doc.pages.length;
-  const selectedIds = new Set(s.selectedIds);
+  const selectedIds = useMemo(() => new Set(s.selectedIds), [s.selectedIds]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -431,14 +431,14 @@ export function LeftPanel() {
     };
   }, [menu]);
 
-  const toggleLayer = (id: string) => {
+  const toggleLayer = useCallback((id: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
   const menuPage = menu ? s.doc.pages.find((p) => p.id === menu.pageId) : null;
 

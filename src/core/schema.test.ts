@@ -317,6 +317,35 @@ describe('场景校验', () => {
     expect(firstError(doc)).toContain('listStyle');
   });
 
+  it('接受投影与整层模糊并拒绝非法效果', () => {
+    const doc = brokenDoc();
+    const root = doc.nodes[doc.pages[0].rootId];
+    const source = doc.nodes[root.children[0]];
+    const shape: SceneNode = {
+      ...source,
+      id: 'effect-x',
+      type: 'rect',
+      name: '效果',
+      parentId: source.id,
+      children: [],
+      fills: [{ type: 'solid', color: '#D9D9D9', opacity: 1 }],
+      effects: [
+        { type: 'drop-shadow', x: 0, y: 8, blur: 16, color: '#221C00', opacity: 0.25, visible: true },
+        { type: 'layer-blur', blur: 6, visible: true },
+      ],
+    };
+    doc.nodes[shape.id] = shape;
+    source.children = [shape.id];
+    expect(validateDoc(doc).ok).toBe(true);
+
+    shape.effects = [{ type: 'inner-shadow', blur: 4, visible: true } as never];
+    expect(firstError(doc)).toContain('effects');
+    shape.effects = [{ type: 'layer-blur', blur: -1, visible: true }];
+    expect(firstError(doc)).toContain('effects');
+    shape.effects = [{ type: 'drop-shadow', x: 0, y: 0, blur: 4, color: '#000000', opacity: 2, visible: true }];
+    expect(firstError(doc)).toContain('effects');
+  });
+
   it('接受参数化多边形与星形并拒绝越界参数', () => {
     const doc = brokenDoc();
     const root = doc.nodes[doc.pages[0].rootId];
