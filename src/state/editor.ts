@@ -80,6 +80,8 @@ interface EditorState {
   viewports: Record<string, Viewport>;
   viewSize: { w: number; h: number };
   tool: Tool;
+  /** 图片裁剪模式的目标；退出或改选其他图层时清空。 */
+  cropId: string | null;
   leftOpen: boolean;
   rightOpen: boolean;
   needsFit: boolean;
@@ -109,6 +111,7 @@ function freshState(): EditorState {
     viewports: {},
     viewSize: { w: 0, h: 0 },
     tool: 'move',
+    cropId: null,
     leftOpen: true,
     rightOpen: true,
     needsFit: true,
@@ -131,7 +134,12 @@ function set(updater: (s: EditorState) => EditorState) {
 }
 
 function withSelection(s: EditorState, ids: string[]): EditorState {
-  return { ...s, selectedIds: ids, selectedId: ids[0] ?? null };
+  return {
+    ...s,
+    selectedIds: ids,
+    selectedId: ids[0] ?? null,
+    cropId: s.cropId && ids.includes(s.cropId) ? s.cropId : null,
+  };
 }
 
 function withViewport(s: EditorState, viewport: Viewport): EditorState {
@@ -642,6 +650,23 @@ export const editor = {
     editor.select(id, true);
   },
 
+  /** 进入图片裁剪模式；画布只改源图可见区域，不移动或缩放节点本身。 */
+  enterImageCrop(id: string) {
+    set((s) => {
+      const node = s.doc.nodes[id];
+      if (!node || node.type !== 'image' || node.locked) return s;
+      return { ...withSelection(s, [id]), cropId: id, tool: 'move' };
+    });
+  },
+
+  exitImageCrop() {
+    set((s) => (s.cropId ? { ...s, cropId: null } : s));
+  },
+
+  resetImageCrop(id: string) {
+    editor.applyPatch(id, { imageCrop: undefined });
+  },
+
   setTool(tool: Tool) {
     set((s) => (s.tool === tool ? s : { ...s, tool }));
   },
@@ -692,6 +717,7 @@ export const editor = {
         selectedIds: [],
         projectId,
         saveState: 'saved',
+        cropId: null,
         needsFit: !savedViewports[savedPage],
         viewports: savedViewports,
         past: [],
@@ -1081,7 +1107,7 @@ export const editor = {
       changed = true;
       const oldAsset = node.assetId ? s.doc.assets?.[node.assetId] : undefined;
       const rename = !oldAsset || node.name === oldAsset.name || node.name === '图片';
-      const patch = rename ? { assetId: asset.id, name: asset.name } : { assetId: asset.id };
+      const patch = rename ? { assetId: asset.id, name: asset.name, imageCrop: undefined } : { assetId: asset.id, imageCrop: undefined };
       const after: SceneNode = { ...node, ...patch };
       return {
         ...s,
@@ -1594,6 +1620,7 @@ export const editor = {
         selectedIds: [],
         projectId: null,
         saveState: 'local',
+        cropId: null,
         needsFit: true,
         viewports: {},
         past: [],

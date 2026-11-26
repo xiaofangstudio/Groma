@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type ChangeEvent } from 'react';
-import { editor, useEditor } from '../state/editor';
+import { editor, getState, useEditor } from '../state/editor';
 import { vectorActionEligibility, type BooleanOp, type VectorAction } from '../core/boolean';
 import { renameProject } from '../io/project';
 import { parseSvgDrawing } from '../io/importSvg';
@@ -65,6 +65,44 @@ export function TopBar() {
     const timer = window.setTimeout(() => setToast(null), 5000);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+      const item = [...(event.clipboardData?.items ?? [])].find(
+        (entry) => entry.kind === 'file' && entry.type.startsWith('image/'),
+      );
+      const file = item?.getAsFile();
+      if (!file) return;
+      event.preventDefault();
+      if (!s.projectId) {
+        setToast({ title: '无法粘贴图片', detail: '先保存工程，再把图片放进 assets' });
+        return;
+      }
+      setImporting(true);
+      importImageAsset(s.projectId, file)
+        .then(({ asset }) => {
+          const current = getState();
+          const target = current.selectedId ? current.doc.nodes[current.selectedId] : null;
+          if (target && !target.locked && (target.type === 'rect' || target.type === 'ellipse' || target.type === 'path')) {
+            editor.applyPatch(target.id, {
+              imageFill: { assetId: asset.id, mode: 'fill', focusX: 0.5, focusY: 0.5, opacity: 1 },
+            });
+            setToast({ title: '已填充形状', detail: `${target.name} · ${asset.name}` });
+          } else {
+            editor.insertImage(asset);
+            setToast({ title: '已粘贴图片', detail: `${asset.name} · ${asset.w} × ${asset.h}` });
+          }
+        })
+        .catch((error) => {
+          setToast({ title: '粘贴失败', detail: error instanceof Error ? error.message : String(error) });
+        })
+        .finally(() => setImporting(false));
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [s.projectId]);
 
   const scalePct = Math.round(s.viewport.scale * 100);
   const booleanReady = vectorActionEligibility(s.doc, s.selectedIds, 'union');

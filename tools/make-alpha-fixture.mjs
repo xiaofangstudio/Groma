@@ -23,9 +23,9 @@ mask.fills = [
     color: '#221C00',
     opacity: 1,
     x1: 0,
-    y1: 0.5,
-    x2: 1,
-    y2: 0.5,
+    y1: 200,
+    x2: 500,
+    y2: 200,
     stops: [
       { offset: 0, color: '#221C00', opacity: 1 },
       { offset: 0.55, color: '#221C00', opacity: 1 },

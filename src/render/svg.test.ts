@@ -65,6 +65,32 @@ describe('SVG 导出', () => {
     expect(result?.svg).toContain('<text');
   });
 
+  it('数字列表与段距输出前缀和累计 dy', () => {
+    const doc = createDoc('SVG 列表', 200, 120);
+    const page = doc.pages[0];
+    const frameId = doc.nodes[page.rootId].children[0];
+    doc.nodes['text-list'] = {
+      ...rectNode('text-list', frameId),
+      type: 'text',
+      name: '列表',
+      x: 20,
+      y: 30,
+      w: 140,
+      h: 80,
+      text: '第一行\n第二行',
+      fontSize: 18,
+      fontWeight: 500,
+      lineHeight: 1.3,
+      paragraphSpacing: 10,
+      listStyle: 'number',
+    };
+    doc.nodes[frameId].children = ['text-list'];
+    const result = renderFrameSvg(doc, frameId, false, 1);
+    expect(result?.svg).toContain('1.  第一行');
+    expect(result?.svg).toContain('2.  第二行');
+    expect(result?.svg).toContain('dy="33.4"');
+  });
+
   it('居中文本按文本框中心输出 SVG 锚点', () => {
     const doc = createDoc('SVG 居中', 200, 120);
     const page = doc.pages[0];
@@ -81,6 +107,7 @@ describe('SVG 导出', () => {
       fontSize: 18,
       fontWeight: 600,
       align: 'center',
+      letterSpacing: 2,
       fills: [{ type: 'solid', color: '#221C00', opacity: 1 }],
     };
     doc.nodes[frameId].children = ['text-center'];
@@ -88,6 +115,7 @@ describe('SVG 导出', () => {
     expect(result?.svg).toContain('x="70"');
     expect(result?.svg).toContain('<tspan x="70">居中</tspan>');
     expect(result?.svg).toContain('text-anchor="middle"');
+    expect(result?.svg).toContain('letter-spacing="2"');
   });
 
   it('图片节点把资产内嵌为 SVG image，圆角走 clipPath', async () => {
@@ -124,6 +152,78 @@ describe('SVG 导出', () => {
     expect(result?.svg).toContain('<image');
     expect(result?.svg).toContain('href="data:image/png;base64,AAAA"');
     expect(result?.svg).toContain('groma-image-clip');
+  });
+
+  it('形状图片填充输出 clipPath 与放大后的 image', async () => {
+    const doc = createDoc('SVG 图片填充', 200, 120);
+    const page = doc.pages[0];
+    const frameId = doc.nodes[page.rootId].children[0];
+    const dataUrl = 'data:image/png;base64,BBBB';
+    const asset = {
+      id: 'asset-fill',
+      name: '填充.png',
+      mime: 'image/png',
+      file: 'assets/填充.png',
+      w: 400,
+      h: 200,
+      bytes: 3,
+    };
+    doc.assets = { 'asset-fill': asset };
+    await registerImageAsset(asset, dataUrl);
+    doc.nodes['rect-fill'] = {
+      ...rectNode('rect-fill', frameId),
+      x: 20,
+      y: 20,
+      w: 100,
+      h: 100,
+      fills: [{ type: 'solid', color: '#D9D9D9', opacity: 1 }],
+      imageFill: { assetId: 'asset-fill', mode: 'fill', focusX: 0.5, focusY: 0.5, opacity: 1 },
+    };
+    doc.nodes[frameId].children = ['rect-fill'];
+
+    const result = renderFrameSvg(doc, frameId, false, 1);
+    expect(result?.svg).toContain('groma-image-fill-');
+    expect(result?.svg).toContain('href="data:image/png;base64,BBBB"');
+    expect(result?.svg).toContain('<clipPath');
+    expect(result?.svg).toContain('width="200" height="100"');
+  });
+
+  it('图片裁剪用嵌套 SVG 只截取源图区域', async () => {
+    const doc = createDoc('SVG 裁剪', 200, 120);
+    const page = doc.pages[0];
+    const frameId = doc.nodes[page.rootId].children[0];
+    const dataUrl = 'data:image/png;base64,BBBB';
+    const asset = {
+      id: 'asset-crop',
+      name: '裁剪.png',
+      mime: 'image/png',
+      file: 'assets/裁剪.png',
+      w: 400,
+      h: 240,
+      bytes: 3,
+    };
+    doc.assets = { 'asset-crop': asset };
+    await registerImageAsset(asset, dataUrl);
+    doc.nodes['image-crop'] = {
+      ...rectNode('image-crop', frameId),
+      type: 'image',
+      name: '裁剪图片',
+      x: 0,
+      y: 0,
+      w: 200,
+      h: 120,
+      fills: [],
+      cornerRadius: 0,
+      assetId: 'asset-crop',
+      imageCrop: { x: 0.25, y: 0.5, w: 0.5, h: 0.5 },
+    };
+    doc.nodes[frameId].children = ['image-crop'];
+
+    const result = renderFrameSvg(doc, frameId, true, 1);
+    expect(result?.svg).toContain('groma-image-crop-');
+    expect(result?.svg).toContain('x="-100" y="-120" width="400" height="240"');
+    expect(result?.svg).toContain('href="data:image/png;base64,BBBB"');
+    expect(result?.svg).toContain('clip-path="url(#groma-image-crop-');
   });
 
   it('参数化多边形与星形导出为带填充的闭合路径', () => {

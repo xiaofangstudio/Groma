@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
-import { getImageProjectId, importImageAsset } from '../io/images';
+import { getAssetDataUrl, getImageProjectId, importImageAsset } from '../io/images';
 import type { Paint, PaintStop, SceneNode, StrokeCap, StrokeJoin } from '../core/types';
 import {
   addGradientStop,
@@ -16,6 +16,7 @@ import {
 import { dashForKind, dashKind, formatDash, parseDashInput, type DashKind } from '../core/stroke';
 import { countSharedPenVertices } from '../core/pen';
 import { maskEligibility, maskTypeOf } from '../core/mask';
+import { cropPercent, imageCropOf, isFullImageCrop } from '../core/image';
 import { usePenAnchorSelection } from '../state/pen-selection';
 import { absolutePosition, absoluteRect, selectionBounds, topLevelSelection } from '../core/geometry';
 import { countArtboards } from '../core/doc';
@@ -240,6 +241,7 @@ function LineField({
   placeholder,
   ariaLabel,
   disabled,
+  listId,
   onCommit,
 }: {
   label: string;
@@ -247,6 +249,7 @@ function LineField({
   placeholder?: string;
   ariaLabel: string;
   disabled?: boolean;
+  listId?: string;
   onCommit: (text: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
@@ -275,6 +278,7 @@ function LineField({
         disabled={disabled}
         spellCheck={false}
         aria-label={ariaLabel}
+        list={listId}
         onChange={(e) => setDraft(e.target.value)}
         onFocus={(e) => e.currentTarget.select()}
         onBlur={(e) => commit(e.currentTarget.value)}
@@ -523,6 +527,20 @@ function GradientStopRow({
   );
 }
 
+const FONT_FAMILIES = [
+  '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
+  '"Microsoft YaHei", "微软雅黑", sans-serif',
+  '"PingFang SC", "Microsoft YaHei", sans-serif',
+  '"Source Han Sans SC", "思源黑体", "Microsoft YaHei", sans-serif',
+  '"LXGW WenKai", "霞鹜文楷", "Microsoft YaHei", serif',
+  'Arial, "Microsoft YaHei", sans-serif',
+  'Helvetica, Arial, sans-serif',
+  'Georgia, "Times New Roman", serif',
+  '"Times New Roman", "SimSun", serif',
+  'Consolas, "Courier New", monospace',
+  '"Courier New", monospace',
+];
+
 const FILL_TYPES = [
   { type: 'solid', label: '纯色' },
   { type: 'linear', label: '线性' },
@@ -678,6 +696,164 @@ function FillEditor({
         />
       )}
     </>
+  );
+}
+
+function ImageFillEditor({ node }: { node: SceneNode }) {
+  const s = useEditor();
+  const fill = node.imageFill;
+  const asset = fill ? s.doc.assets?.[fill.assetId] : undefined;
+  const assets = Object.values(s.doc.assets ?? {});
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function apply(assetId: string) {
+    editor.applyPatch(node.id, {
+      imageFill: {
+        assetId,
+        mode: fill?.mode ?? 'fill',
+        focusX: fill?.focusX ?? 0.5,
+        focusY: fill?.focusY ?? 0.5,
+        opacity: fill?.opacity ?? 1,
+      },
+    });
+    setOpen(false);
+    setError(null);
+  }
+
+  async function importFill(file: File | undefined) {
+    if (!file) return;
+    const projectId = getImageProjectId();
+    if (!projectId) {
+      setError('工程尚未保存，无法写入图片资产');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const imported = await importImageAsset(projectId, file);
+      apply(imported.asset.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '图片填充导入失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="image-fill-block">
+      <div className="image-fill-head">
+        <span className="image-fill-label">图片填充</span>
+        <button
+          type="button"
+          className="mini-action"
+          disabled={node.locked || busy}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {fill ? '换图' : busy ? '导入中…' : '选择图片'}
+        </button>
+        {fill && (
+          <button
+            type="button"
+            className="mini-action"
+            disabled={node.locked}
+            onClick={() => editor.applyPatch(node.id, { imageFill: undefined })}
+          >
+            移除
+          </button>
+        )}
+      </div>
+      {fill && asset ? (
+        <>
+          <div className="image-fill-current">
+            {getAssetDataUrl(asset.id) ? (
+              <img src={getAssetDataUrl(asset.id) ?? ''} alt="" draggable={false} />
+            ) : (
+              <span className="image-fill-empty" />
+            )}
+            <span title={asset.name}>{asset.name}</span>
+          </div>
+          <p className="ins-note">图片填充优先于纯色/渐变；移除后恢复。</p>
+          <div className="fill-type-switch" role="group" aria-label="图片填充方式">
+            {[
+              { value: 'fill' as const, label: '铺满' },
+              { value: 'fit' as const, label: '适应' },
+            ].map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={`fill-type-btn ${(fill.mode ?? 'fill') === item.value ? 'is-on' : ''}`}
+                disabled={node.locked}
+                onClick={() => editor.applyPatch(node.id, { imageFill: { ...fill, mode: item.value } })}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <div className="field-grid text-meta">
+            <NumField
+              label="焦点X"
+              value={Math.round(fill.focusX * 100)}
+              min={0}
+              max={100}
+              disabled={node.locked}
+              onCommit={(value) => editor.applyPatch(node.id, { imageFill: { ...fill, focusX: value / 100 } })}
+            />
+            <NumField
+              label="焦点Y"
+              value={Math.round(fill.focusY * 100)}
+              min={0}
+              max={100}
+              disabled={node.locked}
+              onCommit={(value) => editor.applyPatch(node.id, { imageFill: { ...fill, focusY: value / 100 } })}
+            />
+          </div>
+        </>
+      ) : fill ? (
+        <p className="ins-note">图片资产缺失，换一张图或移除填充。</p>
+      ) : (
+        <p className="ins-note">用图片铺满这个形状，可按焦点决定保留区域。</p>
+      )}
+      {open && (
+        <div className="image-fill-picker">
+          <div className="image-fill-grid">
+            {assets.map((item) => {
+              const url = getAssetDataUrl(item.id);
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`image-fill-thumb ${item.id === fill?.assetId ? 'is-on' : ''}`}
+                  title={`${item.name} · ${item.w} × ${item.h}`}
+                  disabled={node.locked}
+                  onClick={() => apply(item.id)}
+                >
+                  {url ? <img src={url} alt="" draggable={false} /> : <span>{item.name}</span>}
+                </button>
+              );
+            })}
+            {assets.length === 0 && <p className="ins-note">工程里还没有图片资产。</p>}
+          </div>
+          <button type="button" className="wide-action" disabled={node.locked || busy} onClick={() => fileRef.current?.click()}>
+            {busy ? '导入中…' : '导入图片'}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              void importFill(file);
+            }}
+          />
+        </div>
+      )}
+      {error && <p className="ins-error">{error}</p>}
+    </div>
   );
 }
 
@@ -867,10 +1043,16 @@ function ShapeInspector({ node }: { node: SceneNode }) {
               placeholder="系统默认（Segoe UI / 微软雅黑）"
               ariaLabel="字体族"
               disabled={node.locked}
+              listId="groma-font-options"
               onCommit={(fontFamily) => editor.applyPatch(node.id, { fontFamily: fontFamily || undefined })}
             />
+            <datalist id="groma-font-options">
+              {FONT_FAMILIES.map((font) => (
+                <option key={font} value={font} />
+              ))}
+            </datalist>
           </div>
-          <div className="field-grid text-meta">
+          <div className="field-grid text-meta is-triple">
             <NumField
               label="字号"
               value={node.fontSize ?? 24}
@@ -886,6 +1068,14 @@ function ShapeInspector({ node }: { node: SceneNode }) {
               max={900}
               disabled={node.locked}
               onCommit={(n) => editor.applyPatch(node.id, { fontWeight: n })}
+            />
+            <NumField
+              label="字距"
+              value={node.letterSpacing ?? 0}
+              min={-50}
+              max={200}
+              disabled={node.locked}
+              onCommit={(n) => editor.applyPatch(node.id, { letterSpacing: n === 0 ? undefined : n })}
             />
           </div>
           <div className="text-align-row" role="group" aria-label="文本对齐">
@@ -942,6 +1132,36 @@ function ShapeInspector({ node }: { node: SceneNode }) {
               斜体
             </button>
           </div>
+          <div className="field-grid text-meta is-triple">
+            <button
+              type="button"
+              className={`text-toggle ${node.listStyle === 'bullet' ? 'is-on' : ''}`}
+              aria-pressed={node.listStyle === 'bullet'}
+              disabled={node.locked}
+              title="每行前加项目符号"
+              onClick={() => editor.applyPatch(node.id, { listStyle: node.listStyle === 'bullet' ? 'none' : 'bullet' })}
+            >
+              • 列表
+            </button>
+            <button
+              type="button"
+              className={`text-toggle ${node.listStyle === 'number' ? 'is-on' : ''}`}
+              aria-pressed={node.listStyle === 'number'}
+              disabled={node.locked}
+              title="每行前加序号"
+              onClick={() => editor.applyPatch(node.id, { listStyle: node.listStyle === 'number' ? 'none' : 'number' })}
+            >
+              1. 列表
+            </button>
+            <NumField
+              label="段距"
+              value={node.paragraphSpacing ?? 0}
+              min={0}
+              max={200}
+              disabled={node.locked}
+              onCommit={(n) => editor.applyPatch(node.id, { paragraphSpacing: n === 0 ? undefined : n })}
+            />
+          </div>
         </section>
       )}
 
@@ -952,6 +1172,7 @@ function ShapeInspector({ node }: { node: SceneNode }) {
           fallbackColor={isText ? '#221C00' : node.type === 'section' ? '#FFFFFF' : '#D9D9D9'}
           note={node.type === 'section' && !node.fills[0] ? '区块默认透明；选择颜色后会写入填充。' : undefined}
         />
+        {(node.type === 'rect' || node.type === 'ellipse' || node.type === 'path') && <ImageFillEditor node={node} />}
       </section>
 
       <section className="ins-section">
@@ -1140,6 +1361,10 @@ function ImageInspector({ node }: { node: SceneNode }) {
   const s = useEditor();
   const asset = node.assetId ? s.doc.assets?.[node.assetId] : undefined;
   const kb = asset ? Math.max(1, Math.round(asset.bytes / 1024)) : 0;
+  const crop = imageCropOf(node);
+  const percent = cropPercent(crop);
+  const cropped = !isFullImageCrop(crop);
+  const cropping = s.cropId === node.id;
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1188,11 +1413,21 @@ function ImageInspector({ node }: { node: SceneNode }) {
             <Row label="文件" value={asset.name} />
             <Row label="原始" value={`${asset.w} × ${asset.h}`} />
             <Row label="大小" value={`${kb} KB`} />
+            <Row label="可见" value={cropped ? `${percent.w}% × ${percent.h}%` : '整张图'} />
           </>
         ) : (
           <p className="ins-note">图片资产缺失：工程 assets 目录里找不到这个文件。</p>
         )}
         <div className="ins-action-row">
+          <button
+            className={`wide-action${cropping ? ' is-on' : ''}`}
+            disabled={node.locked || !asset}
+            aria-pressed={cropping}
+            title={node.locked ? '图片已锁定' : '进入裁剪模式，调整图片可见区域'}
+            onClick={() => (cropping ? editor.exitImageCrop() : editor.enterImageCrop(node.id))}
+          >
+            <span>{cropping ? '退出裁剪' : '裁剪图片'}</span>
+          </button>
           <button
             className="wide-action"
             disabled={node.locked || !asset}
@@ -1209,6 +1444,14 @@ function ImageInspector({ node }: { node: SceneNode }) {
           >
             <span>{busy ? '替换中…' : '替换图片'}</span>
           </button>
+          <button
+            className="wide-action"
+            disabled={node.locked || !cropped}
+            title={cropped ? '恢复整张源图' : '当前已经是整张图'}
+            onClick={() => editor.resetImageCrop(node.id)}
+          >
+            <span>重置裁剪</span>
+          </button>
           <input
             ref={fileRef}
             type="file"
@@ -1221,6 +1464,7 @@ function ImageInspector({ node }: { node: SceneNode }) {
             }}
           />
         </div>
+        {cropping ? <p className="ins-note">画布拖动裁剪框移动，拖四角收放；Esc 退出，操作可撤销。</p> : null}
         {error ? <p className="ins-note">{error}</p> : null}
       </section>
 
@@ -1246,7 +1490,13 @@ function ImageInspector({ node }: { node: SceneNode }) {
         </div>
       </section>
 
-      <div className="ins-hint">{node.locked ? '图片已锁定，属性编辑已停用' : '拖动移动 · 角点缩放 · 圆角会裁切图片'}</div>
+      <div className="ins-hint">
+        {node.locked
+          ? '图片已锁定，属性编辑已停用'
+          : cropping
+            ? '拖动裁剪框移动 · 拖四角收放 · Esc 退出'
+            : '拖动移动 · 角点缩放 · 圆角会裁切图片'}
+      </div>
     </>
   );
 }

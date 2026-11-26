@@ -3,6 +3,8 @@ import { absoluteRect } from '../core/geometry';
 import { nodePathContours, penPathData } from '../core/pen';
 import { nodeWorldRings } from '../core/boolean';
 import { maskIndexForParent, maskTypeOf } from '../core/mask';
+import { imageCropOf, isFullImageCrop } from '../core/image';
+import { imageFillBox } from '../core/imageFill';
 import { getAssetDataUrl } from '../io/images';
 
 export interface SvgExport {
@@ -80,6 +82,26 @@ function rectAttrs(x: number, y: number, w: number, h: number, radius: number): 
   return `x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}"${radius > 0 ? ` rx="${n(radius)}"` : ''}`;
 }
 
+/** 在给定局部框内输出图片填充；clipBody 与 boxW/boxH 使用同一坐标系。 */
+function imageFillMarkup(
+  doc: GromaDoc,
+  node: SceneNode,
+  defs: Defs,
+  boxW: number,
+  boxH: number,
+  clipBody: string,
+): string | null {
+  const fill = node.imageFill;
+  const asset = fill ? doc.assets?.[fill.assetId] : undefined;
+  const dataUrl = asset ? getAssetDataUrl(asset.id) : null;
+  if (!fill || !asset || !dataUrl) return null;
+  const box = imageFillBox(asset.w, asset.h, boxW, boxH, fill);
+  defs.seq += 1;
+  const clipId = `groma-image-fill-${defs.seq}`;
+  defs.items.push(`<clipPath id="${clipId}">${clipBody}</clipPath>`);
+  return `<g clip-path="url(#${clipId})"><image x="${n(box.x)}" y="${n(box.y)}" width="${n(box.w)}" height="${n(box.h)}" href="${esc(dataUrl)}" preserveAspectRatio="none"${fill.opacity < 1 ? ` opacity="${n(fill.opacity)}"` : ''} /></g>`;
+}
+
 function ringsToPath(doc: GromaDoc, mask: SceneNode, originX: number, originY: number): string {
   return nodeWorldRings(doc, mask)
     .filter((ring) => ring.length >= 3)
@@ -153,9 +175,28 @@ function emitNode(
   const opacity = node.opacity < 1 ? ` opacity="${n(node.opacity)}"` : '';
   const body = (() => {
     if (node.type === 'rect') {
+      if (node.imageFill) {
+        const body = imageFillMarkup(doc, node, defs, r.w, r.h, `<rect ${rectAttrs(0, 0, r.w, r.h, node.cornerRadius)} />`);
+        if (body) {
+          return `<g transform="translate(${n(x)} ${n(y)})">${body}<rect ${rectAttrs(0, 0, r.w, r.h, node.cornerRadius)} fill="none"${strokeAttrs(node)} /></g>`;
+        }
+      }
       return `<rect ${rectAttrs(x, y, r.w, r.h, node.cornerRadius)} ${paintAttrs(node, defs)}${strokeAttrs(node)} />`;
     }
     if (node.type === 'ellipse') {
+      if (node.imageFill) {
+        const body = imageFillMarkup(
+          doc,
+          node,
+          defs,
+          r.w,
+          r.h,
+          `<ellipse cx="${n(r.w / 2)}" cy="${n(r.h / 2)}" rx="${n(r.w / 2)}" ry="${n(r.h / 2)}" />`,
+        );
+        if (body) {
+          return `<g transform="translate(${n(x)} ${n(y)})">${body}<ellipse cx="${n(r.w / 2)}" cy="${n(r.h / 2)}" rx="${n(r.w / 2)}" ry="${n(r.h / 2)}" fill="none"${strokeAttrs(node)} /></g>`;
+        }
+      }
       return `<ellipse cx="${n(x + r.w / 2)}" cy="${n(y + r.h / 2)}" rx="${n(r.w / 2)}" ry="${n(r.h / 2)}" ${paintAttrs(node, defs)}${strokeAttrs(node)} />`;
     }
     if (node.type === 'path') {
@@ -182,12 +223,26 @@ function emitNode(
           .filter(Boolean)
           .join(' ');
         const filled = closedData
-          ? `<path d="${esc(closedData)}" transform="${transform}" fill-rule="${node.fillRule ?? 'nonzero'}" ${paintAttrs(node, defs)}${strokeAttrs(node)} />`
+          ? (() => {
+              const imageBody = node.imageFill
+                ? imageFillMarkup(doc, node, defs, sourceW, sourceH, `<path d="${esc(closedData)}" fill-rule="${node.fillRule ?? 'nonzero'}" />`)
+                : null;
+              if (imageBody) {
+                return `<g transform="${transform}">${imageBody}<path d="${esc(closedData)}" fill="none"${strokeAttrs(node)} /></g>`;
+              }
+              return `<path d="${esc(closedData)}" transform="${transform}" fill-rule="${node.fillRule ?? 'nonzero'}" ${paintAttrs(node, defs)}${strokeAttrs(node)} />`;
+            })()
           : '';
         const open = openData
           ? `<path d="${esc(openData)}" transform="${transform}" fill="none"${strokeAttrs(node)} />`
           : '';
         return `${filled}${open}${head}`;
+      }
+      const imageBody = node.imageFill
+        ? imageFillMarkup(doc, node, defs, sourceW, sourceH, `<path d="${esc(node.pathData)}" fill-rule="${node.fillRule ?? 'nonzero'}" />`)
+        : null;
+      if (imageBody) {
+        return `<g transform="${transform}">${imageBody}<path d="${esc(node.pathData)}" fill="none"${strokeAttrs(node)} /></g>${head}`;
       }
       return `<path d="${esc(node.pathData)}" transform="${transform}" fill-rule="${node.fillRule ?? 'nonzero'}" ${paintAttrs(node, defs)}${strokeAttrs(node)} />${head}`;
     }
@@ -196,6 +251,16 @@ function emitNode(
       const dataUrl = asset ? getAssetDataUrl(asset.id) : null;
       if (!dataUrl) {
         return `<rect ${rectAttrs(x, y, r.w, r.h, node.cornerRadius)} fill="#F1EFE9" stroke="#221C00" stroke-opacity="0.22" />`;
+      }
+      const crop = imageCropOf(node);
+      const full = isFullImageCrop(crop);
+      if (!full) {
+        defs.seq += 1;
+        const clipId = `groma-image-crop-${defs.seq}`;
+        defs.items.push(`<clipPath id="${clipId}"><rect ${rectAttrs(x, y, r.w, r.h, node.cornerRadius)} /></clipPath>`);
+        const drawW = r.w / crop.w;
+        const drawH = r.h / crop.h;
+        return `<g clip-path="url(#${clipId})"${opacity}><image x="${n(x - crop.x * drawW)}" y="${n(y - crop.y * drawH)}" width="${n(drawW)}" height="${n(drawH)}" href="${esc(dataUrl)}" preserveAspectRatio="none" /></g>`;
       }
       const imageTag = `<image x="${n(x)}" y="${n(y)}" width="${n(r.w)}" height="${n(r.h)}" href="${esc(dataUrl)}" preserveAspectRatio="none"${opacity} />`;
       if (node.cornerRadius > 0) {
@@ -212,15 +277,18 @@ function emitNode(
       const lineHeight = fs * (node.lineHeight ?? 1.3);
       const family = node.fontFamily ?? 'Segoe UI, Microsoft YaHei UI, sans-serif';
       const italic = node.italic ? ' font-style="italic"' : '';
+      const spacing = node.letterSpacing !== undefined && node.letterSpacing !== 0 ? ` letter-spacing="${n(node.letterSpacing)}"` : '';
       const anchor = node.align === 'center' ? 'middle' : node.align === 'right' ? 'end' : 'start';
       const textX = node.align === 'center' ? x + r.w / 2 : node.align === 'right' ? x + r.w : x;
+      const step = lineHeight + (node.paragraphSpacing ?? 0);
       const spans = lines
         .map((line, index) => {
-          const dy = index === 0 ? 0 : lineHeight;
-          return `<tspan x="${n(textX)}"${index === 0 ? '' : ` dy="${n(dy)}"`}>${esc(line)}</tspan>\n`;
+          const display = node.listStyle === 'bullet' ? `•  ${line}` : node.listStyle === 'number' ? `${index + 1}.  ${line}` : line;
+          const dy = index === 0 ? 0 : step;
+          return `<tspan x="${n(textX)}"${index === 0 ? '' : ` dy="${n(dy)}"`}>${esc(display)}</tspan>\n`;
         })
         .join('');
-      return `<text x="${n(textX)}" y="${n(y)}" font-family="${esc(family)}" font-size="${n(fs)}" font-weight="${n(node.fontWeight ?? 500)}"${italic} text-anchor="${anchor}" ${paintAttrs(node, defs)} dominant-baseline="text-before-edge">${spans}</text>`;
+      return `<text x="${n(textX)}" y="${n(y)}" font-family="${esc(family)}" font-size="${n(fs)}" font-weight="${n(node.fontWeight ?? 500)}"${italic}${spacing} text-anchor="${anchor}" ${paintAttrs(node, defs)} dominant-baseline="text-before-edge">${spans}</text>`;
     }
 
     const childSvg = emitChildren(doc, node, originX, originY, clipIndex, defs, hideChrome);

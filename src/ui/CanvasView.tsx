@@ -39,7 +39,8 @@ import { editor, getState, useEditor } from '../state/editor';
 import { setPenAnchorSelection } from '../state/pen-selection';
 import { setCursor } from '../state/cursor';
 import { subscribeImages } from '../io/images';
-import type { Guide, Rect, SceneNode } from '../core/types';
+import type { Guide, ImageCrop, Rect, SceneNode } from '../core/types';
+import { imageCropOf, MIN_IMAGE_CROP } from '../core/image';
 
 type Handle = 'tl' | 'tr' | 'bl' | 'br';
 
@@ -71,6 +72,15 @@ interface ResizeDrag {
   abs: { x: number; y: number; w: number; h: number };
   parentAbs: { x: number; y: number };
   snapTargets: Rect[];
+}
+
+interface CropDrag {
+  pointerId: number;
+  id: string;
+  handle: Handle | 'move';
+  abs: { x: number; y: number; w: number; h: number };
+  startWorld: { x: number; y: number };
+  crop: ImageCrop;
 }
 
 interface DrawDrag {
@@ -168,6 +178,7 @@ export function CanvasView() {
   const panRef = useRef<PanDrag | null>(null);
   const moveRef = useRef<MoveDrag | null>(null);
   const resizeRef = useRef<ResizeDrag | null>(null);
+  const cropRef = useRef<CropDrag | null>(null);
   const drawRef = useRef<DrawDrag | null>(null);
   const penRef = useRef<PenSession | null>(null);
   const penHandleRef = useRef<PenHandleDrag | null>(null);
@@ -385,6 +396,7 @@ export function CanvasView() {
       dprRef.current = dpr;
       lastStatsRef.current = drawEditor(ctx, doc, page, viewport, { w: viewSize.w, h: viewSize.h, dpr }, selectedIds, {
         interactive: interacting,
+        cropPreviewId: s.cropId,
       });
     };
     // 拖动/缩放时一次事件可能触发多次状态更新，合并到下一帧只画一次。
@@ -392,7 +404,7 @@ export function CanvasView() {
     return () => {
       if (raf) window.cancelAnimationFrame(raf);
     };
-  }, [doc, page, viewport, selectedIds, viewSize.w, viewSize.h, interacting, assetTick]);
+  }, [doc, page, viewport, selectedIds, viewSize.w, viewSize.h, interacting, assetTick, s.cropId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -480,6 +492,22 @@ export function CanvasView() {
           return;
         }
       }
+      const cropState = getState();
+      if (e.key === 'Escape' && cropState.cropId) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        editor.exitImageCrop();
+        return;
+      }
+      if (e.key === 'Enter' && !cropState.cropId && cropState.selectedIds.length === 1) {
+        const node = cropState.doc.nodes[cropState.selectedIds[0]];
+        if (node?.type === 'image' && !node.locked) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          editor.enterImageCrop(node.id);
+          return;
+        }
+      }
       if (e.key === 'Escape' && penAnchorIndexRef.current !== null && !penEditRef.current) {
         penAnchorIndexRef.current = null;
         setPenAnchorIndex(null);
@@ -551,6 +579,70 @@ export function CanvasView() {
       if (Math.abs(sx - cx) <= 7 && Math.abs(sy - cy) <= 7) return name;
     }
     return null;
+  }
+
+  function cropHitAt(current: ReturnType<typeof getState>, worldX: number, worldY: number): Handle | 'move' | null {
+    if (!current.cropId) return null;
+    const node = current.doc.nodes[current.cropId];
+    if (!node || node.type !== 'image' || node.locked) return null;
+    const r = absoluteRect(current.doc, node.id);
+    if (worldX < r.x || worldY < r.y || worldX > r.x + r.w || worldY > r.y + r.h) return null;
+    const crop = imageCropOf(node);
+    const v = current.viewport;
+    const sx = worldX * v.scale + v.x;
+    const sy = worldY * v.scale + v.y;
+    const left = (r.x + crop.x * r.w) * v.scale + v.x;
+    const top = (r.y + crop.y * r.h) * v.scale + v.y;
+    const right = (r.x + (crop.x + crop.w) * r.w) * v.scale + v.x;
+    const bottom = (r.y + (crop.y + crop.h) * r.h) * v.scale + v.y;
+    const corners: Array<[Handle, number, number]> = [
+      ['tl', left, top],
+      ['tr', right, top],
+      ['bl', left, bottom],
+      ['br', right, bottom],
+    ];
+    for (const [name, cx, cy] of corners) {
+      if (Math.abs(sx - cx) <= 9 && Math.abs(sy - cy) <= 9) return name;
+    }
+    return 'move';
+  }
+
+  function cropNext(drag: CropDrag, worldX: number, worldY: number): ImageCrop {
+    const node = getState().doc.nodes[drag.id];
+    const w = Math.max(1, node?.w ?? drag.abs.w);
+    const h = Math.max(1, node?.h ?? drag.abs.h);
+    const px = (worldX - drag.abs.x) / w;
+    const py = (worldY - drag.abs.y) / h;
+    const start = drag.crop;
+    const right = start.x + start.w;
+    const bottom = start.y + start.h;
+    if (drag.handle === 'move') {
+      const x = Math.min(1 - start.w, Math.max(0, start.x + (worldX - drag.startWorld.x) / w));
+      const y = Math.min(1 - start.h, Math.max(0, start.y + (worldY - drag.startWorld.y) / h));
+      return { x, y, w: start.w, h: start.h };
+    }
+    let x = start.x;
+    let y = start.y;
+    let cw = start.w;
+    let ch = start.h;
+    if (drag.handle.includes('l')) {
+      x = Math.min(right - MIN_IMAGE_CROP, Math.max(0, px));
+      cw = right - x;
+    } else {
+      cw = Math.min(1 - start.x, Math.max(MIN_IMAGE_CROP, px - start.x));
+    }
+    if (drag.handle.includes('t')) {
+      y = Math.min(bottom - MIN_IMAGE_CROP, Math.max(0, py));
+      ch = bottom - y;
+    } else {
+      ch = Math.min(1 - start.y, Math.max(MIN_IMAGE_CROP, py - start.y));
+    }
+    return { x, y, w: cw, h: ch };
+  }
+
+  function cropRound(crop: ImageCrop): ImageCrop {
+    const round = (v: number) => Math.round(v * 10000) / 10000;
+    return { x: round(crop.x), y: round(crop.y), w: round(crop.w), h: round(crop.h) };
   }
 
   function bumpPen() {
@@ -888,6 +980,28 @@ export function CanvasView() {
 
     if (e.button !== 0) return;
 
+    if (current.tool === 'move' && current.cropId) {
+      const cropHit = cropHitAt(current, world.x, world.y);
+      if (cropHit) {
+        const node = current.doc.nodes[current.cropId];
+        if (!node) return;
+        e.preventDefault();
+        cropRef.current = {
+          pointerId: e.pointerId,
+          id: node.id,
+          handle: cropHit,
+          abs: absoluteRect(current.doc, node.id),
+          startWorld: { x: world.x, y: world.y },
+          crop: imageCropOf(node),
+        };
+        setHoverGuideIndex(null);
+        editor.beginTransaction(node.id);
+        setInteracting(true);
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+    }
+
     if (current.tool === 'pen' && !penRef.current) {
       const editNode = selectedPenPath(current);
       if (editNode) {
@@ -1065,6 +1179,13 @@ export function CanvasView() {
 
   function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
     const current = getState();
+    const cropDrag = cropRef.current;
+    if (cropDrag && cropDrag.pointerId === e.pointerId) {
+      const p = contentPoint(e);
+      const world = screenToWorld(current.viewport, p.x, p.y);
+      editor.updateSilent(cropDrag.id, { imageCrop: cropRound(cropNext(cropDrag, world.x, world.y)) });
+      return;
+    }
     const edit = penEditRef.current;
     if (edit && edit.pointerId === e.pointerId) {
       const p = contentPoint(e);
@@ -1294,6 +1415,15 @@ export function CanvasView() {
   }
 
   function finish(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (cropRef.current?.pointerId === e.pointerId) {
+      cropRef.current = null;
+      editor.endTransaction();
+      setInteracting(false);
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      return;
+    }
     if (penEditRef.current?.pointerId === e.pointerId) {
       penEditRef.current = null;
       editor.endTransaction();
@@ -1475,6 +1605,11 @@ export function CanvasView() {
   }
 
   function cancel(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (cropRef.current) {
+      cropRef.current = null;
+      editor.cancelTransaction();
+      setInteracting(false);
+    }
     if (penEditRef.current) {
       penEditRef.current = null;
       editor.cancelTransaction();
@@ -1536,6 +1671,10 @@ export function CanvasView() {
     const hit = hitTestDeep(current.doc, statePage, world.x, world.y);
     if (!hit) return;
     editor.select(hit.id);
+    if (hit.type === 'image' && getState().tool === 'move') {
+      editor.enterImageCrop(hit.id);
+      return;
+    }
     if (hit.type === 'text') {
       window.setTimeout(() => {
         const el = document.getElementById('text-editor') as HTMLTextAreaElement | null;
@@ -1556,7 +1695,7 @@ export function CanvasView() {
         ? 'ew-resize'
         : 'ns-resize'
       : null;
-  const cursor = hand ? 'grab' : s.tool === 'move' ? guideCursor ?? 'default' : 'crosshair';
+  const cursor = s.cropId ? 'move' : hand ? 'grab' : s.tool === 'move' ? guideCursor ?? 'default' : 'crosshair';
   const selectedType = selectedIds.length === 1 ? doc.nodes[selectedIds[0]]?.type : null;
   const selectionCount = selectedIds.length;
   const selectedPenNode =
@@ -1567,6 +1706,9 @@ export function CanvasView() {
           return node?.type === 'path' && count > 0 ? node : null;
         })()
       : null;
+  const cropNode = s.cropId ? doc.nodes[s.cropId] : null;
+  const activeCrop = cropNode?.type === 'image' ? imageCropOf(cropNode) : null;
+  const cropAbs = cropNode ? absoluteRect(doc, cropNode.id) : null;
   const guideLabel = (guide: Guide | GuideDraft) =>
     `${guide.axis === 'x' ? 'X' : 'Y'} ${Math.round(guide.position)}`;
 
@@ -1655,6 +1797,57 @@ export function CanvasView() {
           />
         );
       })}
+      {activeCrop && cropAbs && (() => {
+        const left = cropAbs.x * viewport.scale + viewport.x;
+        const top = cropAbs.y * viewport.scale + viewport.y;
+        const imageW = cropAbs.w * viewport.scale;
+        const imageH = cropAbs.h * viewport.scale;
+        const x = (cropAbs.x + activeCrop.x * cropAbs.w) * viewport.scale + viewport.x;
+        const y = (cropAbs.y + activeCrop.y * cropAbs.h) * viewport.scale + viewport.y;
+        const w = Math.max(1, activeCrop.w * cropAbs.w * viewport.scale);
+        const h = Math.max(1, activeCrop.h * cropAbs.h * viewport.scale);
+        const overlayW = Math.max(0, viewSize.w - RULER);
+        const overlayH = Math.max(0, viewSize.h - RULER);
+        const handles: Array<[number, number]> = [
+          [x, y],
+          [x + w, y],
+          [x, y + h],
+          [x + w, y + h],
+        ];
+        return (
+          <svg
+            className="crop-overlay"
+            aria-hidden="true"
+            width={overlayW}
+            height={overlayH}
+            viewBox={`0 0 ${overlayW} ${overlayH}`}
+            style={{ left: RULER, top: RULER }}
+          >
+            <rect x={left} y={top} width={Math.max(0, imageW)} height={Math.max(0, y - top)} fill="rgba(20,16,8,0.54)" />
+            <rect x={left} y={y + h} width={Math.max(0, imageW)} height={Math.max(0, top + imageH - y - h)} fill="rgba(20,16,8,0.54)" />
+            <rect x={left} y={y} width={Math.max(0, x - left)} height={h} fill="rgba(20,16,8,0.54)" />
+            <rect x={x + w} y={y} width={Math.max(0, left + imageW - x - w)} height={h} fill="rgba(20,16,8,0.54)" />
+            <rect x={x} y={y} width={w} height={h} fill="none" stroke="#F2B70A" strokeWidth={1.5} />
+            <line x1={x + w / 3} y1={y} x2={x + w / 3} y2={y + h} stroke="rgba(255,255,255,0.34)" strokeWidth={0.75} />
+            <line x1={x + (w * 2) / 3} y1={y} x2={x + (w * 2) / 3} y2={y + h} stroke="rgba(255,255,255,0.34)" strokeWidth={0.75} />
+            <line x1={x} y1={y + h / 3} x2={x + w} y2={y + h / 3} stroke="rgba(255,255,255,0.34)" strokeWidth={0.75} />
+            <line x1={x} y1={y + (h * 2) / 3} x2={x + w} y2={y + (h * 2) / 3} stroke="rgba(255,255,255,0.34)" strokeWidth={0.75} />
+            {handles.map(([hx, hy], index) => (
+              <rect
+                key={`crop-handle-${index}`}
+                x={hx - 4}
+                y={hy - 4}
+                width={8}
+                height={8}
+                rx={1}
+                fill="#FFFDF7"
+                stroke="#F2B70A"
+                strokeWidth={1.25}
+              />
+            ))}
+          </svg>
+        );
+      })()}
       {(penRef.current || selectedPenNode) && (() => {
         const session = penRef.current;
         const localContours: PenContour[] = session
@@ -1804,7 +1997,9 @@ export function CanvasView() {
         />
       )}
       <div className="canvas-tip">
-        {hand
+        {activeCrop
+          ? '拖动裁剪框移动 · 拖四角改可见区域 · Esc 退出'
+          : hand
           ? '拖动平移 · 滚轮缩放'
           : s.tool === 'pen'
             ? penRef.current

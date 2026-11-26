@@ -196,12 +196,58 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
     if (typeof node.text !== 'string') issues.push(`文本节点 ${key} 缺少 text`);
     if (!isFiniteNumber(node.fontSize) || node.fontSize <= 0) issues.push(`文本节点 ${key} 的 fontSize 非法`);
     if (!isFiniteNumber(node.fontWeight)) issues.push(`文本节点 ${key} 的 fontWeight 非法`);
+    if (node.letterSpacing !== undefined && (!isFiniteNumber(node.letterSpacing) || Math.abs(node.letterSpacing) > 200)) {
+      issues.push(`文本节点 ${key} 的 letterSpacing 非法`);
+    }
+    if (node.paragraphSpacing !== undefined && (!isFiniteNumber(node.paragraphSpacing) || node.paragraphSpacing < 0 || node.paragraphSpacing > 200)) {
+      issues.push(`文本节点 ${key} 的 paragraphSpacing 非法`);
+    }
+    if (node.listStyle !== undefined && node.listStyle !== 'none' && node.listStyle !== 'bullet' && node.listStyle !== 'number') {
+      issues.push(`文本节点 ${key} 的 listStyle 非法`);
+    }
+  }
+  if (node.imageFill !== undefined) {
+    const fill = node.imageFill;
+    if (node.type !== 'rect' && node.type !== 'ellipse' && node.type !== 'path') {
+      issues.push(`节点 ${key} 的 imageFill 只允许形状节点`);
+    } else if (
+      !isRecord(fill) ||
+      typeof fill.assetId !== 'string' ||
+      !assets[fill.assetId] ||
+      (fill.mode !== 'fill' && fill.mode !== 'fit') ||
+      !isFiniteNumber(fill.focusX) ||
+      !isFiniteNumber(fill.focusY) ||
+      fill.focusX < 0 ||
+      fill.focusX > 1 ||
+      fill.focusY < 0 ||
+      fill.focusY > 1 ||
+      !isFiniteNumber(fill.opacity) ||
+      fill.opacity < 0 ||
+      fill.opacity > 1
+    ) {
+      issues.push(`节点 ${key} 的 imageFill 非法`);
+    }
   }
   if (node.type === 'image') {
     if (typeof node.assetId !== 'string' || node.assetId.length === 0) {
       issues.push(`图片节点 ${key} 缺少 assetId`);
     } else if (!assets[node.assetId]) {
       issues.push(`图片节点 ${key} 引用了不存在的资产 ${node.assetId}`);
+    }
+    if (node.imageCrop !== undefined) {
+      const crop = node.imageCrop;
+      if (
+        !isRecord(crop) ||
+        ![crop.x, crop.y, crop.w, crop.h].every(isFiniteNumber) ||
+        crop.x < 0 ||
+        crop.y < 0 ||
+        crop.w <= 0 ||
+        crop.h <= 0 ||
+        crop.x + crop.w > 1.0001 ||
+        crop.y + crop.h > 1.0001
+      ) {
+        issues.push(`图片节点 ${key} 的 imageCrop 非法`);
+      }
     }
   }
 }

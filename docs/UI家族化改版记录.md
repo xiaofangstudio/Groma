@@ -1,6 +1,6 @@
 # Groma UI 家族化改版记录
 
-初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-25 20:26（C04.3 Divide / Flatten / Outline stroke / 七动作矢量菜单 / 166 tests）
+初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-26（形状图片填充 / 段落列表 / 187 tests）
 
 ## 这一轮为什么不是「美化」
 
@@ -797,6 +797,88 @@ C04 最小布尔只有并集/差集，差集还听点选顺序，与 Figma 的�
 - Divide 最多 8 个输入；跨父级不隐式提升。
 - 描边带在圆角处可能产生零面积退化环，`nodeFromWorldRings` 已按面积 `<=1e-6` 过滤；圆角描边验收为 2 轮廓。
 
+## C06.2 形状图片填充 + C07.2 段落列表（2026-11-26）
+
+**为什么做**
+
+C06 只把图片当独立节点，Figma 的图片填充（把图铺进矩形/椭圆/路径）还缺；C07 的文本也只有整段单行样式，多行排版没有段距和列表。两件事都在现有检查器分组里解决，不新开面板。
+
+**改法**
+
+- 形状图片填充独立成 `imageFill`，只挂在 `rect / ellipse / path`：`mode` 铺满/适应、`focusX/Y` 0–1、`opacity`；存在时优先于纯色/渐变。矩形按圆角裁、椭圆按椭圆裁、钢笔按 `fillRule` 的 Path2D 裁，再画图。
+- 右栏“填充”区末尾加“图片填充”小块：资产缩略图选择器（4 列）、导入图片、换图/移除、铺满/适应分段、焦点 X/Y；说明“图片填充优先于纯色/渐变；移除后恢复”。`Ctrl+V` 在图层面板只选中一个形状时直接填成图片，未选形状仍插入图片节点。
+- SVG 用 `groma-image-fill-N` clipPath + image，路径把两者放进同一个 translate/scale 组，不用 pattern；导出的圆角、焦点、cover 尺寸与画布一致。
+- 文本加 `paragraphSpacing` 和 `listStyle`：`\n` 分行，`•  ` / `${i+1}.  ` 前缀，行距 = 字号×行高 + 段距。右栏加 `• 列表 / 1. 列表 / 段距` 三格，和行高/斜体共用现有 field-grid；字体输入挂 `groma-font-options` datalist，常用族可选也可手输。
+
+**验证**
+
+- 真实 EXE 图片填充：`粘贴图片验收.groma`“黄色卡片”320×200 填 480×320 图，铺满 + 焦点 X25，保存后 `scene.json` 落 `imageFill`；导出 `黄色卡片.svg` 197,695 B，`<image x="0" y="-6.67" width="320" height="213.33">`，截图 `shots/image-fill-max.png`、`image-fill-export.png`。
+- 真实 EXE 段落列表：`文本列表验收.groma` 单文本图层、文本框 1160×420、3 行 56px 标题，点 `• 列表`、段距 14，`scene.json` 落 `listStyle=bullet` / `paragraphSpacing=14`；导出 `标题-3.svg` 三个 tspan 带 `•  `，后两行 `dy="92.4"`，截图 `shots/text-list-max.png`。
+- `npm test`：28 文件 / 187 条通过；`tsc --noEmit`、Vite build、EXE 打包通过；CSS 62.07 kB、JS 509.67 kB；EXE 3,306 KB，2026-11-26 13:53:00。
+
+**边界**
+
+- 图片填充只支持单张图、矩形/椭圆/路径；帧/区块/文本/图片节点不能填，不能叠多层图像填充或图案平铺。图片节点裁剪焦点与孤儿资产清理仍未做。
+- 列表是整段逐行前缀，不换行、不做悬挂缩进/多级列表；段距是固定像素，不随文本样式继承。富文本片段与路径文字仍未做。
+
+## C06.1 图片裁剪 + 粘贴图片 + 字距（2026-11-26）
+
+**为什么做**
+
+图片节点能导能换，但用户看不到裁剪入口；Figma 的图片双击进裁剪、框外压暗、拖角收放是高频操作。粘贴图片则是最短的一条“从别处拿图进画板”路径。字距是文本检查器里最明显缺的一个字段，先把基础样式补齐。
+
+**改法**
+
+- 图片裁剪不改节点位置/尺寸，只存 `imageCrop`：归一化 `{x,y,w,h}`，缺省全图，旧工程兼容；裁剪模式是瞬态 `cropId`，不写 scene、不持久化。
+- 画布进入裁剪时该图片临时画整张源图；覆盖层用 SVG：框外四块暗色矩形压暗、1.5px 品牌色边框、三分网格、四个 8px 角点。框内拖动平移，四角收放，最小 2%；拖动只产生一条撤销。
+- 右栏图片检查器新增“可见 59% × 39%”与四按钮：裁剪图片/退出裁剪、恢复原比例、替换图片、重置裁剪；裁剪中按钮点亮（`.wide-action.is-on`），底部提示改为裁剪操作。视觉继续用现有方角中性底与单一品牌黄。
+- `Ctrl+V` 粘贴位图：焦点不在输入框时拦截，写入工程 `assets` 后按自然尺寸插到当前画板并选中；Toast 复用顶栏位置，显示文件名与尺寸。未保存工程给“先保存工程”提示，不产生幽灵资产。
+- 字距：`letterSpacing` 单位 px，可负值；字号/字重/字距改为三列 `.field-grid.is-triple`，不新增一行。Canvas `ctx.letterSpacing` 与 SVG `letter-spacing` 同步。
+
+**验证**
+
+- 真实 EXE 裁剪：`image-crop.groma` 高原湖泊图片 1200×600，拖角 72%×55%→59%×39%，`Ctrl+Z` 回退，Esc 退出；截图 `shots/image-crop-max.png` 框外压暗可见左右恢复内容、右栏“退出裁剪”点亮。PNG 1,474,137 B、SVG 4,855,607 B，Chromium 渲染与 PNG 一致。
+- 真实 EXE 粘贴：`粘贴图片验收.groma`，合成 480×320 PNG 粘贴事件，Toast“已粘贴图片 · paste-test.png · 480 × 320”，图层树出现图片行并选中；`scene.json` 与 `assets/paste-test.png` 147,882 B 落盘；截图 `shots/paste-image-max.png`。
+- 真实 EXE 字距：`文字样式验收.groma` 标题 0→6，画布拉开、保存重开仍为 6、导出 SVG 含 `letter-spacing="6"`；截图 `shots/text-spacing-max.png`、`text-spacing-reload.png`、`text-spacing-export.png`。
+- `npm run gate` PASS：27 文件 / 179 条，MCP selftest 通过；CSS 60.35 kB、JS 501.17 kB；EXE 3,301 KB，2026-11-26 13:29:18。
+
+**边界**
+
+- 裁剪命中仍按节点矩形，旋转图片的覆盖层未旋转；不做裁剪焦点/焦点定位。图片填充到形状、孤儿资产清理仍未做。
+- 粘贴只接受 `image/*` 位图，SVG 文本仍在顶栏导入；工程必须先保存。
+- 字距只作用于整段文本，不做富文本片段与 kerning 覆盖。
+
+## C05.2 Alpha/亮度蒙版 + 多画板可见区（2026-11-26）
+
+**为什么做**
+
+几何蒙版只能硬裁轮廓，海报淡出、羽化窗口、图片透明度遮罩还做不了；同时真实工程常把几百个画板平铺在同一页，根循环每一帧仍要遍历全部画板。这一刀补 Alpha/亮度两种像素蒙版，并让中心画布只进入视口附近候选。
+
+**改法**
+
+- `SceneNode.maskType?: 'geometry' | 'alpha' | 'luminance'`，缺省 `geometry`，旧工程无需迁移；schema 校验枚举。
+- `mask.ts` 新增 `maskTypeOf`；资格、唯一蒙版、上方兄弟、命中与几何路径继续复用。
+- Canvas 新增 `drawPixelMaskedChildren`：把蒙版上方兄弟画进离屏层，蒙版单独画进 mask canvas；Alpha 用 `destination-in` 直接保留蒙版像素，亮度先用 `0.2126R + 0.7152G + 0.0722B` 乘原 alpha 转成 alpha，再合成；离屏层继承当前变换/全局 alpha，贴回主画布时恢复 identity，不破坏画板/区块裁剪。离屏 canvas 按容器深度复用，同一帧不反复分配整窗画布，嵌套蒙版各用独立槽位。
+- SVG `emitChildren`：几何继续 `clipPath`；Alpha/亮度输出 `<mask maskUnits="userSpaceOnUse" mask-type="alpha|luminance" style="mask-type:...">` 与 `<g mask="url(#...)">`，导出坐标与画板原点一致。
+- 右栏蒙版段新增“轮廓 / Alpha / 亮度”三段切换，默认轮廓；启用蒙版时写 `maskType: node.maskType ?? 'geometry'`，切换各一条 patch 历史。
+- 根级画板空间索引：512 场景像素网格，单画板最多 64 格，超大画板进 oversized，查询最多 4096 格，视口外扩 48 屏幕像素；少于 24 个根节点或根上有蒙版退回原遍历。索引按 `x/y/w/h/rotation/visible/isMask` 轻量签名失效；旋转画板用四角 AABB，避免只登记原框。
+- 索引只决定“进入哪些根画板”，画板内部仍由 `drawNode`/`intersects` 做逐层视口裁剪；z-order 保持原 `children` 顺序。
+
+**验证**
+
+- `mask.test.ts` 5 条：资格/唯一、点包含、命中过滤、几何 SVG clipPath、Alpha/亮度 SVG mask；`schema.test.ts` 16 条含非法 `maskType`；`render.bench.test.ts` 2 条含 600 画板索引与“移动画板后节点数下降 9”的失效断言。完整 `npm run gate` PASS：26 文件 / 173 条，MCP selftest 通过；CSS 60.20 kB、JS 493.41 kB；EXE 3,301 KB，2026-11-26 07:34:37。
+- Alpha 真实窗口：`alpha-demo.groma`，椭圆蒙版从实心蓝渐变到透明，右栏 Alpha 点亮，提示“裁切上方 2 个图层”；截图 `shots/alpha-final-max.png`。导出 PNG `桌面 1440@1x-3.png` 1,440×900 / 50,442 B、SVG 1,421 B，`mask-type="alpha"`；Chromium 渲染 `shots/alpha-svg-render.png` 与 PNG 画面一致。
+- 亮度真实窗口：`luma-demo.groma`，蒙版黑→白渐变，蓝色图层左淡右实，右栏亮度点亮；截图 `shots/luma-final-max.png`。PNG 113,855 B、SVG 1,372 B，`mask-type="luminance"`；`shots/luma-svg-render.png` 与 PNG 一致。
+- 600 画板真实窗口：`Perf-600.groma` 600 画板 / 5,400 图层 / scene 1.6 MB；100% 缩放下只出现视口附近 4 块画板（画板 285/286/315/316），左栏 600 个画板行可滚动，页面检查器“600 个画板”；截图 `shots/many-frames-600.png`。基准 30 次平均 0.14ms，只画 57/5,399 节点。
+- 自检：Alpha 首版截图全白，定位为验收 fixture 把渐变端点写成 0–1 归一化，而 Groma 的线性渐变用图层本地绝对坐标；改为 0→500 后 Alpha 与亮度都恢复，未改产品代码。
+
+**边界**
+
+- Alpha/亮度蒙版用整窗离屏 canvas，多个大蒙版会放大内存与合成成本；后续按可视包围盒裁小。
+- 命中仍只按几何轮廓，不读取 Alpha/亮度像素；点到淡出区域仍可能选中被裁图层。
+- 不做蒙版组、多个蒙版串联、羽化/扩展、跨父级提升；文本/图片不能直接作为蒙版。
+- 索引只作用于根级画板；非裁剪容器子图层大量越出自身边界时，候选仍用容器外接框。图层面板仍非虚拟滚动，600 个顶层行会全部建 DOM。
+
 ## C05 几何形状蒙版（2026-11-25）
 
 **为什么做**
@@ -821,8 +903,10 @@ C04 收口后，Figma 免费版还缺“把形状当蒙版裁掉上方图层”�
 
 **边界**
 
-- 只有几何蒙版：不读取蒙版填充的透明度，不做 Alpha/亮度蒙版、羽化、扩展、蒙版组或多个蒙版串联。
+- 本刀当时只有几何蒙版：不读取蒙版填充的透明度；Alpha/亮度、羽化、扩展、蒙版组与多个蒙版串联已在 C05.2 补了一部分（仍不做羽化/组）。
 - 文本/图片不能直接当蒙版；跨父级不提升。蒙版仍是普通图层，可移动/缩放/改圆角，但不参与布尔运算。
+
+
 
 
 

@@ -1,6 +1,6 @@
 # Groma × Figma 能力矩阵（执行版）
 
-> 更新：2026-11-25 ｜ 审计基线：`npm run gate` 26 个测试文件 / 173 tests 全绿；C03 已落地钢笔一期/锚点编辑/多轮廓复合路径/共享顶点（`vertexId` 最小内核）/当前轮廓序号与整条轮廓删除，C04 已落地多对象四布尔 Union/Subtract/Intersect/Exclude、同父级校验与 z-order 差集（底层减其余并集），并补齐 Divide / Flatten / Outline stroke；C05 已落地几何形状蒙版与 Alpha/亮度蒙版，多画板画布加入可见区空间索引；A02 全链路、A05 浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 与本页批量导出、导出弹窗单焦点重排、页缩略图不抢帧补丁、PNG/JPG/WebP 图片节点与工程资产层（含替换图片）、文本对齐/行高/斜体、C02 直线/箭头/多边形/星形与 Slice 区域导出均已落地；左栏 footer 背景固定与内容裁剪、页面“画板”计数只数 Frame、顶栏宽屏四布尔+“更多 ▾”与窄屏“矢量 ▾”七项菜单、验收截图统一最大化；外部软件工程级导入只留入口，选区回传待补；EXE 3,301 KB，2026-11-25 21:56:18
+> 更新：2026-11-26 ｜ 审计基线：`npm run gate` 28 个测试文件 / 187 tests 全绿；C03 已落地钢笔一期/锚点编辑/多轮廓复合路径/共享顶点（`vertexId` 最小内核）/当前轮廓序号与整条轮廓删除，C04 已落地多对象四布尔 Union/Subtract/Intersect/Exclude、同父级校验与 z-order 差集（底层减其余并集），并补齐 Divide / Flatten / Outline stroke；C05 已落地几何形状蒙版与 Alpha/亮度蒙版，多画板画布加入可见区空间索引；C06 已落地图片区域裁剪、剪贴板粘贴与形状图片填充（铺满/适应 + 焦点），C07 已落地字距、段落间距、项目符号/数字列表与字体族建议；A02 全链路、A05 浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 与本页批量导出、导出弹窗单焦点重排、页缩略图不抢帧补丁、PNG/JPG/WebP 图片节点与工程资产层（含替换图片）、文本对齐/行高/斜体、C02 直线/箭头/多边形/星形与 Slice 区域导出均已落地；左栏 footer 背景固定与内容裁剪、页面“画板”计数只数 Frame、顶栏宽屏四布尔+“更多 ▾”与窄屏“矢量 ▾”七项菜单、验收截图统一最大化；外部软件工程级导入只留入口，选区回传待补；EXE 3,306 KB，2026-11-26 13:53:00
 > 功能底本：[`Figma功能蒸馏参考.md`](./Figma功能蒸馏参考.md)（能力清单，不是完成清单）
 > 权威顺序：`README.md` 第零章 → 本文 → 其他规划文档
 > 一句话：**Figma 免费版是功能基线，其他工具的长处是融合层；矩阵只认双击 EXE 能跑的结果。**
@@ -56,7 +56,7 @@
 | A04 | Frame | 设备预设、自定义、无限嵌套、裁剪、圆角、滚动方向 | ◐ 设备预设/新建、移动缩放、裁剪；嵌套与滚动未验 | 嵌套 Frame、滚动设置 | P1 |
 | A05 | 版本历史 | 自动/手动快照、命名、回滚、对比、分支合并 | ◐ 2026-11-23 已落地快照列表、页面预览、手动存版本、二次确认回滚、恢复前自动留底；无命名版本、逐帧 diff、分支合并 | 命名版本、diff、分支 | P1 |
 | A06 | 保存/恢复 | 自动保存、崩溃恢复、保存失败可见 | ◐ 自动保存/三态已落地；崩溃恢复 UI 未完整验收 | 异常退出恢复入口 | P1 |
-| A07 | 导入 | `.sketch`、SVG 粘贴、图片、文本 | ◐ 2026-11-24 已落地 SVG 文件导入（含内嵌图片）与 PNG/JPG/WebP 位图导入；位图写入工程 `assets`，场景只存引用，可作为图片节点选中/变换/替换/保存/重开/导出；未做 `.sketch`、剪贴板粘贴、拖放导入 | `.sketch`、SVG/图片粘贴、拖放 | P2 |
+| A07 | 导入 | `.sketch`、SVG 粘贴、图片、文本 | ◐ 2026-11-24 已落地 SVG 文件导入（含内嵌图片）与 PNG/JPG/WebP 位图导入；位图写入工程 `assets`，场景只存引用，可作为图片节点选中/变换/替换/保存/重开/导出；2026-11-26 增加剪贴板图片粘贴（带文件启动工程后直接 `Ctrl+V`）；未做 `.sketch`、SVG/文本粘贴、拖放导入 | `.sketch`、SVG/文本粘贴、拖放 | P2 |
 | A08 | 导出 | PNG/JPG/SVG/PDF、倍率、批量、Copy as CSS | ◐ 2026-11-24 已落地 PNG/JPG/SVG、1×/2×（SVG 无倍率）、当前选中图层（任意形状/钢笔/文本/图片/组合）/ 画板 / 区块 / 切片 / 本页全部、批量逐个写文件；JPG 强制白底，Section 仍按边界裁剪；导出弹窗重排为单焦点分段控件，去掉“导出后打开 Strata/Vexa”；选区外部处理与回传未接，无 PDF、无 ZIP、无保存目录选择、无 JPG 质量滑杆 | PDF、Copy as、保存对话框、SVG 完整保真、选区回传 | P1 |
 
 ### 1.2 画布与导航
@@ -81,8 +81,8 @@
 | C03 | 钢笔/矢量网络 | 角点/平滑点、拖手柄、增删锚点、分支路径 | ◐ 2026-11-25 钢笔一期+锚点编辑+多轮廓+共享顶点最小内核：`P` 钢笔工具、角点与对称手柄、首锚点闭合、双击/`Enter` 收尾、锚点叠层；拖锚点/手柄（`Alt` 单边）、线段插点、`Delete` 删点、整段拖动单步撤销；同一节点内 `Alt`+点空白追加多条轮廓，`Alt`+点锚点从同一坐标起分支；`PathAnchor.vertexId` 重复即共享顶点，拖动/删点/切角同步所有同 id 锚点，右栏显示“共享顶点 N 个”；右栏显示“当前轮廓 第 N / M 条”，`Ctrl/Cmd+Delete` 删除整条轮廓（只剩 1 条时拒绝）；闭合轮廓才填，开放轮廓只描边；双击切角点/平滑点；仍缺完整 Vector Network 图边/区域填充 | 完整 Vector Network、区域填充、图边遍历 | P1 |
 | C04 | 布尔运算 | Union/Subtract/Intersect/Exclude、Flatten、Outline stroke | ● 2026-11-25 多对象四布尔 + Divide/Flatten/Outline：至少两个对象、同一父级、不得有子图层；支持矩形（圆角近似）、椭圆（48 点）、多边形/星形、闭合钢笔轮廓；贝塞尔固定 12 段 flatten；四布尔支持 3+ 对象，按父级 `children` 取 z-order（数组前为底层），差集为“底层减其余对象并集”；Divide 对 2–8 个对象枚举全部非空子集，逐块抠出互不重叠区域，复制最高层对象外观；Flatten 把所有闭合轮廓合成一个 `fillRule:nonzero` 的 `path`，复制底层外观；Outline 把每条实线描边按宽度转填色带（miter/bevel/round 近似），源描边清空；结果均单步撤销/重做，保存重开与 PNG/SVG 导出通过 | 更精确的 join/虚线转轮廓 | P1 |
 | C05 | 蒙版 | 形状蒙版、图层裁剪、Alpha/亮度蒙版 | ◐ 2026-11-25 已落地几何形状蒙版，并补 Alpha/亮度蒙版：同容器单蒙版、裁切上方兄弟，画布/SVG/PNG/JPG/命中一致；右栏“轮廓 / Alpha / 亮度”切换，Canvas 离屏合成，SVG 输出 `mask-type`；蒙版组、图像蒙版、羽化/扩展未做 | 蒙版组、图像蒙版、羽化 | P1 |
-| C06 | 图片 | 图片填充/资产、粘贴、裁剪焦点 | ◐ 2026-11-24 图片节点与工程资产层：PNG/JPG/WebP 导入、画布渲染、拖移缩放、圆角/透明度、PNG/JPG/SVG 导出、保存重开、检查器替换图片（保留位置尺寸）；区域裁剪未做 | 图片填充、裁剪焦点、粘贴图片、孤儿清理 | P1 |
-| C07 | 文本 | 富文本、字体、行高、字距、段落、列表、路径文字、链接 | ◐ 基础文本、字号、字重、左/中/右对齐、行高、斜体已落地；字体族、字距、富文本、段落、列表、路径文字未做 | 文本样式与富文本 | P1 |
+| C06 | 图片 | 图片填充/资产、粘贴、裁剪焦点 | ◐ 2026-11-26 图片区域裁剪、粘贴图片与形状图片填充：PNG/JPG/WebP 导入、检查器替换图片、归一化 `imageCrop` 四角裁剪（框外压暗、拖动单步撤销、Esc/Enter、恢复/重置）；`Ctrl+V` 把剪贴板位图写入 `assets`，选中单一形状时直接填成图片；矩形/椭圆/钢笔路径支持 `imageFill`（铺满 cover / 适应 fit、焦点 X/Y、透明度），Canvas/SVG/PNG 一致；未做图片节点裁剪焦点、孤儿资产清理 | 图片节点裁剪焦点、孤儿清理 | P1 |
+| C07 | 文本 | 富文本、字体、行高、字距、段落、列表、路径文字、链接 | ◐ 2026-11-26 基础文本、字号、字重、左/中/右对齐、行高、斜体、字距、段落间距、项目符号/数字列表已落地；字体族输入带常用字体 datalist，Canvas/SVG 同步列表前缀与段距；富文本片段样式、路径文字、链接、系统字体全量枚举未做 | 富文本、路径文字、链接 | P1 |
 | C08 | Slice 切图 | 独立导出区域 | ● 2026-11-24 独立 `slice` 节点 + `K` 工具，画布青色虚线框与“切片 N”标签；导出按切片矩形裁切真实画面，PNG/JPG 位图、SVG 以切片尺寸建 `viewBox` + clipPath，切片自身不进导出；当前只支持单个矩形，不支持批量切片网格 | 切片嵌套与批量扩展 | P2 |
 
 ### 1.4 外观
@@ -398,10 +398,52 @@
 - UI：右栏“蒙版”分组提供“用作蒙版 / 取消蒙版”，禁用时显示具体原因；启用后出现“轮廓 / Alpha / 亮度”三段切换，默认轮廓，并显示“裁切上方 N 个图层”。图层行显示“蒙版”小标签。入口只在候选形状出现，不铺常驻面板。
 - 历史：复用 `editor.applyPatch`，启用/取消/切换类型各一条 patch 历史；`Ctrl+Z` 一步恢复。
 - 多画板可见区：根级画板加空间索引（`FRAME_INDEX_CELL=512`，单画板最多 64 格，超大画板进 oversized 列表，查询最多 4096 格，视口外扩 48 屏幕像素）。每帧只取视口覆盖网格里的画板候选，再按原 z-order 绘制；索引按画板位置/尺寸/旋转/显隐生成轻量签名，拖动或缩放后自动失效重建。少于 24 个根节点、或根上有蒙版时退回原来的完整 `drawChildren`。600 画板 × 8 子节点、1420×880 视口：30 次平均 **0.14ms**，只绘制 **57 / 5,399** 个节点。
-- 测试：`src/core/mask.test.ts` 5 条（资格与唯一性、矩形/椭圆点包含、命中过滤、几何 SVG clipPath、Alpha/亮度 SVG mask）；`schema.test.ts` 16 条（含非法 `maskType`、蒙版父级/类型、惰性/重复蒙版可保存）；`render.bench.test.ts` 2 条（5000 节点 + 600 画板索引/失效）。完整 `npm run gate` PASS，26 文件 / 173 条通过，MCP selftest 通过；CSS `index-BCHVFPQA.css` 60.20 kB、JS `index-q3BrKtEN.js` 492.94 kB；EXE 3,301 KB，2026-11-25 21:56:18。
-- 真实 EXE：`mask-demo.groma` 用椭圆几何蒙版裁切“蓝色大图层 + 蒙版内文字”两层；最大化截图见 `shots/mask-final-max.png`，1440 见 `mask-1440.png`，1040 见 `mask-1040.png`。启用后图层显示“蒙版”，右栏提示“裁切上方 2 个图层”；`Ctrl+Z` 恢复未蒙版，重做恢复蒙版。Alpha/亮度在真实窗口的验收仍待补。
-- 真实导出：画板 SVG `桌面 1440.svg` 1,713 B，含 `groma-mask-1` clipPath 与 `fill-rule="evenodd"`，浏览器渲染为椭圆窗口；PNG `桌面 1440@1x-2.png` 1,440×900，画面与 SVG 一致（修复了首版 PNG 导出未走蒙版路径的问题）。
+- 测试：`src/core/mask.test.ts` 5 条（资格与唯一性、矩形/椭圆点包含、命中过滤、几何 SVG clipPath、Alpha/亮度 SVG mask）；`schema.test.ts` 16 条（含非法 `maskType`、蒙版父级/类型、惰性/重复蒙版可保存）；`render.bench.test.ts` 2 条（5000 节点 + 600 画板索引/失效）。完整 `npm run gate` PASS，26 文件 / 173 条通过，MCP selftest 通过；CSS `index-BCHVFPQA.css` 60.20 kB、JS `index-kmMm65-c.js` 493.41 kB；EXE 3,301 KB，2026-11-26 07:34:37。
+- 真实 EXE：`mask-demo.groma` 用椭圆几何蒙版裁切“蓝色大图层 + 蒙版内文字”；最大化截图见 `shots/mask-final-max.png`，1440 见 `mask-1440.png`，1040 见 `mask-1040.png`。启用后图层显示“蒙版”，右栏提示“裁切上方 2 个图层”；`Ctrl+Z` 恢复未蒙版，重做恢复蒙版。`alpha-demo.groma` 把同一蒙版改为 Alpha，右栏“Alpha”点亮，椭圆内蓝色大图层从实心渐变到透明、蒙版内文字同步淡出，截图 `shots/alpha-final-max.png`；PNG `桌面 1440@1x-3.png` 50,442 B，SVG `桌面 1440-3.svg` 1,421 B（`mask-type="alpha"`），Chromium 渲染与 PNG 一致。`luma-demo.groma` 把蒙版改成黑→白渐变并切到“亮度”，蓝色图层左淡右实，截图 `shots/luma-final-max.png`；PNG 113,855 B，SVG 1,372 B（`mask-type="luminance"`），Chromium 渲染与 PNG 一致。
+- 真实导出：几何画板 SVG `桌面 1440.svg` 1,713 B，含 `groma-mask-1` clipPath 与 `fill-rule="evenodd"`，浏览器渲染为椭圆窗口；PNG `桌面 1440@1x-2.png` 1,440×900，画面与 SVG 一致（修复了首版 PNG 导出未走蒙版路径的问题）。
 - 边界：不做蒙版组、多个蒙版串联、羽化/扩展、跨父级提升；文本/图片不能直接作为蒙版。复制图层可能带出第二个 `isMask`，渲染只取最上面一个可见蒙版，其余蒙版节点不绘制。Alpha/亮度使用整窗离屏 canvas，多个大蒙版会放大内存与合成成本，后续应按可视包围盒裁小。命中仍是几何。空间索引只作用于根级画板，非裁剪容器若子图层大量越界，仍以画板自身外接框参与候选，边界待补。
+
+### 3.15 C06.2 图片裁剪 + 剪贴板粘贴（2026-11-26 已落地）
+
+- 数据：`SceneNode.imageCrop?: { x, y, w, h }` 存归一化源图区域（0–1），缺省整张图，旧工程不带此字段直接按全图渲染。`src/core/image.ts` 提供 `FULL_IMAGE_CROP`、`MIN_IMAGE_CROP=0.02`、`normalizeImageCrop`（非法/NaN 回全图、越界收拢、最小 2%、round 6 位）、`imageCropOf`、`isFullImageCrop`、`imageSourceRect`、`cropPercent`。`schema` 校验四项有限、`x/y>=0`、`w/h>0`、`x+w<=1.0001`、`y+h<=1.0001`。
+- 画布：普通状态 `drawImage(image, sx, sy, sw, sh, x, y, w, h)` 只画裁剪区域；裁剪模式由 `DrawOptions.cropPreviewId` 让该图片临时按 `FULL_IMAGE_CROP` 画整张源图，框外压暗、框内保持原色。`CanvasView` 把 `cropId` 作为渲染依赖。裁剪只改源图可见区域，不移动/缩放节点；替换图片会重置裁剪。
+- SVG：不用嵌套 `<svg viewBox>`（Chromium 会退化成整张源图）；当前方案是 `<clipPath>` 裁节点矩形（含圆角）+ 图层绘制放大后的整图（`drawW=node.w/crop.w`、`drawH=node.h/crop.h`、`x=nodeX-crop.x*drawW`、`y=nodeY-crop.y*drawH`）+ `clip-path`。真实 Chromium 渲染与 PNG 一致。
+- 交互：双击图片或选中后 `Enter` 进入裁剪；Esc 退出。四角 8px 命中收放，框内拖动平移，最小保留 2%；拖动用 transaction 合成一条撤销；`Ctrl+Z` 回退。检查器提供“裁剪图片/退出裁剪”“恢复原比例”“替换图片”“重置裁剪”，并显示“可见 59% × 39%”。
+- 粘贴：全局 `paste` 读 `clipboardData` 里的第一个 `image/*` 文件，非输入框焦点时拦截；调用 `importImageAsset(projectId, file)` 写进 `<工程>/assets`，再用 `editor.insertImage(asset)` 插到当前画板并选中；Toast 显示文件名与原始尺寸。工程未保存、剪贴板不是位图时给出明确提示，不静默失败。
+- 测试：新增 `src/core/image.test.ts` 4 条（缺省全图、越界收拢、源像素矩形、节点裁剪归一化）；`schema.test.ts` 17 条（含 `imageCrop` 越界与文本 `letterSpacing`）；`svg.test.ts` 11 条（含裁剪 `clipPath`/放大 image 与 `letter-spacing`）。完整 `npm run gate` PASS，27 文件 / 179 条，MCP selftest 通过；CSS `index-DpScZLvd.css` 60.35 kB、JS `index-GnaOjMl4.js` 501.17 kB；EXE 3,301 KB，2026-11-26 13:29:18。
+- 真实 EXE 裁剪：`image-crop.groma` 源图 `assets/lake.jpg` 1881×1254 / 3,640,836 B，节点 1200×600，初值 `{x:.2,y:.18,w:.72,h:.55}`；拖右下角到 59%×39%，`Ctrl+Z` 从 46%×22% 回 59%×39%，Esc 后按钮恢复“裁剪图片”、覆盖层消失。持久化 `{x:.2,y:.18,w:.5915,h:.3864}`；截图 `shots/image-crop-max.png` 可见框外整图压暗（左侧帐篷、右侧小船），框内裁剪区。PNG `桌面 1440@1x-2.png` 1,474,137 B，SVG `桌面 1440-2.svg` 4,855,607 B，均无框外内容，Chromium 渲染与 PNG 一致。
+- 真实 EXE 粘贴：`粘贴图片验收.groma` 用页面内 canvas 生成 480×320 PNG 并合成 `ClipboardEvent` 投递，Toast“已粘贴图片 · paste-test.png · 480 × 320”，图层树出现图片行并选中；保存后 `scene.json` 增加 `asset-mwx451tc-1` 与 `image-mwx451td-1`（480×290 起点、480×320），`assets/paste-test.png` 147,882 B。截图 `shots/paste-image-max.png`。
+- 边界：图片裁剪命中仍按节点矩形，不按像素；旋转图片的裁剪覆盖层未按旋转处理（渲染本身也未处理旋转）；未做图片填充到形状、裁剪焦点/焦点定位、孤儿资产清理。1040 紧凑窗口的 `适应画板` 仍会停在 7%，是既有适配问题，与本轮功能无关。
+
+### 3.16 C07.1 文本字距（2026-11-26 已落地）
+
+- 数据：`SceneNode.letterSpacing?: number`，单位 px，正负均可，`schema` 限制 `|value| <= 200`；0 时存 `undefined`，旧工程兼容。
+- 渲染：Canvas 在绘制文本前设置 `ctx.letterSpacing = "${n}px"`，画布与 PNG/JPG 同步；SVG 文本节点输出 `letter-spacing="n"`，Chromium 与画布一致。
+- UI：右栏字号/字重/字距改为三列 `.field-grid.is-triple`；字距字段可直接填、Enter 提交、Esc 还原；拖动文本仍按节点矩形命中。
+- 真实 EXE：`文字样式验收.groma` 选中“标题”，字距从 0 改成 6，画布标题字距拉开；保存后 `scene.json` 的 `text-1.letterSpacing` 落盘为 6，重开仍显示 6；导出 `exports/标题.svg` 含 `font-size="96" font-weight="700" letter-spacing="6"`。截图 `shots/text-spacing-max.png`、`text-spacing-reload.png`、`text-spacing-export.png`。
+- 测试：`svg.test.ts` 居中文本用例断言 `letter-spacing="2"`；`schema.test.ts` 允许 -2、拒绝 201。全量 gate 27 文件 / 179 条通过。
+- 边界：只做整段字距，不做富文本片段字距、字偶距（kerning）覆盖、路径文字与段落/列表。
+
+### 3.17 C06.3 形状图片填充 + 粘贴成填充（2026-11-26 已落地）
+
+- 数据：`SceneNode.imageFill?: { assetId, mode: 'fill' | 'fit', focusX, focusY, opacity }`，只允许 `rect / ellipse / path`；存在时优先于 `fills`，缺省/非法时退回纯色或渐变。`schema` 校验资产存在、模式枚举、焦点 0–1、透明度 0–1；旧工程无此字段直接按原填充渲染。
+- 计算：`src/core/imageFill.ts` 的 `imageFillBox` 按原图/形状比例算目标框；`fill` 取 cover（`max` 缩放，按焦点保留溢出区域），`fit` 取 contain（`min` 缩放，按焦点留白）。焦点越界收拢到 0–1，零尺寸图不产生 NaN。
+- 画布：矩形按圆角裁剪、椭圆按椭圆裁剪、钢笔按 `Path2D` 与 `fillRule` 裁剪，再 `drawImage`；图片未加载时先 `requestImageAsset` 并回退原填充。路径的图片在局部源坐标绘制，再套用节点自身的平移/缩放。
+- SVG：矩形/椭圆输出 `<clipPath>` + `<image>`；钢笔路径把 clipPath 与 image 放进同一 `translate/scale` 组；均使用 `groma-image-fill-N`、`preserveAspectRatio="none"`，不依赖 `<pattern>`。描边仍单独输出，图片填充不吞描边。
+- UI：右栏填充区新增“图片填充”块：选择/换图、移除、工程资产缩略图选择器、导入图片、铺满/适应切换、焦点 X/Y。选中单一形状时 `Ctrl+V` 直接写入 `imageFill`，Toast 改为“已填充形状”；未选中形状仍按图片节点插入。图片填充块明确写“图片填充优先于纯色/渐变；移除后恢复”。
+- 测试：新增 `src/core/imageFill.test.ts` 4 条（cover 焦点、contain、竖框、零尺寸/越界）；`schema.test.ts` 19 条含图片填充资产/模式；`svg.test.ts` 13 条含图片填充 clipPath/image。全量 `npm test`：28 文件 / 187 条通过；`tsc --noEmit` 与 Vite build 通过。
+- 真实 EXE：`粘贴图片验收.groma` 的“黄色卡片”320×200，资产 `paste-test.png` 480×320；选择后点“选择图片”，应用铺满并把焦点 X 改到 25，画布即时显示图片，右栏“铺满”点亮、焦点 25/50；保存后 `scene.json` 落 `imageFill: {assetId:"asset-mwx451tc-1", mode:"fill", focusX:0.25, focusY:0.5, opacity:1}`；截图 `shots/image-fill-max.png`。
+- 真实 SVG：导出“黄色卡片.svg”197,695 B，含 `groma-image-fill-1` clipPath 与 `<image x="0" y="-6.67" width="320" height="213.33" ...>`，焦点/cover 计算与 PNG 一致；导出 Toast 截图 `shots/image-fill-export.png`。
+- 边界：帧/区块/文本/图片节点不能设 `imageFill`；每节点只支持一张图片填充，不做多层图片叠加、图案平铺、图片蒙版；图片节点自身的裁剪焦点仍未做。
+
+### 3.18 C07.2 段落间距 + 列表 + 字体族建议（2026-11-26 已落地）
+
+- 数据：`SceneNode.paragraphSpacing?: number`（px，0–200）与 `listStyle?: 'none' | 'bullet' | 'number'`；`schema` 校验范围与枚举，旧工程缺省无段距/无列表。
+- 渲染：文本按 `\n` 分行；`bullet` 在每行前加 `•  `，`number` 加 `${i+1}.  `；行距 = `fontSize*lineHeight + paragraphSpacing`。Canvas 与 SVG 共用同一规则，SVG 每个后续 `tspan` 的 `dy` 是累计行距。字距、字体、字重、斜体与填充仍照常叠加。
+- UI：文本区新增一行三段：`• 列表`、`1. 列表`、`段距`；列表按钮可相互切换、再点关闭。字体族输入框挂 `groma-font-options` datalist，提供 Segoe UI / 微软雅黑 / 苹方 / 思源黑体 / 霞鹜文楷 / Arial / Georgia / Consolas 等常用族，仍允许手输任意 CSS family。
+- 测试：`svg.test.ts` 新增数字列表用例，断言 `1.  第一行`、`2.  第二行` 与 `dy="33.4"`；`schema.test.ts` 接受 12px 段距与 number，拒绝非法 `listStyle`。全量 28 文件 / 187 条通过。
+- 真实 EXE：`文本列表验收.groma` 标题 3 行、56px、行高 1.4，文本框 1160×420；点“• 列表”、段距 14，画布显示 3 条项目符号且行间拉开；保存后 `scene.json` 的 `listStyle="bullet"`、`paragraphSpacing=14`；截图 `shots/text-list-max.png`。导出 `exports/标题-3.svg` 为 1160×420，三个 `tspan` 分别为 `•  设计稿交付`、`•  组件状态补齐`、`•  导出一致性检查`，后两行 `dy="92.4"`（78.4 行高 + 14 段距）。
+- 边界：列表是整个文本块的逐行前缀，不做悬挂缩进、多级列表、列表内富文本；居中/右对齐时标记随整行对齐；不换行自动折行，超长行仍靠文本框裁剪。富文本片段样式与路径文字未做。
 
 ---
 
@@ -468,4 +510,7 @@ Groma 的对手不是“功能更多的 Figma 皮肤”，而是**能把 Figma �
 - 最后才做原型、Dev Mode、协作与融合。
 
 **A02 全链路（缩略图/跨页搜索/页级视口持久化）、A05 版本浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 批量导出与导出弹窗单焦点重排、图片节点/工程资产层已落地；外部软件工程级导入只留入口，下一刀补选区回传、图片填充/裁剪与 A07 粘贴/拖放，随后再碰组件/变量，仍不从面板数量开始。**
+
+
+
 

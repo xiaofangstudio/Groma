@@ -1,3 +1,5 @@
+import type { ImageFill } from './imageFill';
+
 export type NodeType = 'page' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'path' | 'image' | 'group' | 'slice';
 
 export type GuideAxis = 'x' | 'y';
@@ -80,6 +82,14 @@ export interface ImageAsset {
   bytes: number;
 }
 
+/** 图片裁剪使用的归一化源图区域。 */
+export interface ImageCrop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface SceneNode {
   id: string;
   type: NodeType;
@@ -120,13 +130,23 @@ export interface SceneNode {
   strokes?: Stroke[];
   /** 图片节点引用的资产 id；资产表在 GromaDoc.assets。 */
   assetId?: string;
+  /** 图片裁剪：归一化 0–1 源图区域；缺省整张图。 */
+  imageCrop?: ImageCrop;
+  /** 形状上的图片填充；存在时优先于 fills 绘制。 */
+  imageFill?: ImageFill;
   text?: string;
   fontSize?: number;
   fontWeight?: number;
   fontFamily?: string;
+  /** 字距，单位 px；正负均可，缺省 0。 */
+  letterSpacing?: number;
   italic?: boolean;
   align?: 'left' | 'center' | 'right';
   lineHeight?: number;
+  /** 段落之间的额外间距，单位 px。 */
+  paragraphSpacing?: number;
+  /** 简单列表：项目符号 / 阿拉伯数字；缺省无。 */
+  listStyle?: 'none' | 'bullet' | 'number';
 }
 
 export interface Page {

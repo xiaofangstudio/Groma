@@ -3,3 +3,6 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 *.log
+
+# ---- 验收用的浏览器用户数据 ----
+.acceptance/chrome-profile/

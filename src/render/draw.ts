@@ -3,6 +3,8 @@ import { absoluteRect, selectionBounds } from '../core/geometry';
 import { nodePathContours, penPathData } from '../core/pen';
 import { nodeWorldRings } from '../core/boolean';
 import { maskIndexForParent, maskTypeOf } from '../core/mask';
+import { imageCropOf, imageSourceRect, FULL_IMAGE_CROP } from '../core/image';
+import { imageFillBox } from '../core/imageFill';
 import type { Viewport } from '../core/viewport';
 import { getAssetImage, requestImageAsset } from '../io/images';
 
@@ -24,6 +26,8 @@ export interface WorldBounds {
 export interface DrawOptions {
   /** 拖动/缩放时降级细节，避免阴影和网格抢走交互帧。 */
   interactive?: boolean;
+  /** 裁剪模式下该图片按整张源图绘制，方便看到框外待恢复内容。 */
+  cropPreviewId?: string | null;
 }
 
 export interface DrawStats {
@@ -44,6 +48,7 @@ interface InternalDrawOptions {
   hideChrome?: boolean;
   /** 导出/缩略图重绘时跳过切片虚线等纯编辑标记。 */
   exporting?: boolean;
+  cropPreviewId?: string | null;
 }
 
 function newStats(): DrawStats {
@@ -267,6 +272,69 @@ function paintStroke(ctx: CanvasRenderingContext2D, node: SceneNode): boolean {
   return true;
 }
 
+/** 矩形/椭圆上的图片填充；返回 true 表示已画，调用方不要再铺纯色/渐变。 */
+function drawShapeImageFill(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  node: SceneNode,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  v: Viewport,
+): boolean {
+  const fill = node.imageFill;
+  if (!fill) return false;
+  const asset = doc.assets?.[fill.assetId];
+  if (!asset) return false;
+  const image = getAssetImage(asset.id);
+  if (!image) {
+    requestImageAsset(asset);
+    return false;
+  }
+  const box = imageFillBox(asset.w, asset.h, node.w, node.h, fill);
+  ctx.save();
+  ctx.globalAlpha *= fill.opacity;
+  if (node.type === 'ellipse') {
+    ctx.beginPath();
+    ctx.ellipse(x + w / 2, y + h / 2, Math.max(w / 2, 0.5), Math.max(h / 2, 0.5), 0, 0, Math.PI * 2);
+  } else {
+    roundRect(ctx, x, y, w, h, node.cornerRadius * v.scale);
+  }
+  ctx.clip();
+  ctx.drawImage(image, x + box.x * v.scale, y + box.y * v.scale, box.w * v.scale, box.h * v.scale);
+  ctx.restore();
+  return true;
+}
+
+/** 路径局部坐标里的图片填充；path 已在同一变换下构造。 */
+function drawPathImageFill(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  node: SceneNode,
+  sourceW: number,
+  sourceH: number,
+  path: Path2D,
+  fillRule: CanvasFillRule,
+): boolean {
+  const fill = node.imageFill;
+  if (!fill) return false;
+  const asset = doc.assets?.[fill.assetId];
+  if (!asset) return false;
+  const image = getAssetImage(asset.id);
+  if (!image) {
+    requestImageAsset(asset);
+    return false;
+  }
+  const box = imageFillBox(asset.w, asset.h, sourceW, sourceH, fill);
+  ctx.save();
+  ctx.globalAlpha *= fill.opacity;
+  ctx.clip(path, fillRule);
+  ctx.drawImage(image, box.x, box.y, box.w, box.h);
+  ctx.restore();
+  return true;
+}
+
 function drawSection(
   ctx: CanvasRenderingContext2D,
   doc: GromaDoc,
@@ -373,6 +441,7 @@ function drawFrame(
 
 function drawShape(
   ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
   node: SceneNode,
   ox: number,
   oy: number,
@@ -387,10 +456,12 @@ function drawShape(
   ctx.globalAlpha = node.opacity;
 
   if (node.type === 'ellipse') {
-    makeFill(ctx, node, x, y, w, h);
-    ctx.beginPath();
-    ctx.ellipse(x + w / 2, y + h / 2, Math.max(w / 2, 0.5), Math.max(h / 2, 0.5), 0, 0, Math.PI * 2);
-    ctx.fill();
+    if (!drawShapeImageFill(ctx, doc, node, x, y, w, h, v)) {
+      makeFill(ctx, node, x, y, w, h);
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, y + h / 2, Math.max(w / 2, 0.5), Math.max(h / 2, 0.5), 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
   } else if (node.type === 'text') {
     ctx.translate(x, y);
     ctx.scale(v.scale, v.scale);
@@ -399,6 +470,7 @@ function drawShape(
     const weight = node.fontWeight ?? 500;
     const family = node.fontFamily ?? '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif';
     ctx.font = `${node.italic ? 'italic ' : ''}${weight} ${fs}px ${family}`;
+    (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${node.letterSpacing ?? 0}px`;
     ctx.textBaseline = 'top';
     ctx.textAlign = node.align === 'center' ? 'center' : node.align === 'right' ? 'right' : 'left';
     ctx.beginPath();
@@ -406,23 +478,28 @@ function drawShape(
     ctx.clip();
     const lines = (node.text ?? '文本').split('\n');
     const lineHeight = fs * (node.lineHeight ?? 1.3);
+    const step = lineHeight + (node.paragraphSpacing ?? 0);
     lines.forEach((line, i) => {
+      const display = node.listStyle === 'bullet' ? `•  ${line}` : node.listStyle === 'number' ? `${i + 1}.  ${line}` : line;
       const lineX = node.align === 'center' ? node.w / 2 : node.align === 'right' ? node.w : 0;
-      ctx.fillText(line, lineX, i * lineHeight);
+      ctx.fillText(display, lineX, i * step);
     });
     if (paintStroke(ctx, node)) {
       ctx.strokeText(node.text ?? '文本', node.align === 'center' ? node.w / 2 : node.align === 'right' ? node.w : 0, 0);
     }
   } else {
-    makeFill(ctx, node, x, y, w, h);
-    roundRect(ctx, x, y, w, h, node.cornerRadius * v.scale);
-    ctx.fill();
+    if (!drawShapeImageFill(ctx, doc, node, x, y, w, h, v)) {
+      makeFill(ctx, node, x, y, w, h);
+      roundRect(ctx, x, y, w, h, node.cornerRadius * v.scale);
+      ctx.fill();
+    }
   }
   ctx.restore();
 }
 
 function drawVectorPath(
   ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
   node: SceneNode,
   ox: number,
   oy: number,
@@ -445,9 +522,12 @@ function drawVectorPath(
     const closed = contours.filter((contour) => contour.closed && contour.anchors.length >= 3);
     const closedData = closed.map((contour) => penPathData(contour.anchors, true)).filter(Boolean).join(' ');
     const allData = contours.map((contour) => penPathData(contour.anchors, contour.closed)).filter(Boolean).join(' ');
-    if (node.fills.length > 0 && closedData) {
-      makeFill(ctx, node, 0, 0, sourceW, sourceH);
-      ctx.fill(new Path2D(closedData), node.fillRule ?? 'nonzero');
+    if ((node.fills.length > 0 || node.imageFill) && closedData) {
+      const path = new Path2D(closedData);
+      if (!drawPathImageFill(ctx, doc, node, sourceW, sourceH, path, node.fillRule ?? 'nonzero')) {
+        makeFill(ctx, node, 0, 0, sourceW, sourceH);
+        ctx.fill(path, node.fillRule ?? 'nonzero');
+      }
     }
     if (paintStroke(ctx, node) && allData) {
       ctx.stroke(new Path2D(allData));
@@ -462,9 +542,11 @@ function drawVectorPath(
     return;
   }
   const path = new Path2D(node.pathData);
-  if (node.fills.length > 0) {
-    makeFill(ctx, node, 0, 0, sourceW, sourceH);
-    ctx.fill(path, node.fillRule ?? 'nonzero');
+  if (node.fills.length > 0 || node.imageFill) {
+    if (!drawPathImageFill(ctx, doc, node, sourceW, sourceH, path, node.fillRule ?? 'nonzero')) {
+      makeFill(ctx, node, 0, 0, sourceW, sourceH);
+      ctx.fill(path, node.fillRule ?? 'nonzero');
+    }
   }
   if (paintStroke(ctx, node)) {
     ctx.stroke(path);
@@ -485,6 +567,7 @@ function drawImageNode(
   ox: number,
   oy: number,
   v: Viewport,
+  cropPreviewId?: string | null,
 ) {
   const x = (ox + node.x) * v.scale + v.x;
   const y = (oy + node.y) * v.scale + v.y;
@@ -500,7 +583,9 @@ function drawImageNode(
     ctx.clip();
   }
   if (image && image.naturalWidth > 0 && image.naturalHeight > 0) {
-    ctx.drawImage(image, x, y, w, h);
+    const crop = cropPreviewId === node.id ? FULL_IMAGE_CROP : imageCropOf(node);
+    const source = imageSourceRect(image.naturalWidth, image.naturalHeight, crop);
+    ctx.drawImage(image, source.x, source.y, source.w, source.h, x, y, w, h);
   } else {
     ctx.fillStyle = '#F1EFE9';
     ctx.fillRect(x, y, w, h);
@@ -617,6 +702,49 @@ function luminanceToAlpha(ctx: CanvasRenderingContext2D, width: number, height: 
 }
 
 /** Alpha/亮度蒙版需要先把上方兄弟画进离屏层，再按蒙版像素做 destination-in。 */
+interface MaskCanvasSlot {
+  layer: HTMLCanvasElement;
+  mask: HTMLCanvasElement;
+  width: number;
+  height: number;
+}
+
+/**
+ * 离屏层按容器深度复用：同一帧不会为每个蒙版反复分配整张窗口大小的 canvas；
+ * 嵌套蒙版由更深一层拿到独立槽位，不会互相覆盖。
+ */
+const maskCanvasSlots = new Map<number, MaskCanvasSlot>();
+
+function maskCanvasSlot(depth: number, width: number, height: number): MaskCanvasSlot {
+  let slot = maskCanvasSlots.get(depth);
+  if (!slot) {
+    slot = {
+      layer: document.createElement('canvas'),
+      mask: document.createElement('canvas'),
+      width: 0,
+      height: 0,
+    };
+    maskCanvasSlots.set(depth, slot);
+  }
+  if (slot.width !== width || slot.height !== height) {
+    slot.layer.width = width;
+    slot.layer.height = height;
+    slot.mask.width = width;
+    slot.mask.height = height;
+    slot.width = width;
+    slot.height = height;
+  }
+  for (const canvas of [slot.layer, slot.mask]) {
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('离屏蒙版 canvas 不可用');
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = 'source-over';
+    context.clearRect(0, 0, width, height);
+  }
+  return slot;
+}
+
 function drawPixelMaskedChildren(
   ctx: CanvasRenderingContext2D,
   doc: GromaDoc,
@@ -636,12 +764,16 @@ function drawPixelMaskedChildren(
   const height = source.height;
   if (width <= 0 || height <= 0) return false;
 
-  const layer = document.createElement('canvas');
-  layer.width = width;
-  layer.height = height;
-  const layerCtx = layer.getContext('2d');
-  if (!layerCtx) return false;
+  let slot: MaskCanvasSlot;
+  try {
+    slot = maskCanvasSlot(depth, width, height);
+  } catch {
+    return false;
+  }
   const transform = ctx.getTransform();
+  const layerCtx = slot.layer.getContext('2d', { willReadFrequently: true });
+  const maskCtx = slot.mask.getContext('2d', { willReadFrequently: true });
+  if (!layerCtx || !maskCtx) return false;
   layerCtx.setTransform(transform);
   layerCtx.globalAlpha = ctx.globalAlpha;
   for (let index = startIndex; index < parent.children.length; index += 1) {
@@ -650,24 +782,19 @@ function drawPixelMaskedChildren(
     drawNode(layerCtx, doc, child, ox, oy, v, opts, bounds, depth);
   }
 
-  const maskCanvas = document.createElement('canvas');
-  maskCanvas.width = width;
-  maskCanvas.height = height;
-  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: maskTypeOf(mask) === 'luminance' });
-  if (!maskCtx) return false;
   maskCtx.setTransform(transform);
   drawNode(maskCtx, doc, mask, ox, oy, v, opts, bounds, depth);
   if (maskTypeOf(mask) === 'luminance') luminanceToAlpha(maskCtx, width, height);
 
   layerCtx.setTransform(1, 0, 0, 1, 0, 0);
   layerCtx.globalCompositeOperation = 'destination-in';
-  layerCtx.drawImage(maskCanvas, 0, 0);
+  layerCtx.drawImage(slot.mask, 0, 0);
 
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
-  ctx.drawImage(layer, 0, 0);
+  ctx.drawImage(slot.layer, 0, 0);
   ctx.restore();
   return true;
 }
@@ -744,11 +871,11 @@ function drawNode(
   } else if (node.type === 'slice') {
     drawSlice(ctx, node, ox, oy, v, opts);
   } else if (node.type === 'path') {
-    drawVectorPath(ctx, node, ox, oy, v);
+    drawVectorPath(ctx, doc, node, ox, oy, v);
   } else if (node.type === 'image') {
-    drawImageNode(ctx, doc, node, ox, oy, v);
+    drawImageNode(ctx, doc, node, ox, oy, v, opts.cropPreviewId);
   } else if (node.type === 'rect' || node.type === 'ellipse' || node.type === 'text') {
-    drawShape(ctx, node, ox, oy, v);
+    drawShape(ctx, doc, node, ox, oy, v);
   } else if (depth < (opts.maxDepth ?? Infinity)) {
     ctx.save();
     ctx.globalAlpha = node.opacity;
@@ -926,7 +1053,11 @@ export function drawEditor(
 ): DrawStats {
   const { w, h, dpr } = view;
   const stats = newStats();
-  const opts: InternalDrawOptions = { interactive: options?.interactive === true, stats };
+  const opts: InternalDrawOptions = {
+    interactive: options?.interactive === true,
+    cropPreviewId: options?.cropPreviewId ?? null,
+    stats,
+  };
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = page.background;
   ctx.fillRect(0, 0, w, h);
