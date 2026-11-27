@@ -394,6 +394,21 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[id].cornerRadius).toBe(12);
   });
 
+  it('四角独立圆角补丁与统一圆角可撤销', () => {
+    const id = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    editor.applyPatch(id, { cornerRadii: [20, 0, 40, 8], cornerRadius: 40 });
+    expect(getState().doc.nodes[id].cornerRadii).toEqual([20, 0, 40, 8]);
+
+    editor.applyPatch(id, { cornerRadius: 12, cornerRadii: undefined });
+    expect(getState().doc.nodes[id].cornerRadii).toBeUndefined();
+    expect(getState().doc.nodes[id].cornerRadius).toBe(12);
+
+    editor.undo();
+    expect(getState().doc.nodes[id].cornerRadii).toEqual([20, 0, 40, 8]);
+    editor.undo();
+    expect(getState().doc.nodes[id].cornerRadii).toBeUndefined();
+  });
+
   it('复制子树后可以整组撤销与重做', () => {
     const frame = editor.addNode({ type: 'frame', parentId: rootId(), x: 40, y: 60, w: 400, h: 300 });
     const child = editor.addNode({ type: 'rect', parentId: frame, x: 20, y: 20, w: 80, h: 60 });
@@ -834,6 +849,65 @@ describe('editor 命令与历史', () => {
     expect(getState().viewport).toEqual({ x: 12, y: 34, scale: 2 });
     editor.setPage(page2);
     expect(getState().viewport).toEqual({ x: 56, y: 78, scale: 1.5 });
+  });
+
+  it('约束在画板缩放时重排子节点，并一步撤销', () => {
+    const frameId = getState().doc.nodes[rootId()].children[0];
+    const child = editor.addNode({ type: 'rect', parentId: frameId, x: 100, y: 80, w: 400, h: 300 });
+    editor.applyPatch(child, { constraints: { horizontal: 'leftRight', vertical: 'topBottom' } });
+    editor.applyPatch(frameId, { w: 1940, h: 1100 });
+
+    expect(getState().doc.nodes[child]).toMatchObject({ x: 100, y: 80, w: 900, h: 500 });
+    editor.undo();
+    expect(getState().doc.nodes[child]).toMatchObject({ x: 100, y: 80, w: 400, h: 300 });
+    expect(getState().doc.nodes[frameId].w).toBe(1440);
+  });
+
+  it('画布拖拽事务把约束子节点一起纳入撤销', () => {
+    const frameId = getState().doc.nodes[rootId()].children[0];
+    const child = editor.addNode({ type: 'rect', parentId: frameId, x: 100, y: 80, w: 400, h: 300 });
+    editor.applyPatch(child, { constraints: { horizontal: 'scale', vertical: 'top' } });
+    editor.beginTransaction(frameId);
+    editor.updateSilent(frameId, { w: 2880, h: 900 });
+    editor.endTransaction();
+
+    expect(getState().doc.nodes[child]).toMatchObject({ x: 200, w: 800, h: 300 });
+    editor.undo();
+    expect(getState().doc.nodes[child]).toMatchObject({ x: 100, w: 400, h: 300 });
+    expect(getState().doc.nodes[frameId].w).toBe(1440);
+  });
+
+  it('命名样式可创建、套用、同步到全部绑定图层并撤销', () => {
+    const frameId = getState().doc.nodes[rootId()].children[0];
+    const source = editor.addNode({ type: 'rect', parentId: frameId, x: 0, y: 0, w: 100, h: 100 });
+    editor.applyPatch(source, {
+      fills: [
+        { type: 'solid', color: '#FF0000', opacity: 0.4 },
+        { type: 'solid', color: '#0000FF', opacity: 1 },
+      ],
+    });
+    const styleId = editor.createStyle('fill', source);
+    expect(styleId).toBeTruthy();
+    expect(getState().doc.styles?.[styleId!].kind).toBe('fill');
+    expect(getState().doc.nodes[source].styleRefs?.fill).toBe(styleId);
+
+    const target = editor.addNode({ type: 'rect', parentId: frameId, x: 120, y: 0, w: 100, h: 100 });
+    expect(editor.applyStyle(styleId!, target)).toBe(true);
+    expect(getState().doc.nodes[target].fills).toHaveLength(2);
+    expect(getState().doc.nodes[target].styleRefs?.fill).toBe(styleId);
+
+    editor.applyPatch(target, { fills: [{ type: 'solid', color: '#00FF00', opacity: 1 }] });
+    expect(getState().doc.nodes[target].styleRefs?.fill).toBe(styleId);
+    expect(editor.updateStyle(styleId!, target)).toBe(true);
+    expect(getState().doc.nodes[source].fills[0].color).toBe('#00FF00');
+    expect(getState().doc.nodes[target].fills[0].color).toBe('#00FF00');
+
+    editor.undo();
+    expect(getState().doc.nodes[source].fills[0].color).toBe('#FF0000');
+    editor.undo();
+    expect(getState().doc.nodes[target].styleRefs?.fill).toBe(styleId);
+    editor.undo();
+    expect(getState().doc.nodes[target].styleRefs).toBeUndefined();
   });
 
   it('loadDoc 恢复上次当前页与页级视口，非法页回退第一页', () => {

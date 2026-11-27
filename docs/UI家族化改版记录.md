@@ -1,6 +1,6 @@
 # Groma UI 家族化改版记录
 
-初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-26（百画板增量缩略图 / MCP 19 工具 / 193 tests）
+初版：2026-11-22 07:26（Asia/Shanghai）｜ 最近更新：2026-11-27（自动布局一期 + 右栏溢出修正 + 布局顺序，234 tests）
 
 ## 这一轮为什么不是「美化」
 
@@ -96,7 +96,7 @@ Groma 这一轮只做三件事：把首屏变成真正能开始工作的页面�
 
 - 三档窗口的自动像素扫描 `npm run overflow` 仍未实现；这轮是实拍 + CSS 规则检查，不能写成「自动扫描已通过」。
 - 60fps @ 5000 节点真实画布仍未量。
-- 布尔、矢量路径、组件/变体、Auto Layout、约束、手动参考线、间距数字胶囊等仍未做；多选 / 框选 / 成组、移动/缩放吸附已在 2026-11-22 的功能切片落地，不要因为字距和圆角变好就误判为其余功能已齐。
+- 布尔、矢量路径、约束、手动参考线、约束九宫、自动布局一期已陆续落地；组件/变体、Variables、原型、间距数字胶囊仍未做；多选 / 框选 / 成组、移动/缩放吸附已在 2026-11-22 的功能切片落地，不要因为字距和圆角变好就误判为其余功能已齐。
 - 欢迎页的工程缩略图还没做，当前用文件夹图标明确表示「工程」，不冒充预览图。
 
 ## 多选 / 框选 / 成组功能切片（2026-11-22 11:30）
@@ -836,8 +836,8 @@ C04 最小布尔只有并集/差集，差集还听点选顺序，与 Figma 的�
 **验证**
 
 - 200 画板 10%，拖一块松手：旧 EXE 重建 200 张、rAF p95 77.1ms；新 EXE 重建 1 张、p95 6.4ms。
-- 600 画板 7%，同一拖拽：旧 600 张、p95 114.4ms；新 1 张、p95 11.3ms。截图 `shots/perf-200-drag-after.png`、`shots/perf-600-drag-after.png`。
-- 600 画板冷启动后首次 `Shift+1`：600 张分帧补齐，2.6s 内完成，p50 12.2ms / p95 23.0ms / max 29.7ms，0 个 >32ms 长帧；截图 `shots/perf-600-fit-after.png`。
+- 600 画板 7%，同一拖拽：旧 600 张、p95 114.4ms；新 1 张、p95 11.3ms。
+- 600 画板冷启动后首次 `Shift+1`：600 张分帧补齐，2.6s 内完成，p50 12.2ms / p95 23.0ms / max 29.7ms，0 个 >32ms 长帧。
 - MCP：`npm run mcp:check` 通过，frames=8 / snapshots=7；另用 stdio 客户端实连列出 19 工具，调 `groma_create_frame_grid` 建 2×2、`groma_update_nodes` 改 1 个、`groma_read_node` 读回 x=12，全部成功。
 - 全量 29 文件 / 193 tests；CSS 62.60 kB、JS 518.90 kB；EXE 3,387,392 B，2026-11-26 23:14:27。
 
@@ -845,6 +845,136 @@ C04 最小布尔只有并集/差集，差集还听点选顺序，与 Figma 的�
 
 - 单块缩略图重画仍有 6–14ms，没搬 Worker；首次 600 图补齐期间约 43fps，不是 60fps。
 - MCP 仍不写分组/布尔/路径/图片，不做导出；所有写工具默认 dryRun。
+
+## P01.3 引擎第二刀 + K02.3 选中覆盖层（2026-11-27）
+
+**为什么做**
+
+上一轮已把“整批重建”拆成单块，但选中框仍与场景同层：点一下图层就要重画整场。20%–50% 的百画板场景虽已可见，但画板小图只到 20%，32% 仍在逐个画子节点。引擎是这轮优先级，MCP 不抢主线。
+
+**改法**
+
+- 主画布改为“场景层”，新增 `.canvas-selection` 选中覆盖层；`drawEditor` 支持 `selection:false`。空选中时覆盖层不挂合成。平移/缩放预览同步移动选中框。
+- `OVERVIEW_BITMAP_SCALE` 提到 0.5；可见根画板 >32 且 ≤50% 时整块贴小图，命中后补画边框与画板名；旋转/带效果画板仍走矢量。
+- 建图预算改为“每帧最多 6 张 + 12ms 截止”；超时进 `overviewPending`，CanvasView 下一帧续。
+- 缩略图缓存、子树引用比对、单块重建保留上一轮逻辑。
+
+**验证**
+
+- 200 冷启动 `Shift+1`：200 张补齐，p50 5.2ms / p95 8.0ms / max 11.4ms，0 长帧；截图 `shots/engine-200-fit.png`。
+- 600 冷启动 7%：600 张补齐，p50 11.1ms / p95 20.8ms / max 25.4ms，0 个 >32ms；截图 `shots/engine-600-fit-final.png`。
+- 600 拖一块：只重建 1 张，p95 7.7ms，0 长帧；200 拖一块 p95 3.7ms。
+- 600 从 7% 到 32%：建 50 张，p95 3.3ms；选中一次 p95 1.0ms、0 张新画布；截图 `shots/engine-600-medium-final.png`。
+- 600 在 33% 拖一块：只重建 1 张 180×135 小图，p95 2.2ms、0 长帧；截图 `shots/engine-600-drag-medium-final.png`。
+- 全量 29 文件 / 196 tests；CSS `index-DZNZkBw8.css` 62,683 B、JS `index-DHw45ndR.js` 520,424 B；EXE 3,387,904 B，2026-11-27 07:35:55。
+
+**边界**
+
+- 中倍贴图不含投影/效果/旋转；拖动仍重画整场；600 首次补齐约 2.6s。
+- 选中覆盖层只解决选中/取消选中，不解决拖动中的文档变化。
+
+## D04.1 四角独立圆角（2026-11-27）
+
+**为什么做**
+
+Figma 免费版最常用的形状细节是四个角分别设半径；Groma 右栏只有一个统一“圆角”，做卡片、标签、气泡时只能四角同值。这个功能落在现有外观分组里，不新增面板。
+
+**改法**
+
+- `SceneNode` 增加可选 `cornerRadii`，顺序固定左上/右上/右下/左下；缺省回退 `cornerRadius`，旧工程无需迁移。
+- 画布统一走 `roundRectRadii`；矩形/画板/区块/图片裁剪/整块画板小图/画板导出共用同一路径。四角全 0 仍走矩形。
+- SVG 四角一致输出原生 `<rect rx>`，四角不同输出 `<path d>`；图片填充、裁剪 clipPath、画板 clip 与导出背景都同步。
+- 右栏“外观”标题右侧放“四角独立 / 统一圆角”切换；独立时显示左上/右上/右下/左下四个输入，统一时回到单圆角。
+- MCP `groma_update_node` 增加 `cornerRadii` 四元组，写工具仍默认 `dryRun=true`。
+
+**验证**
+
+- 真实 EXE 打开 `Corners`：卡片 440×280，四角 `[80,0,40,12]`，左上大圆角、右上直角、右下 40、左下 12；右栏四个值完整可见；截图 `shots/corners-final.png`。
+- 保存重开仍为同一组四角；SVG 测试确认独立角输出 `<path>`、统一角保留 `<rect rx="6">`。
+- 新增 `corners.test.ts` 3 条、schema 1 条、SVG 1 条、editor 1 条；全量 30 文件 / 202 tests。
+- CSS `index-BhurkJ1K.css` 62,851 B、JS `index-Dxqw1eKy.js` 521,798 B；EXE 3,388,416 B，2026-11-27 12:50:28。
+
+**边界**
+
+- 四角半径超过短边一半时按短边裁到 90° 圆弧，不模拟 CSS 的相邻角比例压缩。
+- 布尔运算仍按统一 `cornerRadius` 近似，未按四角展开。
+
+## D01 + E01 + F04 三连（2026-11-27）
+
+**为什么做**
+
+四角独立圆角之后，Figma 免费版还有三处高频基础能力缺口：同一图层不能叠多层填充、父画板缩放时子层不跟随、样式只能逐个图层手改。三件事都落在既有检查器分组里，不新开面板。
+
+**改法**
+
+- **D01 多填充**：`Paint.visible`；`fills` 顶层→底层，渲染反向铺；最多 16 层。新增 `fills.ts`，右栏“填充 · N 层”列表，每行色块/类型/色标数/显隐/删除，选中层保留原有纯色/渐变详细编辑 + “上移一层 / 下移一层”。Canvas `paintFillStack` 逐层 `save/restore` 并乘层透明度；SVG `paintStack` 逐层输出，描边另补透明填充形状避免被上层盖住。修正矩形/椭圆/画板/区块的渐变坐标按节点屏幕原点 + 缩放创建，解决“渐变色整块取末色”。
+- **E01 约束**：`constraints` 水平 `left/right/center/leftRight/scale`，垂直 `top/bottom/center/topBottom/scale`，缺省左上固定。`patchNode` 在 frame/section 尺寸变化时递归子层；`changedDescendants` 把子层变化并入 `PatchItem[]`，画布缩放父画板一次撤销可回。右栏“约束”两枚下拉，仅直接父级为 Frame 时显示。
+- **F04 样式**：`GromaDoc.styles` + `SceneNode.styleRefs`，填充/描边/效果/文本四类。右栏“样式”按节点适用类型列行：样式下拉、存为样式、绑定状态“已绑定 · N 个图层 / 已偏离”、同步到样式、解除、删除。语义为“保留绑定 + 手动同步”，改图层不会自动解绑；点同步才一次更新所有同类绑定图层。
+- MCP 0.3.2：`groma_update_node` 支持 `fills`（最多 16 层）与 `constraints` 写入，`store.normalizeFills` 覆盖纯色/线性/径向、visible、stops；selftest 落盘校验。
+
+**验证**
+
+- 真实 EXE `Figma33.groma`：1200×760 画板、三张 300×220 卡片；多填充卡为黄橙渐变 + 28% 白叠层，两张样式卡共用 `品牌蓝紫` 填充样式（青蓝→靛蓝 + 18% 白）。选中样式卡 A：填充区显示 `2 层填充` 与两行（线性 2 色标 / 纯色 #FFFFFF），样式区显示 `品牌蓝紫 · 已绑定 · 2 个图层`，约束显示 `左右拉伸 / 上下拉伸`。截图 `shots/figma33-final.png`、`shots/figma33-final-inspector.png`、`shots/figma33-gradient.png`。
+- 测试：新增 `fills.test.ts` 3、`constraints.test.ts` 3、`styles.test.ts` 2；`schema.test.ts` +3、`svg.test.ts` +1、`editor.test.ts` +3；该刀完成时累计 **35 文件 / 222 tests**。
+- 构建：CSS 65,245 B、JS 544,787 B；EXE 3,395,072 B（3,316 KB），2026-11-27 19:36:40。
+
+**边界**
+
+- D01 图片填充存在时颜色多填充不显示；图案填充未做。
+- E01 只处理 frame/section 的直接子层，Group 内子层不递归；MCP 直接改 frame 尺寸不执行约束重排。
+- F04 无 Grid 样式、无样式重命名 UI；不是 Figma 的“编辑即解绑”。
+
+## 超越 Figma 第一刀：HTML + 令牌 + 图层 CSS + 版本 diff（2026-11-27）
+
+**为什么做**
+
+Figma 免费版把“设计交付”留在云端和付费 Dev Mode；Groma 的本地工程最适合把设计稿直接变成可运行网页，并让令牌、图层 CSS 与版本差异留在工程目录里。不做新面板，只扩展现有导出弹窗、样式区、检查器与版本弹窗。
+
+**改法**
+
+- 新增 `src/render/html.ts`：`renderFrameHtml` / `renderNodeHtml` 输出独立 HTML；文字是 `<div>`，矩形/椭圆/画板是 CSS 渐变 + 圆角 + 裁剪，钢笔复用 `renderNodeSvg` 内联，图片/形状图片填充用 data URL；坐标按画板原点归零，隐藏图层不输出。
+- `ExportFormat` 增加 `html`；导出弹窗第四段 `HTML`，隐藏倍率区，保留透明背景；Rust `groma_export_file` 接受 `html/css/json` 写 UTF-8；批量导出过滤 Slice。
+- 新增 `src/io/tokens.ts`：命名样式转 `:root { --groma-... }`；多层填充按顶层→底层，纯色转合法 `linear-gradient`；右栏“样式”下方改为“复制变量 / 导出令牌”，导出复用 `exportTextFile` 一次写 `<工程名> 设计令牌.css` 与 `.json` 到工程 `exports`。
+- 新增 `src/core/css.ts`：`nodeCss` 输出选中图层的定位、尺寸、透明度、变换、圆角、纯色/多渐变、描边、投影、模糊与文本字体规则；右栏新增“代码”段和“复制 CSS”，`src/ui/clipboard.ts` 提供 `navigator.clipboard` + textarea 兜底。
+- 新增 `src/core/diff.ts`：`diffDocs` 比较节点增删改与子层顺序；`VersionHistory` 在旧快照预览下显示“相对当前：+N / -M / ~K”及前 4 个变化图层。
+
+**验证**
+
+- 真实 EXE `Figma33` 导出 `组件验收画板-2.html` 1200×760 / 3,376 B，Edge 渲染与画板一致；截图 `shots/html-export-ui.png`、`shots/html-export-toast.png`、`shots/html-export-browser.png`。
+- 真实 EXE 导出 `Figma 三连 设计令牌.css` 272 B / `.json` 375 B，按钮状态“已导出 CSS + JSON”；截图 `shots/code-tokens.png`。
+- 选中“样式卡 A”，代码区得到 `.样式卡-a` 完整规则；可信鼠标点击“复制 CSS”后按钮变“已复制”；截图 `shots/copy-css.png`。
+- 存快照后拖动卡片，打开旧快照显示 `相对当前：+0 / -0 / ~1` 与 `样式卡 A`；截图 `shots/version-diff.png`。
+- 全量 **37 文件 / 228 tests**（该刀完成时）；CSS 66,200 B、JS 550,899 B；EXE 3,396,608 B（3,317 KB），2026-11-27 20:09:55。
+
+**边界**
+
+- HTML 不支持 Slice；文本只保留整段样式，富文本片段/路径文字/离线字体嵌入未做。
+
+## E02 自动布局一期（2026-11-27）
+
+**为什么做**
+
+约束只解决“父画板缩放时子层怎么跟”，解决不了“一排按钮怎么排、间距怎么统一、容器怎么包住内容”。没有自动布局，用户仍要在画布上手动对齐每个子层，免费 Figma 在这件事上更顺手。Groma 把它塞进现有检查器，不新开面板。
+
+**改法**
+
+- 数据：`SceneNode.layout?: AutoLayout`，字段 `mode / gap / padding(top,right,bottom,left) / align / justify / hug`；仅 Frame/Section/Group 可用，旧工程无字段照旧手动坐标。
+- 引擎：新增 `src/core/autoLayout.ts`。`layoutSubtree` 先递归内层，再按主轴累计子层尺寸、gap、padding、justify 算位置；交叉轴按 start/center/end/stretch；`hug` 时主轴包住内容。`reflowPageFrom` 从节点向上找回页面根，只在同一页重排。
+- 撤销：`patchNode` 重排后回传 `beforeNodes/afterNodes`，`patchItems` 合并父容器与兄弟层变化；拖动事务在存在自动布局时快照整页，撤销一次恢复所有被布局移动的子层。
+- 交互：自动布局子层的画布拖动与键盘微调被拦截，尺寸仍可改；右栏“自动布局”段提供“重排/关闭”、横向/纵向、间距、四边内边距、交叉轴/主轴、适应内容主轴。重排/关闭改为图标按钮，横向/纵向用方向图标 + 文字；字段标签改为自适应宽度，避免“交叉轴/内边距”等文字溢出。
+- 呼吸感：右栏分区内边距 16/18，字段网格间距 10，填充类型/文本对齐/效果按钮组间距 8，填充层层间距 6，填充行显隐/删除从“显/×”改为眼睛/垃圾桶图标并留 6px 间距；右栏全量 `scrollWidth` 审计为空。
+- 子层顺序：新增 `reorder` 命令与 `moveLayoutOrder`，选中子层后右栏“布局顺序”上移/下移，父容器立即重排，一步撤销。
+
+**验证**
+
+- 真实 EXE `AutoLayout.groma`：按钮组 760×120，4 个 150×64 子层，gap 20、padding 上/下 28 · 右/左 20、交叉轴居中、主轴两端；画布与右栏一致，截图 `shots/autolayout-ui-final.png`。选中按钮 1 后“布局顺序”显示 `1 / 4`，点下移到 `2 / 4`，画布顺序同步，截图 `shots/layout-order-final.png`；右栏全量元素 `scrollWidth` 审计为空。
+- `autoLayout.test.ts` 5 条：横向内边距/间距/交叉轴、纵向拉伸/主轴居中、Hug+space-between、子层改宽触发重排并记录兄弟层、重排后按新顺序布局并可撤销；`schema.test.ts` +1 条布局校验。
+- MCP 0.3.3：`groma_update_node` / `groma_update_nodes` 支持 `layout` 写入，selftest 校验落盘；工具总数仍 19。
+- 全量 **38 文件 / 234 tests**；CSS 68,394 B、JS 561,008 B；EXE 3,399,680 B（3,320 KB），2026-11-27 22:04:01。
+
+**边界**
+
+- 新增子层后不自动重排，需点“重排”；顺序重排可用右栏按钮，画布拖拽排序未做；未做 Fill/Fixed 全组合、换行、布局网格；容器旋转不参与布局计算。
 
 ## D03.1 图层效果 + B02.1 选中适配（2026-11-26）
 

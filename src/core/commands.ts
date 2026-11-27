@@ -1,5 +1,7 @@
 import type { GromaDoc, NodeType, SceneNode } from './types';
 import { absolutePosition, topLevelSelection } from './geometry';
+import { applyConstraintsOnResize } from './constraints';
+import { needsAutoLayoutReflow, reflowPageFrom } from './autoLayout';
 
 /** 只允许改表现属性，结构字段（id/parentId/children/type）不能从这里穿透 */
 export type NodePatch = Partial<Omit<SceneNode, 'id' | 'parentId' | 'children' | 'type'>>;
@@ -18,7 +20,8 @@ export type SceneCommand =
       nameSuffix?: string;
     }
   | { type: 'group'; ids: string[]; makeId: (type: NodeType) => string; name?: string }
-  | { type: 'ungroup'; id: string };
+  | { type: 'ungroup'; id: string }
+  | { type: 'reorder'; id: string; toIndex: number };
 
 export interface CommandResult {
   doc: GromaDoc;
@@ -111,11 +114,38 @@ function sanitizePatch(patch: NodePatch): NodePatch {
 
 function patchNode(doc: GromaDoc, id: string, patch: NodePatch): CommandResult {
   const before = requireNode(doc, id);
-  const after: SceneNode = { ...before, ...sanitizePatch(patch) };
+  const afterBase: SceneNode = { ...before, ...sanitizePatch(patch) };
+  let nextDoc: GromaDoc =
+    (afterBase.type === 'frame' || afterBase.type === 'section') && (before.w !== afterBase.w || before.h !== afterBase.h)
+      ? applyConstraintsOnResize(doc, id, before, afterBase)
+      : { ...doc, nodes: { ...doc.nodes, [id]: afterBase } };
+
+  // 自动布局：容器自身或父容器开启时，任何尺寸/内容补丁后都重排同一页。
+  const afterBeforeReflow = nextDoc.nodes[id] ?? afterBase;
+  const layoutChanged = needsAutoLayoutReflow(nextDoc, id);
+  if (layoutChanged) nextDoc = reflowPageFrom(nextDoc, id);
+  const after = nextDoc.nodes[id] ?? afterBeforeReflow;
+
+  const beforeNodes: Record<string, SceneNode> = { [id]: before };
+  const afterNodes: Record<string, SceneNode> = { [id]: after };
+  if (layoutChanged) {
+    for (const key of Object.keys(doc.nodes)) {
+      const prev = doc.nodes[key];
+      const next = nextDoc.nodes[key];
+      if (!next || prev === next) continue;
+      if (JSON.stringify(prev) !== JSON.stringify(next)) {
+        beforeNodes[key] = prev;
+        afterNodes[key] = next;
+      }
+    }
+  }
+
   return {
-    doc: { ...doc, nodes: { ...doc.nodes, [id]: after } },
+    doc: nextDoc,
     before,
     after,
+    beforeNodes,
+    afterNodes,
   };
 }
 
@@ -311,6 +341,39 @@ function ungroupNode(doc: GromaDoc, id: string): CommandResult {
   };
 }
 
+function reorderNode(doc: GromaDoc, id: string, toIndex: number): CommandResult {
+  const node = requireNode(doc, id);
+  if (!node.parentId) throw new Error('页面根节点不能重排');
+  const parent = requireNode(doc, node.parentId);
+  if (parent.type === 'page') throw new Error('页面根节点不能重排');
+  const current = parent.children.indexOf(id);
+  if (current < 0) throw new Error('节点不在父节点 children 中');
+  const target = Math.max(0, Math.min(Math.round(toIndex), parent.children.length - 1));
+  if (target === current) return { doc, beforeNodes: {}, afterNodes: {}, parentId: parent.id, index: current };
+
+  const children = [...parent.children];
+  children.splice(current, 1);
+  children.splice(target, 0, id);
+  let nextDoc: GromaDoc = {
+    ...doc,
+    nodes: { ...doc.nodes, [parent.id]: { ...parent, children } },
+  };
+  if (parent.layout) nextDoc = reflowPageFrom(nextDoc, parent.id);
+
+  const beforeNodes: Record<string, SceneNode> = {};
+  const afterNodes: Record<string, SceneNode> = {};
+  for (const key of Object.keys(doc.nodes)) {
+    const prev = doc.nodes[key];
+    const next = nextDoc.nodes[key];
+    if (!next || prev === next) continue;
+    if (JSON.stringify(prev) !== JSON.stringify(next)) {
+      beforeNodes[key] = prev;
+      afterNodes[key] = next;
+    }
+  }
+  return { doc: nextDoc, parentId: parent.id, index: target, beforeNodes, afterNodes, childIds: children };
+}
+
 export function applyCommand(doc: GromaDoc, command: SceneCommand): CommandResult {
   switch (command.type) {
     case 'insert':
@@ -327,6 +390,8 @@ export function applyCommand(doc: GromaDoc, command: SceneCommand): CommandResul
       return groupNodes(doc, command.ids, command.makeId, command.name);
     case 'ungroup':
       return ungroupNode(doc, command.id);
+    case 'reorder':
+      return reorderNode(doc, command.id, command.toIndex);
     default: {
       const exhaustive: never = command;
       throw new Error(`未知命令：${JSON.stringify(exhaustive)}`);

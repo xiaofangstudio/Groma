@@ -102,6 +102,7 @@ export function toGradientPaint<T extends GradientType>(
       type,
       color: paint.color,
       opacity: paint.opacity,
+      visible: paint.visible,
       stops,
     };
     if (type === 'linear') {
@@ -127,6 +128,7 @@ export function toSolidPaint(paint: Paint | undefined, fallbackColor: string): P
     type: 'solid',
     color: stop?.color ?? paint.color ?? fallbackColor,
     opacity: clamp(paint.opacity * (stop?.opacity ?? 1), 0, 1),
+    visible: paint.visible,
   };
 }
 

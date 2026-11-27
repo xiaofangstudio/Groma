@@ -32,6 +32,43 @@ export function IconHand(props: IconProps) {
   );
 }
 
+export function IconFlowHorizontal(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="2" y="4.5" width="4.5" height="7" rx="1" />
+      <rect x="8.2" y="4.5" width="4.5" height="7" rx="1" />
+      <path d="M13.8 8h1.8M14.6 6.6 16 8l-1.4 1.4" />
+    </svg>
+  );
+}
+
+export function IconFlowVertical(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="4.5" y="2" width="7" height="4.5" rx="1" />
+      <rect x="4.5" y="8.2" width="7" height="4.5" rx="1" />
+      <path d="M8 13.8v1.8M6.6 14.6 8 16l1.4-1.4" />
+    </svg>
+  );
+}
+
+export function IconRefresh(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3.2 8a4.8 4.8 0 0 1 8.2-2.5M12.8 8a4.8 4.8 0 0 1-8.2 2.5" />
+      <path d="M11.4 2.9v2.8h-2.8M4.6 13.1v-2.8h2.8" />
+    </svg>
+  );
+}
+
+export function IconClose(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="m4 4 8 8M12 4 4 12" />
+    </svg>
+  );
+}
+
 export function IconUndo(props: IconProps) {
   return (
     <svg {...base(props)}>
@@ -87,6 +124,14 @@ export function IconFit(props: IconProps) {
   return (
     <svg {...base(props)}>
       <path d="M3 6V3h3M13 6V3h-3M3 10v3h3M13 10v3h-3" />
+    </svg>
+  );
+}
+
+export function IconTrash(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3.5 4.8h9M6.2 4.8V3.4h3.6v1.4M4.8 4.8l.6 8.2h5.2l.6-8.2M6.6 7.2v3.4M9.4 7.2v3.4" />
     </svg>
   );
 }

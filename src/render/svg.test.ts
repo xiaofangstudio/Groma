@@ -44,6 +44,44 @@ describe('SVG 导出', () => {
     expect(result?.svg).toContain('rx="6"');
   });
 
+  it('四角独立圆角导出为 path，四角一致仍保留 rect', () => {
+    const doc = createDoc('SVG 四角', 400, 300);
+    const page = doc.pages[0];
+    const frameId = doc.nodes[page.rootId].children[0];
+    const node = rectNode('rect-radii', frameId);
+    node.cornerRadii = [30, 0, 18, 6];
+    doc.nodes[node.id] = node;
+    doc.nodes[frameId].children = [node.id];
+
+    const result = renderFrameSvg(doc, frameId, true, 1);
+    expect(result?.svg).toContain('d="M 50 30 L 100 30 L 100 30 L 100 72 A 18 18 0 0 1 82 90');
+    expect(result?.svg).not.toContain('rx="6"');
+
+    node.cornerRadii = [6, 6, 6, 6];
+    const uniform = renderFrameSvg(doc, frameId, true, 1);
+    expect(uniform?.svg).toContain('rx="6"');
+  });
+
+  it('多填充按底层到顶层输出，隐藏层不进入 SVG', () => {
+    const doc = createDoc('SVG 多填充', 400, 300);
+    const page = doc.pages[0];
+    const frameId = doc.nodes[page.rootId].children[0];
+    const node = rectNode('rect-multi', frameId);
+    node.fills = [
+      { type: 'solid', color: '#FF0000', opacity: 0.4 },
+      { type: 'solid', color: '#0000FF', opacity: 1 },
+      { type: 'solid', color: '#00FF00', opacity: 1, visible: false },
+    ];
+    doc.nodes[node.id] = node;
+    doc.nodes[frameId].children = [node.id];
+    const result = renderFrameSvg(doc, frameId, true, 1);
+    const blue = result?.svg.indexOf('fill="#0000FF"') ?? -1;
+    const red = result?.svg.indexOf('fill="#FF0000"') ?? -1;
+    expect(blue).toBeGreaterThanOrEqual(0);
+    expect(red).toBeGreaterThan(blue);
+    expect(result?.svg).not.toContain('fill="#00FF00"');
+  });
+
   it('投影与整层模糊输出 SVG filter，并按节点包裹', () => {
     const doc = createDoc('SVG 效果', 400, 300);
     const page = doc.pages[0];

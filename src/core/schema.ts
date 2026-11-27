@@ -1,7 +1,9 @@
-import type { GromaDoc, Guide, ImageAsset, NodeType, Page, Paint, SceneNode } from './types';
+import type { GromaDoc, Guide, ImageAsset, NodeType, Page, Paint, SceneNode, Style, StyleKind } from './types';
 
 const NODE_TYPES: NodeType[] = ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'path', 'image', 'group', 'slice'];
 const NODE_TYPE_SET = new Set<string>(NODE_TYPES);
+const HORIZONTAL_CONSTRAINTS = new Set(['left', 'right', 'center', 'leftRight', 'scale']);
+const VERTICAL_CONSTRAINTS = new Set(['top', 'bottom', 'center', 'topBottom', 'scale']);
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 export type DocValidation =
@@ -36,6 +38,7 @@ function validateStop(value: unknown): boolean {
 function validatePaint(value: unknown): value is Paint {
   if (!isRecord(value)) return false;
   if (typeof value.color !== 'string' || !isFiniteNumber(value.opacity)) return false;
+  if (value.visible !== undefined && typeof value.visible !== 'boolean') return false;
   if (value.type === 'solid') return true;
   if (!Array.isArray(value.stops) || !value.stops.every(validateStop)) return false;
   if (value.type === 'linear') {
@@ -75,6 +78,39 @@ function validateEffect(value: unknown): boolean {
   );
 }
 
+const STYLE_KINDS = new Set<StyleKind>(['fill', 'stroke', 'effect', 'text']);
+
+function validateTextStyle(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (!isFiniteNumber(value.fontSize) || value.fontSize <= 0) return false;
+  if (!isFiniteNumber(value.fontWeight) || value.fontWeight < 0) return false;
+  if (typeof value.fontFamily !== 'string' || value.fontFamily.length === 0) return false;
+  if (typeof value.italic !== 'boolean') return false;
+  if (!['left', 'center', 'right'].includes(String(value.align))) return false;
+  if (!isFiniteNumber(value.lineHeight) || value.lineHeight <= 0) return false;
+  if (!isFiniteNumber(value.letterSpacing)) return false;
+  if (!isFiniteNumber(value.paragraphSpacing) || value.paragraphSpacing < 0) return false;
+  if (!['none', 'bullet', 'number'].includes(String(value.listStyle))) return false;
+  return true;
+}
+
+function validateStyle(value: unknown): value is Style {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== 'string' || value.id.length === 0) return false;
+  if (typeof value.name !== 'string' || value.name.length === 0) return false;
+  if (!STYLE_KINDS.has(value.kind as StyleKind)) return false;
+  if (value.kind === 'fill') {
+    return Array.isArray(value.fills) && value.fills.every(validatePaint);
+  }
+  if (value.kind === 'stroke') {
+    return Array.isArray(value.strokes) && value.strokes.every(validateStroke);
+  }
+  if (value.kind === 'effect') {
+    return Array.isArray(value.effects) && value.effects.length <= 12 && value.effects.every(validateEffect);
+  }
+  return validateTextStyle(value.textStyle);
+}
+
 function validatePathAnchor(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const vertexOk =
@@ -107,6 +143,22 @@ function validateAsset(value: unknown): value is ImageAsset {
   if (value.file.includes('..') || value.file.includes('\\')) return false;
   if (!isFiniteNumber(value.w) || value.w <= 0 || !isFiniteNumber(value.h) || value.h <= 0) return false;
   if (!isFiniteNumber(value.bytes) || value.bytes < 0) return false;
+  return true;
+}
+
+function validateAutoLayout(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (!['horizontal', 'vertical'].includes(String(value.mode))) return false;
+  if (!isFiniteNumber(value.gap) || value.gap < 0 || value.gap > 10000) return false;
+  if (!isRecord(value.padding)) return false;
+  for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+    if (!isFiniteNumber(value.padding[side]) || Number(value.padding[side]) < 0 || Number(value.padding[side]) > 100000) {
+      return false;
+    }
+  }
+  if (!['start', 'center', 'end', 'stretch'].includes(String(value.align))) return false;
+  if (!['start', 'center', 'end', 'space-between'].includes(String(value.justify))) return false;
+  if (typeof value.hug !== 'boolean') return false;
   return true;
 }
 
@@ -151,6 +203,15 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
   if (isFiniteNumber(node.opacity) && (node.opacity < 0 || node.opacity > 1)) {
     issues.push(`节点 ${key} 的透明度必须在 0–1`);
   }
+  if (node.cornerRadii !== undefined) {
+    if (
+      !Array.isArray(node.cornerRadii) ||
+      node.cornerRadii.length !== 4 ||
+      !node.cornerRadii.every((value) => isFiniteNumber(value) && value >= 0 && value <= 100000)
+    ) {
+      issues.push(`节点 ${key} 的 cornerRadii 必须是四个 0–100000 的有限数字（左上/右上/右下/左下）`);
+    }
+  }
   if (!Array.isArray(node.fills) || !node.fills.every(validatePaint)) {
     issues.push(`节点 ${key} 的 fills 必须是合法的填充数组`);
   }
@@ -165,6 +226,34 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
   }
   for (const field of ['visible', 'locked', 'clipContent'] as const) {
     if (typeof node[field] !== 'boolean') issues.push(`节点 ${key} 的 ${field} 必须是布尔值`);
+  }
+  if (node.constraints !== undefined) {
+    if (
+      !isRecord(node.constraints) ||
+      !HORIZONTAL_CONSTRAINTS.has(String(node.constraints.horizontal)) ||
+      !VERTICAL_CONSTRAINTS.has(String(node.constraints.vertical))
+    ) {
+      issues.push(`节点 ${key} 的 constraints 必须是合法的水平 / 垂直约束`);
+    }
+  }
+  if (node.layout !== undefined) {
+    if (!validateAutoLayout(node.layout)) {
+      issues.push(`节点 ${key} 的 layout 必须是合法的自动布局配置`);
+    } else if (!['frame', 'section', 'group'].includes(node.type)) {
+      issues.push(`节点 ${key} 的自动布局只支持画板/区块/分组`);
+    }
+  }
+  if (node.styleRefs !== undefined) {
+    if (!isRecord(node.styleRefs)) {
+      issues.push(`节点 ${key} 的 styleRefs 必须是对象`);
+    } else {
+      for (const [kind, id] of Object.entries(node.styleRefs)) {
+        if (!STYLE_KINDS.has(kind as StyleKind) || typeof id !== 'string' || id.length === 0) {
+          issues.push(`节点 ${key} 的 styleRefs 含非法样式引用`);
+          break;
+        }
+      }
+    }
   }
   if (node.isMask !== undefined && typeof node.isMask !== 'boolean') {
     issues.push(`节点 ${key} 的 isMask 必须是布尔值`);
@@ -326,12 +415,46 @@ export function validateDoc(value: unknown): DocValidation {
 
   const nodes = value.nodes as Record<string, SceneNode>;
   const nodeIds = Object.keys(nodes);
+
+  const styles: Record<string, Style> = {};
+  if (value.styles !== undefined) {
+    if (!isRecord(value.styles)) {
+      issues.push('场景 styles 必须是对象');
+    } else {
+      for (const [key, raw] of Object.entries(value.styles)) {
+        if (RESERVED_KEYS.has(key)) {
+          issues.push(`样式 id ${key} 是保留键`);
+          continue;
+        }
+        if (!validateStyle(raw)) {
+          issues.push(`样式 ${key} 结构非法`);
+          continue;
+        }
+        if (raw.id !== key) issues.push(`样式 ${key} 的 id 与键名不一致`);
+        styles[key] = raw;
+      }
+    }
+  }
+
   for (const key of nodeIds) {
     if (RESERVED_KEYS.has(key)) {
       issues.push(`节点 id ${key} 是保留键`);
       continue;
     }
     validateNode(nodes[key], key, assets, issues);
+  }
+
+  for (const id of nodeIds) {
+    const refs = nodes[id]?.styleRefs;
+    if (!refs) continue;
+    for (const [kind, styleId] of Object.entries(refs)) {
+      const style = styles[styleId as string];
+      if (!style) {
+        issues.push(`节点 ${id} 引用了不存在的样式 ${String(styleId)}`);
+      } else if (style.kind !== kind) {
+        issues.push(`节点 ${id} 的 ${kind} 样式引用类型不匹配`);
+      }
+    }
   }
 
   const roots = new Set<string>();

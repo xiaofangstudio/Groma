@@ -1,4 +1,5 @@
 import type { GromaDoc, Page, SceneNode } from '../core/types';
+import { fillStack, isPaintVisible } from '../core/fills';
 import { absoluteRect, selectionBounds } from '../core/geometry';
 import { nodePathContours, penPathData } from '../core/pen';
 import { nodeWorldRings } from '../core/boolean';
@@ -8,6 +9,7 @@ import { imageFillBox } from '../core/imageFill';
 import { activeEffects, effectsFilter, effectsPadding, shadowColor } from '../core/effects';
 import type { Viewport } from '../core/viewport';
 import { getAssetImage, requestImageAsset } from '../io/images';
+import { hasCornerRadii, scaledCornerRadii, type CornerRadii } from '../core/corners';
 
 export const RULER = 20;
 
@@ -16,7 +18,7 @@ const OVERVIEW_LOD_SCALE = 0.5;
 const OVERVIEW_LOD_MIN_PIXEL = 4;
 const OVERVIEW_CHROME_SCALE = 0.3;
 /** 低倍总览仍要看见画板里的色块：把每块画板压成一张小图，平移/缩放时只贴图。 */
-const OVERVIEW_BITMAP_SCALE = 0.2;
+const OVERVIEW_BITMAP_SCALE = 0.5;
 const OVERVIEW_BITMAP_BYTES = 64 * 1024 * 1024;
 /** 首次总览不把几百块画板一次画完：每帧只补 6 块，其余先用画板底色占位。 */
 const OVERVIEW_BUILD_PER_FRAME = 6;
@@ -50,12 +52,19 @@ export interface WorldBounds {
 }
 
 export interface DrawOptions {
-  /** 拖动/缩放时降级细节，避免阴影和网格抢走交互帧。 */
+  /** 总览小图的每帧建图上限；空闲预热可临时放宽。 */
+  overviewBudget?: number;
+  /** 总览小图的每帧时间预算，默认 12ms。 */
+  overviewDeadlineMs?: number;
+  /** 是否正在后台空闲预热，用于统计。 */
+  idleOverview?: boolean;
   interactive?: boolean;
   /** 裁剪模式下该图片按整张源图绘制，方便看到框外待恢复内容。 */
   cropPreviewId?: string | null;
   /** 缩放到很低时跳过屏幕尺寸过小的叶子节点，避免百块画板的细节拖慢总览。 */
   minPixelSize?: number;
+  /** 场景层不画选中框；CanvasView 用独立覆盖层只重绘选中框。 */
+  selection?: boolean;
 }
 
 export interface DrawStats {
@@ -88,7 +97,11 @@ interface InternalDrawOptions {
   effectsLayer?: boolean;
   cropPreviewId?: string | null;
   /** 总览缩略图的每帧建图预算；预算用完后由 CanvasView 下一帧继续。 */
-  overviewBuild?: { remaining: number };
+  overviewBuild?: { remaining: number; deadline?: number };
+  /** 画板密集时把整块画板贴成小图，范围内不再逐个画子节点。 */
+  frameBitmap?: boolean;
+  /** 可见画板过多时跳过 18px 阴影，避免中倍总览把几十块画板的模糊运算叠在一起。 */
+  suppressFrameShadow?: boolean;
 }
 
 function newStats(): DrawStats {
@@ -232,15 +245,39 @@ function visibleFrameOrders(index: FrameSpatialIndex, bounds: WorldBounds, v: Vi
     .map((order) => index.orders[order]);
 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  const radius = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+function roundRectRadii(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radii: CornerRadii,
+) {
+  const max = Math.max(0, Math.min(w, h) / 2);
+  const [tl, tr, br, bl] = radii.map((radius) => Math.max(0, Math.min(radius, max)));
   ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + w, y, x + w, y + h, radius);
-  ctx.arcTo(x + w, y + h, x, y + h, radius);
-  ctx.arcTo(x, y + h, x, y, radius);
-  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.moveTo(x + tl, y);
+  ctx.lineTo(x + w - tr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, tr);
+  ctx.lineTo(x + w, y + h - br);
+  ctx.arcTo(x + w, y + h, x, y + h, br);
+  ctx.lineTo(x + bl, y + h);
+  ctx.arcTo(x, y + h, x, y, bl);
+  ctx.lineTo(x, y + tl);
+  ctx.arcTo(x, y, x + w, y, tl);
   ctx.closePath();
+}
+
+function nodeRoundRect(
+  ctx: CanvasRenderingContext2D,
+  node: SceneNode,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  scale: number,
+) {
+  roundRectRadii(ctx, x, y, w, h, scaledCornerRadii(node, scale, w, h));
 }
 
 function pageRootOf(doc: GromaDoc, nodeId: string): SceneNode | null {
@@ -251,11 +288,6 @@ function pageRootOf(doc: GromaDoc, nodeId: string): SceneNode | null {
     guard += 1;
   }
   return node && node.type === 'page' ? node : null;
-}
-
-function fillColor(node: SceneNode): string {  const fill = node.fills[0];
-  if (!fill || fill.opacity <= 0) return 'transparent';
-  return fill.color;
 }
 
 function withAlpha(color: string, alpha: number): string {
@@ -269,16 +301,15 @@ function withAlpha(color: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
-/** 在给定用户坐标里构造画布填充；纯色与渐变共用一条路径。 */
-function makeFill(ctx: CanvasRenderingContext2D, node: SceneNode, x: number, y: number, w: number, h: number) {
-  const paint = node.fills[0];
-  if (!paint || paint.opacity <= 0) {
-    ctx.fillStyle = 'transparent';
-    return;
-  }
-  ctx.globalAlpha *= paint.opacity;
+type PaintOrigin = { x: number; y: number; scale: number };
+
+/** 只设置单层填充样式，不改 globalAlpha；alpha 由 paintFillStack 每层独立保存。 */
+function setFillStyle(ctx: CanvasRenderingContext2D, paint: SceneNode['fills'][number], origin?: PaintOrigin) {
+  const ox = origin?.x ?? 0;
+  const oy = origin?.y ?? 0;
+  const s = origin?.scale ?? 1;
   if (paint.type === 'linear' && paint.stops.length > 0) {
-    const gradient = ctx.createLinearGradient(paint.x1, paint.y1, paint.x2, paint.y2);
+    const gradient = ctx.createLinearGradient(ox + paint.x1 * s, oy + paint.y1 * s, ox + paint.x2 * s, oy + paint.y2 * s);
     for (const stop of paint.stops) {
       gradient.addColorStop(stop.offset, withAlpha(stop.color, stop.opacity));
     }
@@ -286,7 +317,9 @@ function makeFill(ctx: CanvasRenderingContext2D, node: SceneNode, x: number, y: 
     return;
   }
   if (paint.type === 'radial' && paint.stops.length > 0) {
-    const gradient = ctx.createRadialGradient(paint.cx, paint.cy, 0, paint.cx, paint.cy, Math.max(0.01, paint.r));
+    const cx = ox + paint.cx * s;
+    const cy = oy + paint.cy * s;
+    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(0.01, paint.r * s));
     for (const stop of paint.stops) {
       gradient.addColorStop(stop.offset, withAlpha(stop.color, stop.opacity));
     }
@@ -294,10 +327,38 @@ function makeFill(ctx: CanvasRenderingContext2D, node: SceneNode, x: number, y: 
     return;
   }
   ctx.fillStyle = paint.color;
-  void x;
-  void y;
-  void w;
-  void h;
+}
+
+/** 从底层到顶层依次铺同一形状；上层半透明时能叠出下层颜色。 */
+function paintFillStack(
+  ctx: CanvasRenderingContext2D,
+  node: SceneNode,
+  paint: (fill: SceneNode['fills'][number], index: number) => void,
+  origin?: PaintOrigin,
+) {
+  // 单层填充是最常见路径，避免为每帧几千个节点各分配一次 filter/reverse 数组与 save/restore。
+  if (!node.fills?.length) return;
+  const fills = node.fills.length === 1 ? (isPaintVisible(node.fills[0]) ? node.fills : []) : fillStack(node.fills);
+  if (fills.length === 1) {
+    const fill = fills[0];
+    const previousAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = previousAlpha * fill.opacity;
+    setFillStyle(ctx, fill, origin);
+    paint(fill, 0);
+    ctx.globalAlpha = previousAlpha;
+    return;
+  }
+  fills.forEach((fill, index) => {
+    ctx.save();
+    ctx.globalAlpha *= fill.opacity;
+    setFillStyle(ctx, fill, origin);
+    paint(fill, index);
+    ctx.restore();
+  });
+}
+
+function hasVisibleFill(node: SceneNode): boolean {
+  return Boolean(node.fills?.some(isPaintVisible));
 }
 
 function paintStroke(ctx: CanvasRenderingContext2D, node: SceneNode): boolean {
@@ -339,7 +400,7 @@ function drawShapeImageFill(
     ctx.beginPath();
     ctx.ellipse(x + w / 2, y + h / 2, Math.max(w / 2, 0.5), Math.max(h / 2, 0.5), 0, 0, Math.PI * 2);
   } else {
-    roundRect(ctx, x, y, w, h, node.cornerRadius * v.scale);
+    roundRectRadii(ctx, x, y, w, h, scaledCornerRadii(node, v.scale, w, h));
   }
   ctx.clip();
   ctx.drawImage(image, x + box.x * v.scale, y + box.y * v.scale, box.w * v.scale, box.h * v.scale);
@@ -390,19 +451,18 @@ function drawSection(
   const y = (oy + node.y) * v.scale + v.y;
   const w = node.w * v.scale;
   const h = node.h * v.scale;
-  const radius = node.cornerRadius * v.scale;
-
   ctx.save();
   ctx.globalAlpha = node.opacity;
-  if (node.fills.length > 0) {
-    ctx.fillStyle = fillColor(node);
-    roundRect(ctx, x, y, w, h, radius);
-    ctx.fill();
+  if (hasVisibleFill(node)) {
+    paintFillStack(ctx, node, () => {
+      nodeRoundRect(ctx, node, x, y, w, h, v.scale);
+      ctx.fill();
+    }, { x, y, scale: v.scale });
   }
   ctx.strokeStyle = 'rgba(76, 70, 60, 0.34)';
   ctx.lineWidth = 1;
   if (!opts.hideChrome) {
-    roundRect(ctx, x, y, w, h, radius);
+    nodeRoundRect(ctx, node, x, y, w, h, v.scale);
     ctx.stroke();
   }
 
@@ -436,20 +496,22 @@ function drawFrame(
   const y = (oy + node.y) * v.scale + v.y;
   const w = node.w * v.scale;
   const h = node.h * v.scale;
-  const radius = node.cornerRadius * v.scale;
   const artboard = doc.nodes[node.parentId ?? '']?.type === 'page';
 
   ctx.save();
   ctx.globalAlpha = node.opacity;
-  if (artboard && !opts.interactive && !opts.hideChrome && !opts.overview) {
+  if (artboard && !opts.interactive && !opts.hideChrome && !opts.overview && !opts.suppressFrameShadow) {
     ctx.shadowColor = 'rgba(34, 28, 0, 0.10)';
     ctx.shadowBlur = 18;
     ctx.shadowOffsetY = 6;
     opts.stats.shadowPasses += 1;
   }
-  ctx.fillStyle = fillColor(node);
-  roundRect(ctx, x, y, w, h, radius);
-  ctx.fill();
+  if (hasVisibleFill(node)) {
+    paintFillStack(ctx, node, () => {
+      nodeRoundRect(ctx, node, x, y, w, h, v.scale);
+      ctx.fill();
+    }, { x, y, scale: v.scale });
+  }
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
@@ -457,7 +519,7 @@ function drawFrame(
   ctx.strokeStyle = artboard ? 'rgba(34, 28, 0, 0.12)' : 'rgba(34, 28, 0, 0.18)';
   ctx.lineWidth = 1;
   if (!opts.hideChrome) {
-    roundRect(ctx, x, y, w, h, radius);
+    nodeRoundRect(ctx, node, x, y, w, h, v.scale);
     ctx.stroke();
   }
 
@@ -470,7 +532,7 @@ function drawFrame(
   }
 
   if (node.clipContent) {
-    roundRect(ctx, x, y, w, h, radius);
+    nodeRoundRect(ctx, node, x, y, w, h, v.scale);
     ctx.clip();
   }
   if (depth < (opts.maxDepth ?? Infinity)) {
@@ -497,15 +559,15 @@ function drawShape(
 
   if (node.type === 'ellipse') {
     if (!drawShapeImageFill(ctx, doc, node, x, y, w, h, v)) {
-      makeFill(ctx, node, x, y, w, h);
-      ctx.beginPath();
-      ctx.ellipse(x + w / 2, y + h / 2, Math.max(w / 2, 0.5), Math.max(h / 2, 0.5), 0, 0, Math.PI * 2);
-      ctx.fill();
+      paintFillStack(ctx, node, () => {
+        ctx.beginPath();
+        ctx.ellipse(x + w / 2, y + h / 2, Math.max(w / 2, 0.5), Math.max(h / 2, 0.5), 0, 0, Math.PI * 2);
+        ctx.fill();
+      }, { x, y, scale: v.scale });
     }
   } else if (node.type === 'text') {
     ctx.translate(x, y);
     ctx.scale(v.scale, v.scale);
-    makeFill(ctx, node, 0, 0, node.w, node.h);
     const fs = Math.max(1, node.fontSize ?? 24);
     const weight = node.fontWeight ?? 500;
     const family = node.fontFamily ?? '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif';
@@ -519,19 +581,23 @@ function drawShape(
     const lines = (node.text ?? '文本').split('\n');
     const lineHeight = fs * (node.lineHeight ?? 1.3);
     const step = lineHeight + (node.paragraphSpacing ?? 0);
-    lines.forEach((line, i) => {
-      const display = node.listStyle === 'bullet' ? `•  ${line}` : node.listStyle === 'number' ? `${i + 1}.  ${line}` : line;
-      const lineX = node.align === 'center' ? node.w / 2 : node.align === 'right' ? node.w : 0;
-      ctx.fillText(display, lineX, i * step);
-    });
+    const drawText = () => {
+      lines.forEach((line, i) => {
+        const display = node.listStyle === 'bullet' ? `•  ${line}` : node.listStyle === 'number' ? `${i + 1}.  ${line}` : line;
+        const lineX = node.align === 'center' ? node.w / 2 : node.align === 'right' ? node.w : 0;
+        ctx.fillText(display, lineX, i * step);
+      });
+    };
+    paintFillStack(ctx, node, drawText);
     if (paintStroke(ctx, node)) {
       ctx.strokeText(node.text ?? '文本', node.align === 'center' ? node.w / 2 : node.align === 'right' ? node.w : 0, 0);
     }
   } else {
     if (!drawShapeImageFill(ctx, doc, node, x, y, w, h, v)) {
-      makeFill(ctx, node, x, y, w, h);
-      roundRect(ctx, x, y, w, h, node.cornerRadius * v.scale);
-      ctx.fill();
+      paintFillStack(ctx, node, () => {
+        roundRectRadii(ctx, x, y, w, h, scaledCornerRadii(node, v.scale, w, h));
+        ctx.fill();
+      }, { x, y, scale: v.scale });
     }
   }
   ctx.restore();
@@ -562,11 +628,12 @@ function drawVectorPath(
     const closed = contours.filter((contour) => contour.closed && contour.anchors.length >= 3);
     const closedData = closed.map((contour) => penPathData(contour.anchors, true)).filter(Boolean).join(' ');
     const allData = contours.map((contour) => penPathData(contour.anchors, contour.closed)).filter(Boolean).join(' ');
-    if ((node.fills.length > 0 || node.imageFill) && closedData) {
+    if ((hasVisibleFill(node) || node.imageFill) && closedData) {
       const path = new Path2D(closedData);
       if (!drawPathImageFill(ctx, doc, node, sourceW, sourceH, path, node.fillRule ?? 'nonzero')) {
-        makeFill(ctx, node, 0, 0, sourceW, sourceH);
-        ctx.fill(path, node.fillRule ?? 'nonzero');
+        paintFillStack(ctx, node, () => {
+          ctx.fill(path, node.fillRule ?? 'nonzero');
+        });
       }
     }
     if (paintStroke(ctx, node) && allData) {
@@ -582,10 +649,11 @@ function drawVectorPath(
     return;
   }
   const path = new Path2D(node.pathData);
-  if (node.fills.length > 0 || node.imageFill) {
+  if (hasVisibleFill(node) || node.imageFill) {
     if (!drawPathImageFill(ctx, doc, node, sourceW, sourceH, path, node.fillRule ?? 'nonzero')) {
-      makeFill(ctx, node, 0, 0, sourceW, sourceH);
-      ctx.fill(path, node.fillRule ?? 'nonzero');
+      paintFillStack(ctx, node, () => {
+        ctx.fill(path, node.fillRule ?? 'nonzero');
+      });
     }
   }
   if (paintStroke(ctx, node)) {
@@ -618,8 +686,8 @@ function drawImageNode(
 
   ctx.save();
   ctx.globalAlpha = node.opacity;
-  if (node.cornerRadius > 0) {
-    roundRect(ctx, x, y, w, h, node.cornerRadius * v.scale);
+  if (hasCornerRadii(node)) {
+    nodeRoundRect(ctx, node, x, y, w, h, v.scale);
     ctx.clip();
   }
   if (image && image.naturalWidth > 0 && image.naturalHeight > 0) {
@@ -654,7 +722,7 @@ function drawImageNode(
     ctx.lineCap = stroke.cap;
     ctx.lineJoin = stroke.join;
     if (stroke.dash.length > 0) ctx.setLineDash(stroke.dash.map((dash) => dash * v.scale));
-    roundRect(ctx, x, y, w, h, node.cornerRadius * v.scale);
+    roundRectRadii(ctx, x, y, w, h, scaledCornerRadii(node, v.scale, w, h));
     ctx.stroke();
     ctx.restore();
   }
@@ -1029,7 +1097,7 @@ function drawOverviewFrameBitmap(
   // 手势中先沿用旧图或画板底色，不在拖拽帧里新建 50 个子节点的小图。
   if (opts.interactive) return false;
   const build = opts.overviewBuild;
-  if (build && build.remaining <= 0) {
+  if (build && (build.remaining <= 0 || (build.deadline !== undefined && performance.now() > build.deadline))) {
     opts.stats.overviewPending += 1;
     return false;
   }
@@ -1098,12 +1166,27 @@ function drawNode(
       return;
     }
   }
-  if (opts.overview && v.scale < OVERVIEW_BITMAP_SCALE && node.type === 'frame' && node.rotation === 0 && doc.nodes[node.parentId ?? '']?.type === 'page' && !activeEffects(node).length) {
+  if (opts.frameBitmap && v.scale <= OVERVIEW_BITMAP_SCALE && node.type === 'frame' && node.rotation === 0 && doc.nodes[node.parentId ?? '']?.type === 'page' && !activeEffects(node).length) {
     const x = (ox + node.x) * v.scale + v.x;
     const y = (oy + node.y) * v.scale + v.y;
     const w = node.w * v.scale;
     const h = node.h * v.scale;
     if (drawOverviewFrameBitmap(ctx, doc, node, x, y, w, h, v, opts)) {
+      if (!opts.overview && !opts.hideChrome) {
+        // 小图只存内容；中倍总览的边框和画板名仍需清晰可读。
+        ctx.save();
+        ctx.strokeStyle = 'rgba(34, 28, 0, 0.12)';
+        ctx.lineWidth = 1;
+        roundRectRadii(ctx, x, y, w, h, scaledCornerRadii(node, v.scale, w, h));
+        ctx.stroke();
+        if (v.scale > 0.05) {
+          ctx.font = '12px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+          ctx.fillStyle = '#6D685E';
+          ctx.textBaseline = 'alphabetic';
+          ctx.fillText(node.name, x, y - 8);
+        }
+        ctx.restore();
+      }
       opts.stats.nodesDrawn += 1;
       return;
     }
@@ -1164,6 +1247,27 @@ function drawSelection(ctx: CanvasRenderingContext2D, doc: GromaDoc, selectedIds
       );
     }
   }
+  ctx.restore();
+}
+
+/** 独立选中层：场景重绘与选中框重绘解耦，选中变化不再让几百块画板重画。 */
+export function drawSelectionLayer(
+  ctx: CanvasRenderingContext2D,
+  doc: GromaDoc,
+  selectedIds: string[],
+  v: Viewport,
+  view: ViewSize,
+) {
+  const { w, h, dpr } = view;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, Math.max(1, Math.round(w * dpr)), Math.max(1, Math.round(h * dpr)));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(RULER, RULER, Math.max(0, w - RULER), Math.max(0, h - RULER));
+  ctx.clip();
+  ctx.translate(RULER, RULER);
+  drawSelection(ctx, doc, selectedIds, v);
   ctx.restore();
 }
 
@@ -1287,7 +1391,9 @@ export function drawEditor(
   const { w, h, dpr } = view;
   const stats = newStats();
   const overviewLod = v.scale < OVERVIEW_LOD_SCALE;
-  const overviewChrome = v.scale < OVERVIEW_CHROME_SCALE;
+  const overviewChrome = v.scale <= OVERVIEW_CHROME_SCALE;
+  const budgetCount = Math.max(1, options?.overviewBudget ?? OVERVIEW_BUILD_PER_FRAME);
+  const budgetMs = Math.max(1, options?.overviewDeadlineMs ?? 12);
   const opts: InternalDrawOptions = {
     interactive: options?.interactive === true,
     cropPreviewId: options?.cropPreviewId ?? null,
@@ -1295,7 +1401,8 @@ export function drawEditor(
     stats,
     overview: overviewChrome,
     minPixelSize: options?.minPixelSize ?? (overviewLod ? OVERVIEW_LOD_MIN_PIXEL : 0),
-    overviewBuild: overviewChrome ? { remaining: OVERVIEW_BUILD_PER_FRAME } : undefined,
+    overviewBuild: overviewChrome ? { remaining: budgetCount } : undefined,
+    frameBitmap: overviewChrome,
   };
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = page.background;
@@ -1321,6 +1428,13 @@ export function drawEditor(
   if (root) {
     const index = frameIndexFor(doc, root);
     const visible = index ? visibleFrameOrders(index, bounds, v) : null;
+    const visibleCount = visible?.length ?? root.children.length;
+    const denseFrames = visibleCount > 32 && v.scale <= OVERVIEW_BITMAP_SCALE;
+    opts.frameBitmap = opts.frameBitmap === true || denseFrames;
+    if (opts.frameBitmap) {
+      opts.overviewBuild = { remaining: budgetCount, deadline: performance.now() + budgetMs };
+    }
+    opts.suppressFrameShadow = visibleCount > 64 && v.scale < 0.6;
     if (visible !== null) {
       for (const id of visible) {
         const node = doc.nodes[id];
@@ -1330,7 +1444,7 @@ export function drawEditor(
       drawChildren(ctx, doc, root, 0, 0, v, opts, bounds, 0);
     }
   }
-  drawSelection(ctx, doc, selectedIds, v);
+  if (options?.selection !== false) drawSelection(ctx, doc, selectedIds, v);
   ctx.restore();
 
   drawRulers(ctx, v, w, h);
@@ -1373,14 +1487,19 @@ function renderFrameRaster(
 
   const opaque = !transparent || mime === 'image/jpeg';
   if (opaque) {
-    const bg = fillColor(frame);
-    ctx.fillStyle = bg === 'transparent' ? '#FFFFFF' : bg;
-    roundRect(ctx, 0, 0, frame.w, frame.h, frame.cornerRadius);
+    ctx.fillStyle = '#FFFFFF';
+    nodeRoundRect(ctx, frame, 0, 0, frame.w, frame.h, 1);
     ctx.fill();
+    if (hasVisibleFill(frame)) {
+      paintFillStack(ctx, frame, () => {
+        nodeRoundRect(ctx, frame, 0, 0, frame.w, frame.h, 1);
+        ctx.fill();
+      });
+    }
   }
 
   ctx.save();
-  roundRect(ctx, 0, 0, frame.w, frame.h, frame.cornerRadius);
+  nodeRoundRect(ctx, frame, 0, 0, frame.w, frame.h, 1);
   ctx.clip();
   const exportOpts: InternalDrawOptions = { interactive: false, exporting: true, effectScale: safeScale, stats: newStats() };
   drawChildren(ctx, doc, frame, 0, 0, { x: 0, y: 0, scale: 1 }, exportOpts, undefined, 0);

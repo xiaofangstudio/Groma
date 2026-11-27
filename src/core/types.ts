@@ -1,4 +1,5 @@
 import type { ImageFill } from './imageFill';
+import type { CornerRadii } from './corners';
 
 export type NodeType = 'page' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'path' | 'image' | 'group' | 'slice';
 
@@ -16,9 +17,9 @@ export interface PaintStop {
   opacity: number;
 }
 
-/** 纯色或线性 / 径向渐变；color 始终保留一个可回退的主色。 */
+/** 纯色或线性 / 径向渐变；color 始终保留一个可回退的主色。数组顺序为顶层到最底层。 */
 export type Paint =
-  | { type: 'solid'; color: string; opacity: number }
+  | { type: 'solid'; color: string; opacity: number; visible?: boolean }
   | {
       type: 'linear';
       color: string;
@@ -28,6 +29,7 @@ export type Paint =
       x2: number;
       y2: number;
       stops: PaintStop[];
+      visible?: boolean;
     }
   | {
       type: 'radial';
@@ -37,6 +39,7 @@ export type Paint =
       cy: number;
       r: number;
       stops: PaintStop[];
+      visible?: boolean;
     };
 
 export type StrokeCap = 'butt' | 'round' | 'square';
@@ -103,6 +106,56 @@ export type Effect =
     }
   | { type: 'layer-blur'; blur: number; visible: boolean };
 
+/** 约束：子图层在父画板缩放时如何跟随。 */
+export type HorizontalConstraint = 'left' | 'right' | 'center' | 'leftRight' | 'scale';
+export type VerticalConstraint = 'top' | 'bottom' | 'center' | 'topBottom' | 'scale';
+
+export interface Constraints {
+  horizontal: HorizontalConstraint;
+  vertical: VerticalConstraint;
+}
+
+export type LayoutMode = 'horizontal' | 'vertical';
+export type LayoutAlign = 'start' | 'center' | 'end' | 'stretch';
+export type LayoutJustify = 'start' | 'center' | 'end' | 'space-between';
+
+/** 容器自动布局：子层按方向、间距、内边距排列；hug 时主轴包住内容。 */
+export interface AutoLayout {
+  mode: LayoutMode;
+  gap: number;
+  padding: { top: number; right: number; bottom: number; left: number };
+  align: LayoutAlign;
+  justify: LayoutJustify;
+  hug: boolean;
+}
+
+export type StyleKind = 'fill' | 'stroke' | 'effect' | 'text';
+
+export interface TextStyle {
+  fontSize: number;
+  fontWeight: number;
+  fontFamily: string;
+  italic: boolean;
+  align: 'left' | 'center' | 'right';
+  lineHeight: number;
+  letterSpacing: number;
+  paragraphSpacing: number;
+  listStyle: 'none' | 'bullet' | 'number';
+}
+
+type StyleBase = {
+  id: string;
+  name: string;
+};
+
+export type Style =
+  | (StyleBase & { kind: 'fill'; fills: Paint[] })
+  | (StyleBase & { kind: 'stroke'; strokes: Stroke[] })
+  | (StyleBase & { kind: 'effect'; effects: Effect[] })
+  | (StyleBase & { kind: 'text'; textStyle: TextStyle });
+
+export type StyleRefs = Partial<Record<StyleKind, string>>;
+
 export interface SceneNode {
   id: string;
   type: NodeType;
@@ -118,12 +171,20 @@ export interface SceneNode {
   visible: boolean;
   locked: boolean;
   clipContent: boolean;
+  /** 父画板缩放时子图层的跟随规则；缺省为左上固定。 */
+  constraints?: Constraints;
+  /** 容器自动布局；缺省无，手动坐标生效。 */
+  layout?: AutoLayout;
+  /** 已绑定的命名样式；直接改对应属性会解除绑定。 */
+  styleRefs?: StyleRefs;
   /** 形状蒙版：该节点定义同父级中位于其上方的兄弟图层裁切区域。 */
   isMask?: boolean;
   /** 蒙版取像素的方式；缺省 geometry 走快速轮廓裁切。 */
   maskType?: 'geometry' | 'alpha' | 'luminance';
   fills: Paint[];
   cornerRadius: number;
+  /** 四角独立圆角，顺序左上/右上/右下/左下；缺省时所有角使用 cornerRadius。 */
+  cornerRadii?: CornerRadii;
   /** 矢量路径：节点局部坐标，左上角为 0,0；pathW / pathH 记录导入时的原始尺寸。 */
   pathData?: string;
   pathW?: number;
@@ -180,6 +241,8 @@ export interface GromaDoc {
   nodes: Record<string, SceneNode>;
   /** 旧工程没有这个字段；按缺省空表处理。 */
   assets?: Record<string, ImageAsset>;
+  /** 文档级命名样式；旧工程没有这个字段时视为空。 */
+  styles?: Record<string, Style>;
 }
 
 export interface Rect {

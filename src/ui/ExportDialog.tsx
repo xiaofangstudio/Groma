@@ -4,6 +4,7 @@ import { exportFile, type ExportFormat } from '../io/project';
 import { preloadDocImages } from '../io/images';
 import { renderFrameJpg, renderFramePng, renderNodePng, renderSliceJpg, renderSlicePng } from '../render/draw';
 import { renderFrameSvg, renderNodeSvg, renderSliceSvg } from '../render/svg';
+import { renderFrameHtml, renderNodeHtml } from '../render/html';
 import type { GromaDoc, Page, SceneNode } from '../core/types';
 
 function pickTarget(doc: GromaDoc, page: Page, selectedId: string | null): SceneNode | null {
@@ -65,21 +66,24 @@ export function ExportDialog({ onClose, onDone }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [busy, onClose]);
 
-  const targets = scope === 'page' ? allTargets : frame ? [frame] : [];
+  const targets = (scope === 'page' ? allTargets : frame ? [frame] : []).filter(
+    (target) => format !== 'html' || target.type !== 'slice',
+  );
   const single = targets.length === 1 ? targets[0] : null;
   const formatNote =
     format === 'png'
       ? '无损位图，支持透明背景'
       : format === 'jpg'
         ? '体积更小，自动填白底'
-        : '矢量输出，固定 1×';
+        : format === 'html'
+          ? '可独立打开的网页，文字可选可编辑'
+          : '矢量输出，固定 1×';
+  const outputScale = format === 'svg' || format === 'html' ? 1 : scale;
   const outputSummary =
     targets.length > 1
-      ? `${format.toUpperCase()} · ${format === 'svg' ? '1×' : `${scale}×`} · ${targets.length} 个文件`
+      ? `${format.toUpperCase()} · ${outputScale}× · ${targets.length} 个文件`
       : single
-        ? `${format.toUpperCase()} · ${format === 'svg' ? '1×' : `${scale}×`} · ${Math.round(
-            single.w * (format === 'svg' ? 1 : scale),
-          )} × ${Math.round(single.h * (format === 'svg' ? 1 : scale))}`
+        ? `${format.toUpperCase()} · ${outputScale}× · ${Math.round(single.w * outputScale)} × ${Math.round(single.h * outputScale)}`
         : '当前没有可导出的画板、区块或切片';
 
   async function run() {
@@ -101,7 +105,13 @@ export function ExportDialog({ onClose, onDone }: Props) {
       for (const target of targets) {
         const sliced = target.type === 'slice';
         const frameLike = target.type === 'frame' || target.type === 'section';
-        if (format === 'svg') {
+        if (format === 'html') {
+          const rendered = frameLike
+            ? renderFrameHtml(s.doc, target.id, transparent)
+            : renderNodeHtml(s.doc, target.id, transparent);
+          if (!rendered) throw new Error(`${target.name} 渲染失败`);
+          paths.push(await exportFile(s.projectId, target.name, 'html', rendered.html));
+        } else if (format === 'svg') {
           const rendered = sliced
             ? renderSliceSvg(s.doc, target.id, transparent, 1)
             : frameLike
@@ -152,7 +162,7 @@ export function ExportDialog({ onClose, onDone }: Props) {
           <div className="export-section">
             <div className="export-label">格式</div>
             <div className="export-seg" role="group" aria-label="导出格式">
-              {(['png', 'jpg', 'svg'] as const).map((f) => (
+              {(['png', 'jpg', 'svg', 'html'] as const).map((f) => (
                 <button
                   key={f}
                   className={`export-seg-btn${format === f ? ' is-on' : ''}`}
@@ -191,7 +201,7 @@ export function ExportDialog({ onClose, onDone }: Props) {
             </div>
           )}
 
-          {format !== 'svg' && (
+          {format !== 'svg' && format !== 'html' && (
             <div className="export-section">
               <div className="export-label">倍数</div>
               <div className="export-scale-row">

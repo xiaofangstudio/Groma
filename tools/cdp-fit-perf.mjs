@@ -32,6 +32,13 @@ async function main() {
   await send('Runtime.enable');
   await send('Performance.enable');
   await sleep(700);
+  // 先回到 100%，确保随后 Shift+1 是冷启动后的第一次总览，而不是复用启动时已建好的缓存。
+  await evaluate(`(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '0', code: 'Digit0', shiftKey: true, bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: '0', code: 'Digit0', shiftKey: true, bubbles: true }));
+    return true;
+  })()`);
+  await sleep(900);
   await evaluate(`(() => {
     window.__fitDurs = [];
     window.__fitTs = [];

@@ -18,6 +18,29 @@ describe('场景校验', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('接受合法自动布局并拒绝非法方向与负间距', () => {
+    const doc = brokenDoc();
+    const root = doc.nodes[doc.pages[0].rootId];
+    const node = doc.nodes[root.children[0]];
+    node.layout = {
+      mode: 'horizontal',
+      gap: 12,
+      padding: { top: 16, right: 16, bottom: 16, left: 16 },
+      align: 'stretch',
+      justify: 'center',
+      hug: false,
+    };
+    expect(validateDoc(doc).ok).toBe(true);
+
+    const badMode = structuredClone(doc);
+    badMode.nodes[root.children[0]].layout!.mode = 'diagonal' as 'horizontal';
+    expect(firstError(badMode)).toContain('layout');
+
+    const badGap = structuredClone(doc);
+    badGap.nodes[root.children[0]].layout!.gap = -1;
+    expect(firstError(badGap)).toContain('layout');
+  });
+
   it('接受页级手动参考线并拒绝非法参考线', () => {
     const doc = brokenDoc();
     doc.pages[0].guides = [
@@ -29,6 +52,24 @@ describe('场景校验', () => {
     const bad = brokenDoc();
     bad.pages[0].guides = [{ axis: 'y', position: Number.NaN }];
     expect(firstError(bad)).toContain('页结构非法');
+  });
+
+  it('四角独立圆角必须是四个非负有限数字', () => {
+    const doc = brokenDoc();
+    const root = doc.nodes[doc.pages[0].rootId];
+    const node = doc.nodes[root.children[0]];
+    node.cornerRadii = [12, 0, 24, 6];
+    expect(validateDoc(doc).ok).toBe(true);
+
+    const short = brokenDoc();
+    const shortNode = short.nodes[short.nodes[short.pages[0].rootId].children[0]];
+    shortNode.cornerRadii = [12, 0, 24] as unknown as [number, number, number, number];
+    expect(firstError(short)).toContain('cornerRadii');
+
+    const negative = brokenDoc();
+    const negativeNode = negative.nodes[negative.nodes[negative.pages[0].rootId].children[0]];
+    negativeNode.cornerRadii = [12, -1, 24, 6];
+    expect(firstError(negative)).toContain('cornerRadii');
   });
 
   it('接受区块节点并校验其容器字段', () => {
@@ -291,6 +332,84 @@ describe('场景校验', () => {
     expect(validateDoc(doc).ok).toBe(true);
     shape.imageFill = { ...shape.imageFill!, assetId: 'missing' };
     expect(firstError(doc)).toContain('imageFill');
+  });
+
+  it('多填充接受 visible，非法显隐值被拒绝', () => {
+    const doc = brokenDoc();
+    const root = doc.nodes[doc.pages[0].rootId];
+    const source = doc.nodes[root.children[0]];
+    const shape: SceneNode = {
+      ...source,
+      id: 'rect-multi',
+      type: 'rect',
+      name: '多填充',
+      parentId: source.id,
+      children: [],
+      fills: [
+        { type: 'solid', color: '#FF0000', opacity: 0.4 },
+        { type: 'solid', color: '#0000FF', opacity: 1, visible: false },
+      ],
+    };
+    doc.nodes[shape.id] = shape;
+    source.children = [shape.id];
+    expect(validateDoc(doc).ok).toBe(true);
+
+    shape.fills = [{ type: 'solid', color: '#FF0000', opacity: 1, visible: 'no' } as never];
+    expect(firstError(doc)).toContain('fills');
+  });
+
+  it('约束接受合法枚举，非法方向被拒绝', () => {
+    const doc = brokenDoc();
+    const root = doc.nodes[doc.pages[0].rootId];
+    const source = doc.nodes[root.children[0]];
+    const shape: SceneNode = {
+      ...source,
+      id: 'rect-constraints',
+      type: 'rect',
+      name: '约束',
+      parentId: source.id,
+      children: [],
+      constraints: { horizontal: 'leftRight', vertical: 'topBottom' },
+    };
+    doc.nodes[shape.id] = shape;
+    source.children = [shape.id];
+    expect(validateDoc(doc).ok).toBe(true);
+
+    shape.constraints = { horizontal: 'diagonal', vertical: 'top' } as never;
+    expect(firstError(doc)).toContain('constraints');
+  });
+
+  it('命名样式校验类型与绑定，引用必须存在且类型匹配', () => {
+    const doc = brokenDoc();
+    const root = doc.nodes[doc.pages[0].rootId];
+    const source = doc.nodes[root.children[0]];
+    const shape: SceneNode = {
+      ...source,
+      id: 'rect-style',
+      type: 'rect',
+      name: '样式',
+      parentId: source.id,
+      children: [],
+      fills: [{ type: 'solid', color: '#FF0000', opacity: 1 }],
+      styleRefs: { fill: 'style-fill' },
+    };
+    doc.nodes[shape.id] = shape;
+    source.children = [shape.id];
+    doc.styles = {
+      'style-fill': { id: 'style-fill', name: '品牌红', kind: 'fill', fills: [{ type: 'solid', color: '#FF0000', opacity: 1 }] },
+    };
+    expect(validateDoc(doc).ok).toBe(true);
+
+    shape.styleRefs = { fill: 'style-missing' };
+    expect(firstError(doc)).toContain('不存在的样式');
+    shape.styleRefs = { fill: 'style-stroke' };
+    doc.styles['style-stroke'] = {
+      id: 'style-stroke',
+      name: '描边',
+      kind: 'stroke',
+      strokes: [{ color: '#221C00', opacity: 1, width: 1, dash: [], cap: 'butt', join: 'miter' }],
+    };
+    expect(firstError(doc)).toContain('类型不匹配');
   });
 
   it('文本列表与段距合法，非法列表值被拒绝', () => {

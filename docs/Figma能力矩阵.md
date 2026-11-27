@@ -1,6 +1,6 @@
 # Groma × Figma 能力矩阵（执行版）
 
-> 更新：2026-11-26 ｜ 审计基线：`npm test` 29 个测试文件 / 193 tests 全绿；C03 已落地钢笔一期/锚点编辑/多轮廓复合路径/共享顶点（`vertexId` 最小内核）/当前轮廓序号与整条轮廓删除，C04 已落地多对象四布尔 Union/Subtract/Intersect/Exclude、同父级校验与 z-order 差集（底层减其余并集），并补齐 Divide / Flatten / Outline stroke；C05 已落地几何形状蒙版与 Alpha/亮度蒙版，多画板画布加入可见区空间索引；C06 已落地图片区域裁剪、剪贴板粘贴与形状图片填充（铺满/适应 + 焦点），C07 已落地字距、段落间距、项目符号/数字列表与字体族建议；D03 已落地多投影与整层模糊（Canvas 离屏效果层 + SVG filter），B02 已补齐 Shift+2 选中适配；百画板总览已改成缩放位图快照 + 低倍画板缩略图 LOD + 增量缩略图 + 左栏行 memo（200 画板 10% 缩放 rAF p95 0.8ms，600 画板 7% p95 8.0ms；编辑一块只重建一块，600 画板拖拽 p95 114.4→11.3ms）；A02 全链路、A05 浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 与本页批量导出、导出弹窗单焦点重排、页缩略图不抢帧补丁、PNG/JPG/WebP 图片节点与工程资产层（含替换图片）、文本对齐/行高/斜体、C02 直线/箭头/多边形/星形与 Slice 区域导出均已落地；左栏 footer 背景固定与内容裁剪、页面“画板”计数只数 Frame、顶栏宽屏四布尔+“更多 ▾”与窄屏“矢量 ▾”七项菜单、验收截图统一最大化；MCP 19 个 stdio 工具（新增能力查询/单节点精确读/百画板网格/批量改节点/页面改名与背景）；外部软件工程级导入只留入口，选区回传待补；EXE 3,387,392 B（3,308 KB），2026-11-26 23:14:27
+> 更新：2026-11-27 ｜ 审计基线：`npm test` 38 个测试文件 / 234 tests 全绿；D04 已落地四角独立圆角（`cornerRadii` 左上/右上/右下/左下，Canvas/SVG/PNG 与检查器统一，真实 EXE 截图 + 保存重开通过）；D01 已落地同节点最多 16 层填充（纯色/线性/径向、逐层显隐、上下移动，Canvas/SVG 按底层到顶层叠加，右栏“填充 · N 层”）；E01 已落地父 Frame 缩放约束（左/右/居中/左右拉伸/按比例 + 上/下/居中/上下拉伸/按比例，画布与撤销纳入子层）；E02 已落地自动布局一期（Frame/Section/Group 横向/纵向、gap、四边 padding、交叉轴 start/center/end/stretch、主轴 start/center/end/space-between、适应内容主轴；子层按图层顺序，选中子层可在右栏“布局顺序”上移/下移并立即重排，嵌套布局自内向外；拖子层交给布局，改尺寸立即重排，撤销合并父容器与兄弟层）；F04 已落地文档级命名样式（填充/描边/效果/文本四类绑定、同步、解除、删除，右栏显示“已绑定 / 已偏离”，并支持复制变量与导出 CSS/JSON 令牌文件）；C03 已落地钢笔一期/锚点编辑/多轮廓复合路径/共享顶点（`vertexId` 最小内核）/当前轮廓序号与整条轮廓删除，C04 已落地多对象四布尔 Union/Subtract/Intersect/Exclude、同父级校验与 z-order 差集（底层减其余并集），并补齐 Divide / Flatten / Outline stroke；C05 已落地几何形状蒙版与 Alpha/亮度蒙版，多画板画布加入可见区空间索引；C06 已落地图片区域裁剪、剪贴板粘贴与形状图片填充（铺满/适应 + 焦点），C07 已落地字距、段落间距、项目符号/数字列表与字体族建议；D03 已落地多投影与整层模糊（Canvas 离屏效果层 + SVG filter），B02 已补齐 Shift+2 选中适配；百画板总览已改成缩放位图快照 + 低倍/中倍密集画板缩略图 + 独立选中覆盖层 + 增量缩略图 + 建图 12ms 预算 + 左栏行 memo，并加入空闲回调预热（首帧 6 张 / 12ms，空闲片 24 张 / 26ms；600 冷启动 4.2s 内 600 张，500ms 150 张，1 个 >16ms、0 个 >32ms，max 30.9ms）；A02 全链路、A05 浏览回滚与快照 diff、A03 Section 基础链路、A08 PNG/JPG/SVG/HTML 与本页批量导出、选中图层 CSS 检查复制、导出弹窗单焦点重排、页缩略图不抢帧补丁、PNG/JPG/WebP 图片节点与工程资产层（含替换图片）、文本对齐/行高/斜体、C02 直线/箭头/多边形/星形与 Slice 区域导出均已落地；左栏 footer 背景固定与内容裁剪、页面“画板”计数只数 Frame、顶栏宽屏四布尔+“更多 ▾”与窄屏“矢量 ▾”七项菜单、验收截图统一最大化；MCP 19 个 stdio 工具（0.3.3：新增能力查询/单节点精确读/百画板网格/批量改节点/页面改名与背景/四角圆角/多填充/约束/自动布局写入）；外部软件工程级导入只留入口，选区回传待补；EXE 3,399,680 B（3,320 KB），2026-11-27 22:04:01
 > 功能底本：[`Figma功能蒸馏参考.md`](./Figma功能蒸馏参考.md)（能力清单，不是完成清单）
 > 权威顺序：`README.md` 第零章 → 本文 → 其他规划文档
 > 一句话：**Figma 免费版是功能基线，其他工具的长处是融合层；矩阵只认双击 EXE 能跑的结果。**
@@ -54,10 +54,10 @@
 | A02 | 多页面 | 单文件多 Page，新建/复制/重命名/拖排序/删除，切页独立画布 | ✅ 2026-11-23 全链路：页列表、新建/改名/复制/删除/切换/拖排序、页级撤销、保存重开；实时页面缩略图；左栏跨页图层搜索并跳页选中；当前页与各页视口按工程持久化，关掉重开恢复 | 页面模板/跨页组件不属于免费版核心，留后续 | **P0** |
 | A03 | Sections | 画布区块包 Frame，可命名、折叠、背景、整体导出 | ◐ 2026-11-23 基础链路：`S` 工具 / 画布拖建、命名、图层树折叠、通用填充背景、Frame 可挂入区块、PNG 整体导出（含子 Frame）已真实窗口验收；无 Section 专属色板与自定义封面，嵌套 Section 只允许一层 | Section 专属视觉、更多嵌套规则 | P1 |
 | A04 | Frame | 设备预设、自定义、无限嵌套、裁剪、圆角、滚动方向 | ◐ 设备预设/新建、移动缩放、裁剪；嵌套与滚动未验 | 嵌套 Frame、滚动设置 | P1 |
-| A05 | 版本历史 | 自动/手动快照、命名、回滚、对比、分支合并 | ◐ 2026-11-23 已落地快照列表、页面预览、手动存版本、二次确认回滚、恢复前自动留底；无命名版本、逐帧 diff、分支合并 | 命名版本、diff、分支 | P1 |
+| A05 | 版本历史 | 自动/手动快照、命名、回滚、对比、分支合并 | ◐ 2026-11-23 已落地快照列表、页面预览、手动存版本、二次确认回滚、恢复前自动留底；2026-11-27 选中旧快照显示“相对当前：+N / -M / ~K”及变化图层名（本地文档 diff）；无命名版本、分支合并 | 命名版本、分支合并 | P1 |
 | A06 | 保存/恢复 | 自动保存、崩溃恢复、保存失败可见 | ◐ 自动保存/三态已落地；崩溃恢复 UI 未完整验收 | 异常退出恢复入口 | P1 |
 | A07 | 导入 | `.sketch`、SVG 粘贴、图片、文本 | ◐ 2026-11-24 已落地 SVG 文件导入（含内嵌图片）与 PNG/JPG/WebP 位图导入；位图写入工程 `assets`，场景只存引用，可作为图片节点选中/变换/替换/保存/重开/导出；2026-11-26 增加剪贴板图片粘贴（带文件启动工程后直接 `Ctrl+V`）；未做 `.sketch`、SVG/文本粘贴、拖放导入 | `.sketch`、SVG/文本粘贴、拖放 | P2 |
-| A08 | 导出 | PNG/JPG/SVG/PDF、倍率、批量、Copy as CSS | ◐ 2026-11-24 已落地 PNG/JPG/SVG、1×/2×（SVG 无倍率）、当前选中图层（任意形状/钢笔/文本/图片/组合）/ 画板 / 区块 / 切片 / 本页全部、批量逐个写文件；JPG 强制白底，Section 仍按边界裁剪；导出弹窗重排为单焦点分段控件，去掉“导出后打开 Strata/Vexa”；选区外部处理与回传未接，无 PDF、无 ZIP、无保存目录选择、无 JPG 质量滑杆 | PDF、Copy as、保存对话框、SVG 完整保真、选区回传 | P1 |
+| A08 | 导出 | PNG/JPG/SVG/HTML/PDF、倍率、批量、Copy as CSS | ◐ 2026-11-27 四格式：PNG/JPG/SVG 原有能力保留；新增 HTML 可运行网页（文字可选、形状 CSS、路径内联 SVG、图片 data URL，无倍率），真实 EXE 导出 1200×760 / 3,376 B，Edge 与画板一致。范围仍支持当前选中图层 / 画板 / 区块 / 切片 / 本页全部，批量逐个写文件；JPG 强制白底，Section 仍按边界裁剪；导出弹窗单焦点，不挂外部应用；选中图层的 Copy as CSS 已在右栏图层检查器提供（`.样式卡-a` + 定位/圆角/渐变/描边/阴影/文本），未进导出弹窗；无 PDF、无 ZIP、无保存目录选择、无 JPG 质量滑杆 | PDF、ZIP、保存对话框、选区回传 | P1 |
 
 ### 1.2 画布与导航
 
@@ -89,10 +89,10 @@
 
 | ID | 能力 | Figma 基线 | Groma 现状 | 下一缺口 | 优先级 |
 | --- | --- | --- | --- | --- | --- |
-| D01 | 填充 | 多填充、纯色/渐变/图片/图案 | ◐ 单层纯色或线性/径向渐变（`fills[0]`），渐变角度/焦点/色标可编辑；形状图片填充单列；未做同层多填充叠加、图案填充 | 多填充、图案 | P1 |
+| D01 | 填充 | 多填充、纯色/渐变/图片/图案 | ✅ 2026-11-27 同节点最多 16 层填充：纯色/线性/径向、逐层透明度与显隐、上下移动；右栏“填充 · N 层”列表 + 选中层详细编辑；Canvas/SVG/PNG 按底层→顶层叠加，上层半透明可透出下层；图片填充存在时颜色层暂不参与绘制 | 图案填充、颜色层与图片层混排 | P1 |
 | D02 | 描边 | 内/中/外、虚线、端点/拐角、可变宽度、转轮廓 | ◐ 描边数组、颜色/透明度/宽度、实线/虚线/点线/自定义 dash、端点 butt/round/square、转角 miter/round/bevel 已落地，Canvas/SVG 同步；Outline stroke 可转形状；未做内/中/外对齐、可变宽度 | 描边对齐、可变宽度 | P1 |
 | D03 | 效果 | 投影/内阴影/图层模糊/背景模糊，多效果 | ◐ 2026-11-26 多投影 + 整层模糊已落地：每节点可叠多条效果，投影 X/Y/模糊/颜色/透明度，整层模糊半径；Canvas 离屏效果层按 alpha 投影，SVG 输出 `feDropShadow`/`feGaussianBlur` + `feMerge`；支持隐藏/移除、保存重开、PNG/SVG 导出；内阴影、背景模糊未做 | 内阴影、背景模糊 | P1 |
-| D04 | 圆角 | 四角独立、缩放圆角 | ◐ 统一圆角 | 四角独立 | P1 |
+| D04 | 圆角 | 四角独立、缩放圆角 | ✅ 2026-11-27 四角独立圆角：`cornerRadii` 左上/右上/右下/左下，缺省回退统一圆角；右栏“四角独立/统一圆角”切换，Canvas 路径、PNG 导出、SVG rect/path 与工程保存重开一致；真实 EXE 截图 `shots/corners-final.png` | 缩放时保持视觉圆角（单角随 W/H 压缩） | P1 |
 | D05 | 混合/透明度 | 全套 blend mode、整体透明度 | ◐ 仅透明度 | blend mode | P2 |
 | D06 | 轮廓/扁平化 | Outline stroke、Flatten | ◐ 2026-11-25 随 C04.3 落地：Outline stroke 与 Flatten 已可从矢量菜单执行，支持单对象描边转形状；虚线/开放轮廓描边仍拒绝 | 更精确的 join、虚线转轮廓 | P1 |
 
@@ -100,8 +100,8 @@
 
 | ID | 能力 | Figma 基线 | Groma 现状 | 下一缺口 | 优先级 |
 | --- | --- | --- | --- | --- | --- |
-| E01 | Constraints | 左/右/居中/拉伸、上/下/居中/拉伸 | ○ 字段有占位，无 UI/求解 | 约束属性 + 父 Frame 变化响应 | P1 |
-| E02 | Auto Layout | 方向、padding、gap、主轴/交叉轴、Hug/Fill/Fixed、嵌套 | ○ | 布局引擎 + 属性分组 | P1 |
+| E01 | Constraints | 左/右/居中/拉伸、上/下/居中/拉伸 | ✅ 2026-11-27 父 Frame/Section 缩放时按子层约束重排：右/下按父尺寸差平移、居中平移一半、左右/上下拉伸、按比例缩放；`patchNode` 尺寸变化自动应用，画布事务把子层纳入同一撤销；右栏水平/垂直双下拉，仅直接父级为 Frame 时显示 | 嵌套 Group 内子层递归、Auto Layout 衍生 | P1 |
+| E02 | Auto Layout | 方向、padding、gap、主轴/交叉轴、Hug/Fill/Fixed、嵌套 | ◐ 2026-11-27 自动布局一期：Frame/Section/Group 支持横向/纵向、gap、四边 padding、交叉轴 start/center/end/stretch、主轴 start/center/end/space-between、Hug 主轴；子层按图层顺序、嵌套布局自内向外；画布拖子层被布局接管，改子层/容器尺寸立即重排；撤销同时恢复父容器与移动兄弟层。未做 Fill/Fixed 全组合、换行、布局网格、子层拖拽重排；新增子层后需点“重排” | Fill/Fixed 全组合、换行、布局网格、子层重排 | P1 |
 | E03 | 响应式预览 | 宽度变化 + 约束 + Auto Layout 的组合验证 | ○ | 尺寸切换预览 | P2 |
 
 ### 1.6 组件、样式、变量
@@ -111,7 +111,7 @@
 | F01 | Component / Instance | 主组件、实例、Detach、Swap、Override | ○ | 组件节点 + 实例同步 | P1 |
 | F02 | Variants | 属性组合、Boolean/Text/Numeric/Variant、嵌套 | ○ | 变体集与属性面板 | P1 |
 | F03 | Libraries / Assets | 团队库、个人库、发布/更新、资产搜索 | ○ | 本地库 + Assets 面板 | P2 |
-| F04 | Styles | Paint/Text/Effect/Grid 四类样式、命名空间 | ○ | 样式表 + 应用/解绑 | P1 |
+| F04 | Styles | Paint/Text/Effect/Grid 四类样式、命名空间 | ◐ 2026-11-27 文档级命名样式：填充/描边/效果/文本四类，节点 `styleRefs` 绑定；右栏“存为样式 / 绑定 / 同步到样式 / 解除 / 删除”，样式值偏离时提示“已偏离”；更新样式会同步所有同类绑定图层，删除样式清引用；右栏“复制变量”输出 `:root { --groma-... }`，“导出令牌”写 CSS + JSON 两个文件到工程 `exports`（真实 EXE：CSS 272 B / JSON 375 B），多填充按顶层到底层、纯色转合法渐变；暂用“保留绑定 + 手动同步”，未做 Figma 式编辑即解绑、Grid 样式、样式重命名 UI | 编辑即解绑、Grid、重命名 UI | P1 |
 | F05 | Variables | Color/Number/String/Boolean、集合、Modes、绑定、引用 | ○ | 变量表 + Mode 切换 | P1 |
 | F06 | Design Tokens | 变量导出到代码 token | ○ 只有 scene JSON | token JSON 导出/导入 | P2 |
 
@@ -162,7 +162,7 @@
 | ID | 融合能力 | 参考来源 | 为什么值得 | Groma 现状 | UI 归宿（不许新增常驻面板） | 优先级 |
 | --- | --- | --- | --- | --- | --- | --- |
 | K01 | 本地优先、离线工程 | Chapter / 本地工具 | Figma 强云依赖；本地文件更可控 | ✅ `.groma` + 快照 | 文件系统，不进面板 | 已落地 |
-| K02 | MCP / 外部自动化 | 小方工作室全线要求 | 外部客户端不开界面读写工程 | ◐ 19 个 stdio 工具；新增 `groma_capabilities`、单节点精确读、2×3/百块画板网格、最多 200 节点批量改、页面改名/背景；布尔与分组写入仍未注册 | 独立服务，不进主界面 | P1 |
+| K02 | MCP / 外部自动化 | 小方工作室全线要求 | 外部客户端不开界面读写工程 | ◐ 0.3.1 / 19 个 stdio 工具；新增 `groma_capabilities`、单节点精确读、2×3/百块画板网格、最多 200 节点批量改、页面改名/背景、`cornerRadii` 四角补丁；布尔与分组写入仍未注册 | 独立服务，不进主界面 | P1 |
 | K03 | 可读 JSON / Git 友好 | Penpot / 开源工具 | diff、回滚、脚本、CI | ◐ scene.json 可读；无 diff/合并 | 文件格式，不加 UI | P2 |
 | K04 | 本地插件沙箱 | Figma Plugin API | 扩展能力但不依赖社区市场 | ○ | 命令面板 + 独立插件窗口 | P2 |
 | K05 | 代码组件映射 | Figma Code Connect / Storybook | 设计组件直接对应真实代码 | ○ | 右栏 Code 分组，仅选中组件时出现 | P2 |
@@ -466,20 +466,64 @@
 ### 3.21 P01 百画板总览不卡（2026-11-26 已落地）
 
 - 问题：200 画板 × 50 子节点，10% 总览滚轮每步 90ms、rAF p95 56.3ms；画板越多越卡。
-- 改法：滚轮期间只缩放内容区位图，停手 180ms 再提交 viewport 并做真实重绘；`scale < 0.5` 跳过 <4px 叶子，`scale < 0.3` 跳过画板阴影/名称；`scale < 0.2` 每块根画板走 5% 档位缩略图缓存（64MB 封顶），缓存键含画板 id/档位/DPR，每张记子树对象引用，编辑一块只重建一块；首次总览每帧只补 6 张，CanvasView 续帧补齐；左栏行 `memo`、计数按 doc memo、`content-visibility:auto`。
+- 改法：滚轮期间只缩放内容区位图，停手 180ms 再提交 viewport 并做真实重绘；`scale < 0.5` 跳过 <4px 叶子，`scale ≤ 0.3` 跳过画板阴影/名称；低倍与可见画板 >32 的 ≤50% 场景每块根画板走 5% 档位缩略图缓存（64MB 封顶），缓存键含画板 id/档位/DPR，每张记子树对象引用，编辑一块只重建一块；首次总览每帧最多 6 张且 12ms 截止，CanvasView 续帧补齐；左栏行 `memo`、计数按 doc memo、`content-visibility:auto`。
 - 真实 EXE：200 画板 10% 宽 40 步滚轮 rAF p95 **0.8ms** / max 3.4ms；600 画板 7% 宽 30 步 p95 **8.0ms** / max 9.0ms；600 画板平移 p95 **1.9ms** / max 21.4ms（一次尖峰，p50 0.9ms）。截图 `shots/perf-200-verified.png`、`shots/perf-600-verified.png`。
-- 边界：位图缓存只在 <20% 用；缩略图不反映总览倍率下对子图层的即时编辑，停手后只重建被改的那块；缩放百分比在停手后才更新。
+- 边界：位图缓存用于低倍与可见画板 >32 的 ≤50% 密集场景；缩略图不反映总览倍率下对子图层的即时编辑，停手后只重建被改的那块；缩放百分比在停手后才更新。
 
 ### 3.21.1 P01 百画板编辑不再整批重建（2026-11-26 已落地）
 
 - 旧问题：文档一变，下一次停手总览清空 64MB 缓存重做全部小图；600 画板拖一块，松手重建 600 张、rAF p95 114.4ms；200 画板 p95 77.1ms。
 - 改法：缓存从按画板对象改成稳定 id 键，每张记录整棵子树对象引用；命中时逐层比对引用，只有改动画板/子对象不匹配才重建。图片资产异步加载才整批失效。首次总览 6 张/帧补齐，手势中不建图。
-- 真实 EXE A/B：200 画板重建 200 张 → **1 张**，p95 **77.1ms → 6.4ms**；600 画板重建 600 张 → **1 张**，p95 **114.4ms → 11.3ms**；两者长帧都从 1 个降到 0。600 冷启动首次 `Shift+1` 600 张在 2.6s 内补齐，p50 12.2ms / p95 23.0ms / max 29.7ms，无 >32ms 长帧。截图 `shots/perf-200-drag-after.png`、`shots/perf-600-drag-after.png`、`shots/perf-600-fit-after.png`。
+- 真实 EXE A/B：200 画板重建 200 张 → **1 张**，p95 **77.1ms → 6.4ms**；600 画板重建 600 张 → **1 张**，p95 **114.4ms → 11.3ms**；两者长帧都从 1 个降到 0。600 冷启动首次 `Shift+1` 600 张在 2.6s 内补齐，p50 12.2ms / p95 23.0ms / max 29.7ms，无 >32ms 长帧。
 - 边界：单块重建仍 6–14ms，未搬 Worker；600 图补齐期间约 43fps，不是 60fps。
+
+### 3.21.2 引擎第二刀：选中层、中倍画板小图与建图预算（2026-11-27 已落地）
+
+- 选中层：主画布 `selection:false`，新 `.canvas-selection` 只重绘黄框/手柄；空选中时覆盖层 `display:none`。选中一次不再重画整张场景。
+- 中倍画板：`OVERVIEW_BITMAP_SCALE` 0.2→0.5；可见根画板 >32 且 ≤50% 时整块贴小图，命中后只补 1px 边框与画板名；旋转/带效果画板仍走矢量。
+- 建图预算：每帧最多 6 张，12ms deadline 超时即停，余下交给 `overviewPending` 下一帧续；拖动/缩放中不建图。
+- 真实 EXE：200 冷启动 `Shift+1` 全部 200 张，p95 8.0ms / max 11.4ms；600 冷启动 7% 全部 600 张，p95 20.8ms / max 25.4ms，0 个 >32ms；600 拖一块只重建 1 张，p95 7.7ms；200 拖一块 p95 3.7ms；600 从 7% 到 32% 建 50 张，p95 3.3ms；32% 选中一次 p95 1.0ms、0 张新画布。
+- 截图 `shots/engine-200-fit.png`、`shots/engine-600-fit-final.png`、`shots/engine-600-drag-final.png`、`shots/engine-200-drag-final.png`、`shots/engine-600-medium-final.png`、`shots/engine-600-drag-medium-final.png`。
+- 边界：中倍贴图不含投影/效果/旋转；拖动时文档在变，场景仍整场重画；600 首次补齐约 2.6s。
+
+### 3.22 D01 多填充 + E01 约束 + F04 样式（2026-11-27 已落地）
+
+- D01：`Paint.visible`；`fills` 数组约定顶层→底层，渲染反向铺；`MAX_FILLS=16`。新增 `src/core/fills.ts`（增删改移/显隐/汇总），Canvas `paintFillStack` 逐层 `save/restore` 并乘 `globalAlpha`，SVG `paintStack` 逐层输出，描边单独补透明填充形状。右栏 `FillEditor` 顶部“填充 · N 层”“添加填充”，每行色块/类型/色标数/显隐/删除，选中层保留原详细编辑与上下移动。修正矩形/椭圆/画板/区块渐变坐标：改按节点屏幕原点 + 缩放创建渐变，避免渐变落在画布原点导致整块取末色（`shots/figma33-gradient.png`）。
+- E01：新增 `src/core/constraints.ts`；`patchNode` 在 frame/section 尺寸变化时调用 `applyConstraintsOnResize` 递归子层；`changedDescendants` 把子层变化写进 `PatchItem[]`，`beginTransaction` 快照整棵子树，画布缩放父画板也能一步撤销。右栏 `ConstraintsSection` 两枚下拉，仅父级为 Frame 时显示。
+- F04：`StyleKind = fill | stroke | effect | text`；`GromaDoc.styles` + `SceneNode.styleRefs`；`src/core/styles.ts` 负责取/套/比对/偏离类型；编辑器 `createStyle/applyStyle/updateStyle/detachStyle/deleteStyle/renameStyle`，`HistoryEntry.doc` 保存前后整文档，样式增删改可回滚。右栏 `StylesSection` 按节点适用类型列行，支持绑定、存为样式、同步到样式、解除、删除，显示“已绑定 · N 个图层 / 已偏离样式”。
+- 真实验收工程 `C:\Users\ASUS\Documents\Groma\Figma33.groma`：1200×760 画板，三张 300×220 卡片（多填充渐变卡、两张共用 `品牌蓝紫` 填充样式卡），选中样式卡 A 后右栏显示 2 层填充、样式绑定 2 图层、约束左右/上下拉伸。截图 `shots/figma33-final.png`（填充栈）、`shots/figma33-final-inspector.png`（样式 + 约束）、`shots/figma33-gradient.png`（渐变修正）。
+- 测试：新增 `fills.test.ts` 3、`constraints.test.ts` 3、`styles.test.ts` 2；`schema.test.ts` +3、`svg.test.ts` +1、`editor.test.ts` +3；该刀完成时全量 **37 文件 / 228 tests** 通过。MCP 0.3.2 当时支持 `fills` / `constraints` 写入，selftest `frames=8 · snapshots=8` 通过。
+- 边界：D01 图片填充存在时颜色层不绘制；E01 仅 frame/section 子层递归，Group 内子层不跟随；F04 为手动同步语义，无 Grid 样式与重命名 UI。
+
+### 3.23 引擎第三刀：空闲回调预热 600 画板（2026-11-27 已落地）
+
+- `DrawOptions` 新增 `overviewBudget / overviewDeadlineMs / idleOverview`；首帧仍 6 张 / 12ms，空闲回调每片 24 张 / 26ms（`timeout=160`，无 `requestIdleCallback` 回退 rAF），cleanup 同时取消 rAF 与 idle callback。
+- 真实 EXE 600 画板 `Shift+1` 冷启动：`created=600`，500ms 内 150 张，rAF `p50 0ms / p95 0.2–0.4ms / max 30.9ms`，`>16ms` 1 个、`>32ms` 0 个，`TaskDuration 711.1ms`。旧第二刀同场景为 500ms 84 张、p95 20.8ms / max 25.4ms。
+- 截图 `shots/engine-600-fit-idle-final.png`。边界：建图仍占主线程空闲片，未搬 Worker/磁盘缓存；600 张在 4.2s 窗口内补齐，不是瞬时。
+
+### 3.24 超越 Figma 的第一刀：HTML / 令牌 / 图层 CSS / 版本 diff（2026-11-27 已落地）
+
+- HTML：`ExportFormat` 增加 `html`；新增 `src/render/html.ts` 的 `renderFrameHtml / renderNodeHtml`。画板/区块走 `renderFrameHtml`，任意图层走 `renderNodeHtml`；文字输出为可选中 `<div>`，矩形/椭圆/画板用 CSS 渐变 + 圆角 + 溢出裁剪，钢笔路径复用 `renderNodeSvg` 内联，图片节点/形状图片填充用 `data URL` 内嵌；绝对坐标按画板原点归零，隐藏图层不输出。后端 `groma_export_file` 接受 `html` 并写 UTF-8 文本，导出弹窗第四格式去掉倍率、保留透明背景。
+- HTML 验收：真实 EXE 导出 `C:\Users\ASUS\Documents\Groma\Figma33.groma\exports\组件验收画板-2.html`，1200×760 / 3,376 B；Edge 渲染与画板一致，文字清晰、三张卡片渐变/圆角正确；截图 `shots/html-export-ui.png`、`shots/html-export-toast.png`、`shots/html-export-browser.png`。
+- CSS 令牌：新增 `src/io/tokens.ts` 的 `styleTokens / styleTokensCss / styleTokensJson`，把 `GromaDoc.styles` 四类命名样式转 `:root { --groma-... }`；多填充按顶层→底层输出，纯色在多层时转 `linear-gradient(color,color)` 以保证 CSS 合法。右栏 `StylesSection` 提供“复制变量”和“导出令牌”；后者复用 `exportTextFile` 一次写 `.css` 与 `.json` 到工程 `exports`，真实 EXE 得到 272 B CSS / 375 B JSON，按钮状态“已导出 CSS + JSON”；截图 `shots/code-tokens.png`。
+- 图层 CSS：新增 `src/core/css.ts` 的 `nodeCss(doc, nodeId)`，输出定位尺寸、透明度、变换、圆角、纯色/多渐变、首条描边、投影、整层模糊与文本字体规则；类名由图层名生成（`.样式卡-a`）。右栏 `CssSection` 显示代码块并提供“复制 CSS”，`src/ui/clipboard.ts` 先走 `navigator.clipboard`、失败退回隐藏 textarea；真实 EXE 可信鼠标点击后按钮变“已复制”，截图 `shots/copy-css.png`。
+- 版本 diff：新增 `src/core/diff.ts` 的 `diffDocs / diffSummary`，比较节点增删改与子层顺序；`VersionHistory` 选中旧快照时显示“相对当前：+N / -M / ~K”及前 4 个变化图层。真实 EXE 存快照、拖动“样式卡 A”后对旧快照显示 `~1 · 样式卡 A`，截图 `shots/version-diff.png`。
+- 测试：新增 `src/render/html.test.ts` 3、`src/io/tokens.test.ts` 2、`src/core/diff.test.ts` 3、`src/core/css.test.ts` 3；该刀完成时全量 **38 文件 / 233 tests** 通过；`dist` JS `index-Fq1ihmWL.js` 557,337 B，CSS `index-COthPGDc.css` 67,252 B；EXE 3,398,656 B（3,319 KB）/ 2026-11-27 20:26:24。
+- 边界：HTML 只支持单画板/单图层/本页批量，不支持 Slice；文本仅整段样式，富文本片段、路径文字、离线字体嵌入未做；CSS 令牌只做单主题 `:root`，无多 Mode/别名；版本 diff 是结构级增删改与子层顺序，不做像素级逐帧对比；不做云端协作/账号/评论。
+
+### 3.25 E02 自动布局一期（2026-11-27 已落地）
+
+- 数据：`SceneNode.layout?: AutoLayout`，含 `mode / gap / padding(top,right,bottom,left) / align / justify / hug`；只允许 Frame/Section/Group，旧工程无此字段照旧手动坐标。
+- 引擎：`src/core/autoLayout.ts` 的 `layoutSubtree / reflowPageFrom`。先递归子层（内层嵌套先定尺寸），再按主轴累计尺寸、gap、padding、justify 计算位置；交叉轴按 start/center/end/stretch；`hug` 时主轴尺寸包住内容。
+- 接线：`patchNode` 在容器自身或父容器带 `layout` 时重排同一页，并回传 `beforeNodes/afterNodes`；`patchItems` 合并父容器与兄弟层变化，撤销一次恢复全部。画布拖动/键盘微调自动布局子层被拦截，尺寸与布局参数仍可改。
+- UI：Frame/Section/Group 右栏新增“自动布局”段；关闭态一个“开启自动布局”，开启态“重排 / 关闭”改为图标按钮，横向/纵向用方向图标 + 文字，间距、四边内边距、交叉轴/主轴下拉、适应内容主轴；字段标签改为自适应宽度，右栏文本溢出审计为空。右栏分区内边距 16/18、字段间距 10、按钮组间距 8，填充行显隐/删除改为眼睛/垃圾桶图标并留 6px 间距。
+- 验收：真实 EXE 打开 `AutoLayout.groma`，按钮组 4 个 150×64 子层、gap 20、padding 上/下 28 · 右/左 20、交叉轴居中、主轴两端，画布与右栏一致；方向图标、图标按钮与字段标签无溢出；截图 `shots/autolayout-ui-final.png`。选中子层后“布局顺序”从 `1 / 4` 下移到 `2 / 4`，画布与图层树同步，截图 `shots/layout-order-final.png`。
+- 子层顺序：新增 `reorder` 命令，选中自动布局子层后在右栏“布局顺序”上移/下移，父容器立即重排；`moveLayoutOrder` 记一条 structure 历史。真实 EXE 从 `1 / 4` 点下移到 `2 / 4`，截图 `shots/layout-order-final.png`。
+- 测试：`autoLayout.test.ts` 5 条（新增重排后按新顺序布局并可撤销）；`schema.test.ts` +1 条布局校验；全量 **38 文件 / 234 tests**。MCP 0.3.3 已支持 `layout` 写入并通过 selftest。EXE 3,399,680 B（3,320 KB），2026-11-27 22:04:01。
+- 边界：新增子层后不自动重排，需点“重排”；顺序重排已支持右栏按钮，画布拖拽排序未做；未做 Fill/Fixed 全组合、换行、布局网格；容器旋转不参与布局计算。
 
 ---
 
-## 4 每一刀的开工单模板（以后只按这个写）
 
 ```md
 能力 ID：
@@ -542,6 +586,7 @@ Groma 的对手不是“功能更多的 Figma 皮肤”，而是**能把 Figma �
 - 最后才做原型、Dev Mode、协作与融合。
 
 **A02 全链路（缩略图/跨页搜索/页级视口持久化）、A05 版本浏览回滚、A03 Section 基础链路、A08 PNG/JPG/SVG 批量导出与导出弹窗单焦点重排、图片节点/工程资产层已落地；外部软件工程级导入只留入口，下一刀补选区回传、图片填充/裁剪与 A07 粘贴/拖放，随后再碰组件/变量，仍不从面板数量开始。**
+
 
 
 

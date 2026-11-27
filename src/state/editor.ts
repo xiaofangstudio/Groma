@@ -9,7 +9,8 @@ import {
   removePage as removePageFromDoc,
   renamePage as renamePageInDoc,
 } from '../core/pages';
-import type { GromaDoc, Guide, ImageAsset, NodeType, PathAnchor, Rect, SceneNode, Stroke } from '../core/types';
+import type { GromaDoc, Guide, ImageAsset, NodeType, PathAnchor, Rect, SceneNode, Stroke, Style, StyleKind } from '../core/types';
+import { canCreateStyle, styleApplyPatch, styleFromNode, styleName, styleValuesPatch } from '../core/styles';
 import { clampScale, fitRect, zoomAt, type Viewport } from '../core/viewport';
 import type { ProjectUiState } from './project-ui';
 import type { ImportedNode, SvgImport } from '../io/importSvg';
@@ -18,6 +19,7 @@ import { absolutePosition, absoluteRect, deepestFrame, selectionBounds, topLevel
 import { shapePath, type ShapeKind } from '../core/shapes';
 import { nodePathContours, penContoursGeometry, type PenAnchor, type PenContour } from '../core/pen';
 import { vectorActionBuild, type BooleanOp, type VectorAction } from '../core/boolean';
+import { isAutoLayoutChild } from '../core/autoLayout';
 
 export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'line' | 'arrow' | 'polygon' | 'star' | 'slice' | 'pen';
 export type SaveState = 'local' | 'saving' | 'saved' | 'error';
@@ -49,6 +51,7 @@ type HistoryEntry =
   | { kind: 'delete'; parentId: string; index: number; subtree: Record<string, SceneNode> }
   | { kind: 'deleteBatch'; items: DeleteItem[] }
   | { kind: 'guides'; pageId: string; before: Guide[]; after: Guide[] }
+  | { kind: 'doc'; beforeDoc: GromaDoc; afterDoc: GromaDoc }
   | {
       kind: 'pages';
       beforeDoc: GromaDoc;
@@ -96,6 +99,7 @@ interface Transaction {
 let state: EditorState;
 let transaction: Transaction | null = null;
 let idSeq = 0;
+let styleSeq = 0;
 let viewportAnimFrame = 0;
 
 function freshState(): EditorState {
@@ -361,29 +365,70 @@ function selectionOnPage(doc: GromaDoc, pageId: string, ids: string[]): string[]
   return ids.filter((id) => pageContainsNode(doc, pageId, id));
 }
 
+function changedDescendants(beforeDoc: GromaDoc, afterDoc: GromaDoc, rootId: string): PatchItem[] {
+  const root = beforeDoc.nodes[rootId];
+  if (!root || root.children.length === 0) return [];
+  const items: PatchItem[] = [];
+  const stack = [...root.children];
+  const seen = new Set<string>();
+  while (stack.length > 0) {
+    const id = stack.pop() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const before = beforeDoc.nodes[id];
+    const after = afterDoc.nodes[id];
+    if (!before || !after) continue;
+    if (JSON.stringify(before) !== JSON.stringify(after)) items.push({ id, before, after });
+    stack.push(...before.children);
+  }
+  return items;
+}
+
+function pageHasAutoLayout(doc: GromaDoc, rootId: string): boolean {
+  const stack = [rootId];
+  while (stack.length > 0) {
+    const node = doc.nodes[stack.pop() as string];
+    if (!node) continue;
+    if (node.layout) return true;
+    stack.push(...node.children);
+  }
+  return false;
+}
+
 function patchItems(
   doc: GromaDoc,
   patches: Array<{ id: string; patch: NodePatch }>,
 ): { doc: GromaDoc; items: PatchItem[] } {
   let next = doc;
-  const items: PatchItem[] = [];
+  const changed = new Map<string, PatchItem>();
+  const record = (before: SceneNode, after: SceneNode) => {
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    const existing = changed.get(after.id) ?? changed.get(before.id);
+    if (existing) existing.after = after;
+    else changed.set(after.id, { id: after.id, before, after });
+  };
   for (const { id, patch } of patches) {
     try {
+      const beforeApply = next;
       const result = applyCommand(next, { type: 'patch', id, patch });
       if (!result.before || !result.after) continue;
-      if (JSON.stringify(result.before) !== JSON.stringify(result.after)) {
-        items.push({ id, before: result.before, after: result.after });
-      }
+      record(result.before, result.after);
       next = result.doc;
+      if (result.beforeNodes && result.afterNodes) {
+        for (const [key, before] of Object.entries(result.beforeNodes)) {
+          const after = result.afterNodes[key];
+          if (after) record(before, after);
+        }
+      }
+      for (const item of changedDescendants(beforeApply, next, id)) record(item.before, item.after);
     } catch {
       // 单个节点补丁失败不应让整批操作停在中途
     }
   }
-  return { doc: next, items };
+  return { doc: next, items: [...changed.values()] };
 }
 
-function patchForTarget(from: SceneNode, target: SceneNode): NodePatch {
-  const patch = { ...target } as Record<string, unknown>;
+function patchForTarget(from: SceneNode, target: SceneNode): NodePatch {  const patch = { ...target } as Record<string, unknown>;
   for (const key of Object.keys(from)) {
     if (!(key in target)) patch[key] = undefined;
   }
@@ -511,6 +556,9 @@ function applyEntry(doc: GromaDoc, entry: HistoryEntry, direction: 'undo' | 'red
   }
   if (entry.kind === 'guides') {
     return withGuides(doc, entry.pageId, direction === 'undo' ? entry.before : entry.after);
+  }
+  if (entry.kind === 'doc') {
+    return direction === 'undo' ? entry.beforeDoc : entry.afterDoc;
   }
   if (entry.kind === 'pages') {
     return direction === 'undo' ? entry.beforeDoc : entry.afterDoc;
@@ -834,6 +882,122 @@ export const editor = {
         future: [],
       };
     });
+  },
+
+  createStyle(kind: StyleKind, nodeId?: string): string | null {
+    const id = nodeId ?? state.selectedId;
+    const node = id ? state.doc.nodes[id] : undefined;
+    if (!node || !canCreateStyle(kind, node)) return null;
+    const existing = Object.values(state.doc.styles ?? {}).filter((style) => style.kind === kind).length;
+    styleSeq += 1;
+    const styleId = `style-${Date.now().toString(36)}-${styleSeq}`;
+    const style = styleFromNode(kind, styleId, styleName(kind, existing), node);
+    if (!style) return null;
+    const refs = { ...(node.styleRefs ?? {}), [kind]: styleId };
+    const after: GromaDoc = {
+      ...state.doc,
+      styles: { ...(state.doc.styles ?? {}), [styleId]: style },
+      nodes: { ...state.doc.nodes, [node.id]: { ...node, styleRefs: refs } },
+    };
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return styleId;
+  },
+
+  applyStyle(styleId: string, nodeId?: string): boolean {
+    const id = nodeId ?? state.selectedId;
+    const node = id ? state.doc.nodes[id] : undefined;
+    const style = state.doc.styles?.[styleId];
+    if (!node || !style) return false;
+    const result = patchItems(state.doc, [{ id: node.id, patch: styleApplyPatch(style, node) }]);
+    if (result.items.length === 0) return false;
+    set((s) => ({
+      ...s,
+      doc: result.doc,
+      past: [...s.past, { kind: 'batch', items: result.items } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return true;
+  },
+
+  /** 用当前节点值覆盖命名样式，并同步所有已绑定该样式的同类型图层。 */
+  updateStyle(styleId: string, sourceId?: string): boolean {
+    const source = sourceId ? state.doc.nodes[sourceId] : state.selectedId ? state.doc.nodes[state.selectedId] : undefined;
+    const style = state.doc.styles?.[styleId];
+    if (!source || !style || !canCreateStyle(style.kind, source)) return false;
+    const nextStyle = styleFromNode(style.kind, style.id, style.name, source);
+    if (!nextStyle) return false;
+    const values = styleValuesPatch(nextStyle, source);
+    const nodes = { ...state.doc.nodes };
+    for (const [nodeId, node] of Object.entries(nodes)) {
+      if (node.styleRefs?.[style.kind] !== styleId) continue;
+      nodes[nodeId] = { ...node, ...values };
+    }
+    const after: GromaDoc = {
+      ...state.doc,
+      styles: { ...(state.doc.styles ?? {}), [styleId]: nextStyle },
+      nodes,
+    };
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return true;
+  },
+
+  detachStyle(kind: StyleKind, nodeId?: string): boolean {
+    const id = nodeId ?? state.selectedId;
+    const node = id ? state.doc.nodes[id] : undefined;
+    if (!node?.styleRefs?.[kind]) return false;
+    const refs = { ...node.styleRefs };
+    delete refs[kind];
+    editor.applyPatch(node.id, { styleRefs: Object.keys(refs).length > 0 ? refs : undefined });
+    return true;
+  },
+
+  deleteStyle(styleId: string): boolean {
+    const style = state.doc.styles?.[styleId];
+    if (!style) return false;
+    const styles = { ...(state.doc.styles ?? {}) };
+    delete styles[styleId];
+    const nodes = { ...state.doc.nodes };
+    for (const [nodeId, node] of Object.entries(nodes)) {
+      if (node.styleRefs?.[style.kind] !== styleId) continue;
+      const refs = { ...node.styleRefs };
+      delete refs[style.kind];
+      nodes[nodeId] = { ...node, styleRefs: Object.keys(refs).length > 0 ? refs : undefined };
+    }
+    const after: GromaDoc = { ...state.doc, styles, nodes };
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return true;
+  },
+
+  renameStyle(styleId: string, name: string): boolean {
+    const style = state.doc.styles?.[styleId];
+    const next = name.trim().slice(0, 40);
+    if (!style || !next) return false;
+    const after: GromaDoc = {
+      ...state.doc,
+      styles: { ...(state.doc.styles ?? {}), [styleId]: { ...style, name: next } as Style },
+    };
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return true;
   },
 
   addNode(input: {
@@ -1284,9 +1448,15 @@ export const editor = {
     if (transaction) editor.endTransaction();
     const ids = Array.isArray(input) ? input : [input];
     const items: Record<string, SceneNode> = {};
-    for (const id of topLevelSelection(state.doc, ids)) {
+    const page = state.doc.pages.find((item) => item.id === state.pageId) ?? state.doc.pages[0];
+    const layoutPage = page ? pageHasAutoLayout(state.doc, page.rootId) : false;
+    const stack = layoutPage && page ? [page.rootId] : [...topLevelSelection(state.doc, ids)];
+    while (stack.length > 0) {
+      const id = stack.pop() as string;
       const node = state.doc.nodes[id];
-      if (node) items[id] = node;
+      if (!node || items[id]) continue;
+      items[id] = node;
+      stack.push(...node.children);
     }
     transaction = Object.keys(items).length > 0 ? { items } : null;
   },
@@ -1398,9 +1568,33 @@ export const editor = {
     });
   },
 
+  moveLayoutOrder(direction: -1 | 1) {
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      const parent = node?.parentId ? s.doc.nodes[node.parentId] : null;
+      if (!node || !parent?.layout) return s;
+      const index = parent.children.indexOf(node.id);
+      if (index < 0) return s;
+      const target = index + direction;
+      if (target < 0 || target >= parent.children.length) return s;
+      const result = applyCommand(s.doc, { type: 'reorder', id: node.id, toIndex: target });
+      if (!result.beforeNodes || !result.afterNodes) return s;
+      const entry: HistoryEntry = {
+        kind: 'structure',
+        beforeNodes: result.beforeNodes,
+        afterNodes: result.afterNodes,
+        undoRemove: [],
+        redoRemove: [],
+        selectionBefore: [node.id],
+        selectionAfter: [node.id],
+      };
+      return { ...s, doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+    });
+  },
+
   nudgeSelected(dx: number, dy: number) {
     set((s) => {
-      const ids = topLevelSelection(s.doc, s.selectedIds);
+      const ids = topLevelSelection(s.doc, s.selectedIds).filter((id) => !isAutoLayoutChild(s.doc, id));
       const patches = ids.map((id) => {
         const node = s.doc.nodes[id];
         return { id, patch: { x: (node?.x ?? 0) + dx, y: (node?.y ?? 0) + dy } };

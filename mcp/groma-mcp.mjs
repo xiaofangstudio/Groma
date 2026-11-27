@@ -28,7 +28,7 @@ import {
   writeScene,
 } from './lib/store.mjs';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.3';
 
 function ok(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
@@ -68,6 +68,50 @@ const effectSchema = z.union([
   }),
 ]);
 
+const paintStopSchema = z.object({
+  offset: z.number().min(0).max(1),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  opacity: z.number().min(0).max(1),
+});
+const paintSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('solid'), color: z.string().regex(/^#[0-9a-fA-F]{6}$/), opacity: z.number().min(0).max(1), visible: z.boolean().optional() }),
+  z.object({
+    type: z.literal('linear'),
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    opacity: z.number().min(0).max(1),
+    x1: z.number(),
+    y1: z.number(),
+    x2: z.number(),
+    y2: z.number(),
+    stops: z.array(paintStopSchema).min(1).max(32),
+    visible: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('radial'),
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    opacity: z.number().min(0).max(1),
+    cx: z.number(),
+    cy: z.number(),
+    r: z.number().positive(),
+    stops: z.array(paintStopSchema).min(1).max(32),
+    visible: z.boolean().optional(),
+  }),
+]);
+
+const layoutSchema = z.object({
+  mode: z.enum(['horizontal', 'vertical']),
+  gap: z.number().min(0).max(10000),
+  padding: z.object({
+    top: z.number().min(0).max(100000),
+    right: z.number().min(0).max(100000),
+    bottom: z.number().min(0).max(100000),
+    left: z.number().min(0).max(100000),
+  }),
+  align: z.enum(['start', 'center', 'end', 'stretch']),
+  justify: z.enum(['start', 'center', 'end', 'space-between']),
+  hug: z.boolean(),
+});
+
 const nodePatchShape = {
   name: z.string().optional(),
   x: z.number().optional(),
@@ -76,11 +120,15 @@ const nodePatchShape = {
   h: z.number().positive().optional(),
   rotation: z.number().optional(),
   cornerRadius: z.number().min(0).optional(),
+  cornerRadii: z.tuple([z.number().min(0), z.number().min(0), z.number().min(0), z.number().min(0)]).optional(),
   opacity: z.number().min(0).max(1).optional(),
   visible: z.boolean().optional(),
   locked: z.boolean().optional(),
   clipContent: z.boolean().optional(),
   fillColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  fills: z.array(paintSchema).max(16).optional(),
+  constraints: z.object({ horizontal: z.enum(['left', 'right', 'center', 'leftRight', 'scale']), vertical: z.enum(['top', 'bottom', 'center', 'topBottom', 'scale']) }).optional(),
+  layout: layoutSchema.optional(),
   text: z.string().optional(),
   fontSize: z.number().positive().optional(),
   fontWeight: z.number().positive().optional(),
@@ -107,7 +155,7 @@ server.registerTool(
     nodeTypes: {
       read: ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'group', 'path', 'image', 'slice'],
       create: ['frame', 'section', 'rect', 'ellipse', 'text', 'slice'],
-      update: ['name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'opacity', 'visible', 'locked', 'clipContent', 'fillColor', 'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle', 'effects'],
+      update: ['name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'cornerRadii', 'opacity', 'visible', 'locked', 'clipContent', 'fillColor', 'fills', 'constraints', 'layout', 'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle', 'effects'],
     },
     limits: { listNodes: 1000, batchUpdate: 200, frameGrid: 500, effectsPerNode: 12, snapshots: 20 },
     notSupported: ['group/ungroup write', 'boolean ops', 'path/image write', 'SVG/PNG/CSS export', 'prototype/component/variables'],
@@ -360,7 +408,7 @@ server.registerTool(
   {
     title: '修改节点属性',
     description:
-      '修改节点的位置、尺寸、旋转、圆角、透明度、显隐、锁定、裁剪、名称、纯色填充；文本还可改内容与字距、行高、段距、列表。默认 dryRun=true。',
+      '修改节点的位置、尺寸、旋转、圆角、透明度、显隐、锁定、裁剪、名称、纯色填充、约束与自动布局；文本还可改内容与字距、行高、段距、列表。默认 dryRun=true。',
     inputSchema: z.object({
       id: z.string(),
       nodeId: z.string(),
@@ -521,11 +569,33 @@ async function selftest() {
     const loaded = readScene(created.id);
     if (!loaded.nodes[frame.id]) throw new Error('新增画板未落盘');
 
-    updateNode(loaded, frame.id, { x: 120, fillColor: '#F2B705', opacity: 0.8 });
+    updateNode(loaded, frame.id, { x: 120, fillColor: '#F2B705', opacity: 0.8, cornerRadii: [24, 0, 16, 8] });
     writeScene(created.id, loaded);
     const again = readScene(created.id);
     const node = again.nodes[frame.id];
     if (node.x !== 120 || node.fills[0].color !== '#F2B705') throw new Error('节点更新未生效');
+    if (!Array.isArray(node.cornerRadii) || node.cornerRadii[1] !== 0) throw new Error('四角圆角未落盘');
+
+    updateNode(again, frame.id, {
+      fills: [
+        { type: 'solid', color: '#FF0000', opacity: 0.4 },
+        { type: 'solid', color: '#0000FF', opacity: 1, visible: false },
+      ],
+      constraints: { horizontal: 'leftRight', vertical: 'topBottom' },
+      layout: {
+        mode: 'horizontal',
+        gap: 12,
+        padding: { top: 16, right: 16, bottom: 16, left: 16 },
+        align: 'center',
+        justify: 'space-between',
+        hug: false,
+      },
+    });
+    writeScene(created.id, again);
+    const layered = readScene(created.id).nodes[frame.id];
+    if (layered.fills.length !== 2 || layered.fills[1].visible !== false) throw new Error('多填充未落盘');
+    if (layered.constraints?.horizontal !== 'leftRight') throw new Error('约束未落盘');
+    if (layered.layout?.mode !== 'horizontal' || layered.layout?.padding.left !== 16) throw new Error('自动布局未落盘');
 
     const text = addNode(again, { parentId: frame.id, type: 'text', name: '自检标题', x: 24, y: 24, w: 300, h: 80, text: 'MCP 文本', fontSize: 32, fontWeight: 700, letterSpacing: 2, paragraphSpacing: 8, listStyle: 'bullet' });
     updateNode(again, text.id, {

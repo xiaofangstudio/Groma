@@ -124,6 +124,41 @@ function requireNumber(value, label, min = -Infinity, max = Infinity) {
   }
 }
 
+/** 与前端 Paint 一致：最多 16 层，纯色 / 线性 / 径向，visible 缺省为显示。 */
+export function normalizeFills(value) {
+  if (!Array.isArray(value)) throw new Error('fills 必须是数组');
+  if (value.length > 16) throw new Error('一个节点最多 16 层填充');
+  return value.map((paint, index) => {
+    if (!paint || typeof paint !== 'object' || Array.isArray(paint)) throw new Error(`第 ${index + 1} 层填充不是对象`);
+    if (typeof paint.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(paint.color)) {
+      throw new Error(`fills[${index}].color 必须是 #RRGGBB`);
+    }
+    requireNumber(paint.opacity, `fills[${index}].opacity`, 0, 1);
+    if (paint.visible !== undefined && typeof paint.visible !== 'boolean') throw new Error(`fills[${index}].visible 必须是布尔值`);
+    const base = { color: paint.color.toUpperCase(), opacity: paint.opacity, ...(paint.visible !== undefined ? { visible: paint.visible } : {}) };
+    if (paint.type === 'solid') return { type: 'solid', ...base };
+    if (paint.type !== 'linear' && paint.type !== 'radial') throw new Error(`fills[${index}].type 不受支持`);
+    if (!Array.isArray(paint.stops) || paint.stops.length < 1 || paint.stops.length > 32) {
+      throw new Error(`fills[${index}].stops 必须是 1–32 个色标`);
+    }
+    const stops = paint.stops.map((stop, stopIndex) => {
+      if (!stop || typeof stop !== 'object' || Array.isArray(stop)) throw new Error(`fills[${index}].stops[${stopIndex}] 非法`);
+      requireNumber(stop.offset, `fills[${index}].stops[${stopIndex}].offset`, 0, 1);
+      requireNumber(stop.opacity, `fills[${index}].stops[${stopIndex}].opacity`, 0, 1);
+      if (typeof stop.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(stop.color)) {
+        throw new Error(`fills[${index}].stops[${stopIndex}].color 必须是 #RRGGBB`);
+      }
+      return { offset: stop.offset, color: stop.color.toUpperCase(), opacity: stop.opacity };
+    });
+    if (paint.type === 'linear') {
+      for (const key of ['x1', 'y1', 'x2', 'y2']) requireNumber(paint[key], `fills[${index}].${key}`);
+      return { type: 'linear', ...base, x1: paint.x1, y1: paint.y1, x2: paint.x2, y2: paint.y2, stops };
+    }
+    for (const key of ['cx', 'cy', 'r']) requireNumber(paint[key], `fills[${index}].${key}`);
+    return { type: 'radial', ...base, cx: paint.cx, cy: paint.cy, r: paint.r, stops };
+  });
+}
+
 /** 与前端 Effect 一致：投影与整层模糊，最多 12 条。 */
 export function normalizeEffects(value) {
   if (!Array.isArray(value)) throw new Error('effects 必须是数组');
@@ -197,11 +232,7 @@ export function validateScene(scene) {
       throw new Error(`节点 ${key} 的 visible/locked/clipContent 必须是布尔值`);
     }
     if (!Array.isArray(node.fills)) throw new Error(`节点 ${key} 的 fills 必须是数组`);
-    for (const paint of node.fills) {
-      if (!paint || paint.type !== 'solid' || typeof paint.color !== 'string' || typeof paint.opacity !== 'number') {
-        throw new Error(`节点 ${key} 的填充不合法`);
-      }
-    }
+    normalizeFills(node.fills);
     if (node.type === 'text') {
       if (typeof node.text !== 'string') throw new Error(`文本节点 ${key} 缺少 text`);
       requireNumber(node.fontSize, `${key}.fontSize`, 0);
@@ -648,7 +679,8 @@ export function reorderNode(scene, nodeId, index) {
 export function updateNode(scene, nodeId, patch) {
   const node = findNode(scene, nodeId);
   const allowed = [
-    'name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'opacity', 'visible', 'locked', 'clipContent',
+    'name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'cornerRadii', 'opacity', 'visible', 'locked', 'clipContent',
+    'fills', 'constraints', 'layout',
     'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle',
   ];
   const next = { ...node };
@@ -662,11 +694,32 @@ export function updateNode(scene, nodeId, patch) {
   if (next.w !== undefined) next.w = Math.max(1, next.w);
   if (next.h !== undefined) next.h = Math.max(1, next.h);
   if (next.cornerRadius !== undefined) next.cornerRadius = Math.max(0, next.cornerRadius);
+  if (next.cornerRadii !== undefined) {
+    if (!Array.isArray(next.cornerRadii) || next.cornerRadii.length !== 4 || !next.cornerRadii.every((value) => Number.isFinite(value) && value >= 0)) {
+      throw new Error('cornerRadii 必须是四个非负有限数字');
+    }
+  }
   if (next.opacity !== undefined) next.opacity = Math.min(1, Math.max(0, next.opacity));
   if (typeof next.visible !== 'boolean' || typeof next.locked !== 'boolean') throw new Error('visible/locked 必须是布尔值');
   if (typeof next.clipContent !== 'boolean') throw new Error('clipContent 必须是布尔值');
   if (patch.fillColor !== undefined) {
     next.fills = [{ type: 'solid', color: String(patch.fillColor).toUpperCase(), opacity: 1 }];
+  }
+  if (patch.fills !== undefined) {
+    next.fills = normalizeFills(patch.fills);
+  }
+  if (patch.constraints !== undefined) {
+    const horizontal = ['left', 'right', 'center', 'leftRight', 'scale'];
+    const vertical = ['top', 'bottom', 'center', 'topBottom', 'scale'];
+    if (
+      !patch.constraints ||
+      typeof patch.constraints !== 'object' ||
+      !horizontal.includes(patch.constraints.horizontal) ||
+      !vertical.includes(patch.constraints.vertical)
+    ) {
+      throw new Error('constraints 必须是合法的水平 / 垂直约束');
+    }
+    next.constraints = { horizontal: patch.constraints.horizontal, vertical: patch.constraints.vertical };
   }
   if (patch.effects !== undefined) {
     next.effects = normalizeEffects(patch.effects);

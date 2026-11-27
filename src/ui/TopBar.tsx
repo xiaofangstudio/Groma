@@ -476,7 +476,7 @@ export function TopBar() {
             <IconHistory size={14} />
             <span>版本</span>
           </button>
-          <button className="export-btn" title="导出 PNG / JPG / SVG" onClick={() => setExportOpen(true)}>
+          <button className="export-btn" title="导出 PNG / JPG / SVG / HTML" onClick={() => setExportOpen(true)}>
             <IconExport size={14} />
             <span>导出</span>
           </button>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
 import {
   createSnapshot,
@@ -9,6 +9,7 @@ import {
   type SnapshotEntry,
 } from '../io/project';
 import type { GromaDoc, Page } from '../core/types';
+import { diffDocs, diffSummary } from '../core/diff';
 import { drawPageThumbnail } from '../render/draw';
 
 const PREVIEW_W = 416;
@@ -129,6 +130,16 @@ export function VersionHistory({ onClose }: { onClose: () => void }) {
   }, [creating, onClose, restoring]);
 
   const previewPage = preview?.pages.find((page) => page.id === previewPageId) ?? preview?.pages[0] ?? null;
+  const diff = useMemo(() => (preview ? diffDocs(preview, s.doc) : null), [preview, s.doc]);
+  const diffNames = useMemo(() => {
+    if (!diff || diff.identical) return '';
+    const list = [
+      ...diff.addedNames.map((name) => `+ ${name}`),
+      ...diff.removedNames.map((name) => `- ${name}`),
+      ...diff.changedNames.map((name) => `~ ${name}`),
+    ];
+    return list.slice(0, 4).join(' · ') + (list.length > 4 ? ` · 还有 ${list.length - 4} 个` : '');
+  }, [diff]);
   const busy = creating || restoring;
 
   async function saveNow() {
@@ -236,6 +247,12 @@ export function VersionHistory({ onClose }: { onClose: () => void }) {
                 <div className="version-detail-meta">
                   {preview.pages.length} 页 · {countNodes(preview)} 个图层 · {formatBytes(selected ? snapshots?.find((entry) => entry.timestamp === selected)?.bytes ?? 0 : 0)}
                 </div>
+                {diff && (
+                  <div className={`version-diff${diff.identical ? ' is-same' : ''}`}>
+                    <div className="version-diff-sum">相对当前：{diffSummary(diff)}</div>
+                    {diffNames && <div className="version-diff-names">{diffNames}</div>}
+                  </div>
+                )}
                 {preview.pages.length > 1 && (
                   <div className="version-pages" aria-label="预览页面">
                     {preview.pages.map((page) => (

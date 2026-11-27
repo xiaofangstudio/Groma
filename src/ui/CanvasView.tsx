@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { RULER, drawEditor, drawRulers, invalidateOverviewFrameCache, type DrawStats } from '../render/draw';import { screenToWorld, zoomAt, type Viewport } from '../core/viewport';
+import { RULER, drawEditor, drawRulers, drawSelectionLayer, invalidateOverviewFrameCache, type DrawStats } from '../render/draw';import { screenToWorld, zoomAt, type Viewport } from '../core/viewport';
 import { hitTestGuide, guideScreenPosition } from '../core/guides';
 import { arrowGeometry } from '../core/arrow';
 import { lineGeometry } from '../core/line';
@@ -41,6 +41,7 @@ import { setCursor } from '../state/cursor';
 import { subscribeImages } from '../io/images';
 import type { Guide, ImageCrop, Rect, SceneNode } from '../core/types';
 import { imageCropOf, MIN_IMAGE_CROP } from '../core/image';
+import { isAutoLayoutChild } from '../core/autoLayout';
 
 type Handle = 'tl' | 'tr' | 'bl' | 'br';
 
@@ -174,6 +175,7 @@ function newPenVertexId(): string {
 export function CanvasView() {
   const s = useEditor();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const selectionCanvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<PanDrag | null>(null);
   const moveRef = useRef<MoveDrag | null>(null);
@@ -298,6 +300,27 @@ export function CanvasView() {
     return Math.max(1, Math.min(raw, 2, budget));
   }
 
+  /** 选中层单独重绘：只画黄框和手柄，场景层不受选择变化影响。 */
+  function paintSelection(v = getState().viewport, dpr = dprRef.current || 1) {
+    const canvas = selectionCanvasRef.current;
+    if (!canvas) return;
+    const current = getState();
+    const width = current.viewSize.w;
+    const height = current.viewSize.h;
+    if (width < RULER + 1 || height < RULER + 1) return;
+    const pw = Math.max(1, Math.round(width * dpr));
+    const ph = Math.max(1, Math.round(height * dpr));
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width = pw;
+      canvas.height = ph;
+    }
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    drawSelectionLayer(ctx, current.doc, current.selectedIds, v, { w: width, h: height, dpr });
+  }
+
   function captureContentCache(): { canvas: HTMLCanvasElement; pageBg: string } | null {
     const canvas = canvasRef.current;
     const current = getState();
@@ -352,6 +375,7 @@ export function CanvasView() {
     ctx.drawImage(cache.canvas, RULER + dx, RULER + dy, contentW, contentH);
     ctx.restore();
     drawRulers(ctx, v, viewSize.w, viewSize.h);
+    paintSelection(v, dpr);
   }
 
   function drawZoomPreview(z: { cache: { canvas: HTMLCanvasElement; pageBg: string }; base: Viewport; target: Viewport }) {
@@ -382,6 +406,7 @@ export function CanvasView() {
     );
     ctx.restore();
     drawRulers(ctx, z.target, current.viewSize.w, current.viewSize.h);
+    paintSelection(z.target, dpr);
   }
 
   function flushZoomPreview() {
@@ -440,7 +465,8 @@ export function CanvasView() {
     const dpr = pickDpr();
     let raf = 0;
     let warmRaf = 0;
-    const render = () => {
+    let warmIdle = 0;
+    const render = (idle = false) => {
       raf = 0;
       const pw = Math.max(1, Math.round(viewSize.w * dpr));
       const ph = Math.max(1, Math.round(viewSize.h * dpr));
@@ -451,26 +477,49 @@ export function CanvasView() {
       const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
       if (!ctx) return;
       dprRef.current = dpr;
-      const stats = drawEditor(ctx, doc, page, viewport, { w: viewSize.w, h: viewSize.h, dpr }, selectedIds, {
+      const stats = drawEditor(ctx, doc, page, viewport, { w: viewSize.w, h: viewSize.h, dpr }, [], {
         interactive: interacting,
         cropPreviewId: s.cropId,
+        selection: false,
+        overviewBudget: idle ? 24 : undefined,
+        overviewDeadlineMs: idle ? 26 : undefined,
+        idleOverview: idle,
       });
       lastStatsRef.current = stats;
-      // 首次进入百画板总览：每帧只补 12 张画板小图，剩余下一帧继续，首帧不等整批画完。
-      if (stats.overviewPending > 0 && !interacting && !warmRaf) {
-        warmRaf = window.requestAnimationFrame(() => {
-          warmRaf = 0;
-          render();
-        });
+      // 首次进入百画板总览：先每帧补 6 张；空闲后切到每片 24 张预热，用户不操作时尽快补齐。
+      if (stats.overviewPending > 0 && !interacting && !warmRaf && !warmIdle) {
+        const win = window as Window & {
+          requestIdleCallback?: (cb: () => void, options?: { timeout: number }) => number;
+        };
+        if (win.requestIdleCallback) {
+          warmIdle = win.requestIdleCallback(() => {
+            warmIdle = 0;
+            render(true);
+          }, { timeout: 160 });
+        } else {
+          warmRaf = window.requestAnimationFrame(() => {
+            warmRaf = 0;
+            render(false);
+          });
+        }
       }
     };
     // 拖动/缩放时一次事件可能触发多次状态更新，合并到下一帧只画一次。
-    raf = window.requestAnimationFrame(render);
+    raf = window.requestAnimationFrame(() => render(false));
     return () => {
       if (raf) window.cancelAnimationFrame(raf);
       if (warmRaf) window.cancelAnimationFrame(warmRaf);
+      const win = window as Window & { cancelIdleCallback?: (handle: number) => void };
+      if (warmIdle && win.cancelIdleCallback) win.cancelIdleCallback(warmIdle);
     };
-  }, [doc, page, viewport, selectedIds, viewSize.w, viewSize.h, interacting, assetTick, s.cropId]);
+  }, [doc, page, viewport, viewSize.w, viewSize.h, interacting, assetTick, s.cropId]);
+
+  useEffect(() => {
+    const canvas = selectionCanvasRef.current;
+    if (!canvas || viewSize.w === 0 || viewSize.h === 0) return;
+    const dpr = pickDpr();
+    paintSelection(viewport, dpr);
+  }, [doc, viewport, selectedIds, viewSize.w, viewSize.h]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1169,6 +1218,7 @@ export function CanvasView() {
           return Boolean(node && node.type !== 'page' && !node.locked);
         });
         if (ids.length > 0) {
+          if (ids.some((id) => isAutoLayoutChild(current.doc, id))) return;
           const origins: Record<string, { x: number; y: number }> = {};
           for (const id of ids) {
             const node = current.doc.nodes[id];
@@ -1803,6 +1853,12 @@ export function CanvasView() {
         }}
         onDoubleClick={onDoubleClick}
         onContextMenu={(e) => e.preventDefault()}
+      />
+      <canvas
+        ref={selectionCanvasRef}
+        className="canvas-selection"
+        aria-hidden="true"
+        style={{ display: selectedIds.length > 0 ? 'block' : 'none' }}
       />
       {penHint && (
         <div className="toast" role="status">

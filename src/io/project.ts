@@ -70,12 +70,25 @@ export async function readAsset(id: string, file: string): Promise<string> {
   return invoke<string>('groma_read_asset', { id, file });
 }
 
-export type ExportFormat = 'png' | 'jpg' | 'svg';
+export type ExportFormat = 'png' | 'jpg' | 'svg' | 'html';
 
 export async function exportFile(
   id: string,
   suggestedName: string,
   format: ExportFormat,
+  payload: string,
+): Promise<string> {
+  if (!isDesktop()) throw new Error('当前不在桌面端，无法导出');
+  return invoke<string>('groma_export_file', { id, suggestedName, extension: format, payload });
+}
+
+export type TextExportFormat = 'svg' | 'html' | 'css' | 'json';
+
+/** 导出 UTF-8 文本文件（HTML/CSS/JSON/SVG），与图片导出共用 Rust 落盘命令。 */
+export async function exportTextFile(
+  id: string,
+  suggestedName: string,
+  format: TextExportFormat,
   payload: string,
 ): Promise<string> {
   if (!isDesktop()) throw new Error('当前不在桌面端，无法导出');

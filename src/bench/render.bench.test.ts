@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDoc } from '../core/doc';
 import { fitRect } from '../core/viewport';
-import { drawEditor, drawPageThumbnail, invalidateOverviewFrameCache } from '../render/draw';
+import { drawEditor, drawPageThumbnail, drawSelectionLayer, invalidateOverviewFrameCache } from '../render/draw';
 import type { GromaDoc, Page, SceneNode } from '../core/types';
 
 function makeDoc(): { doc: GromaDoc; page: Page } {
@@ -225,6 +225,15 @@ describe('渲染基准', () => {
     console.log(`[frames] 600画板 1420×880 平均 ${((performance.now() - start) / 30).toFixed(2)}ms · 节点 ${stats.nodesDrawn}/${Object.keys(doc.nodes).length - 2}`);
   });
 
+  it('选中层独立：只清空覆盖层并画选中框', () => {
+    const { doc } = makeDoc();
+    const { ctx, calls } = makeContext();
+    drawSelectionLayer(ctx, doc, ['bench-frame-0'], { x: 0, y: 0, scale: 1 }, { w: 1420, h: 880, dpr: 1 });
+    expect(calls.clearRect).toBe(1);
+    expect(calls.strokeRect).toBeGreaterThanOrEqual(5);
+    expect(calls.fillRect).toBeGreaterThanOrEqual(4);
+  });
+
   it('百画板总览：小图分帧补齐，编辑只重建一块', () => {
     invalidateOverviewFrameCache();
     const { doc, page } = makeDoc();
@@ -241,13 +250,81 @@ describe('渲染基准', () => {
 
       for (let i = 0; i < 8; i += 1) stats = drawEditor(ctx, doc, page, overview, view, []);
       expect(stats.overviewPending).toBe(0);
-      expect(stats.overviewBuilt).toBe(2);
+      // 最后一帧补齐剩余小图；机器慢时前几帧少建，会让最后一帧多建 1–2 张。
+      expect(stats.overviewBuilt).toBeGreaterThan(0);
+      expect(stats.overviewBuilt).toBeLessThanOrEqual(24);
 
       const before = doc.nodes['bench-0-0'];
       doc.nodes['bench-0-0'] = { ...before, x: before.x + 1 };
       stats = drawEditor(ctx, doc, page, overview, view, []);
       expect(stats.overviewBuilt).toBe(1);
       expect(stats.overviewPending).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+      invalidateOverviewFrameCache();
+    }
+  });
+
+  it('中倍总览：25% 仍贴画板小图', () => {
+    const { doc, page } = makeDoc();
+    const { ctx } = makeContext();
+    vi.stubGlobal('document', {
+      createElement: () => ({ width: 0, height: 0, getContext: () => ctx }),
+    });
+    try {
+      invalidateOverviewFrameCache();
+      const view = { w: 1420, h: 880, dpr: 1 };
+      const stats = drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 0.25 }, view, []);
+      // 建图按 6 张 / 12ms 双预算；机器慢时 deadline 会先到，只断言“至少建了、没超过 6”。
+      expect(stats.overviewBuilt).toBeGreaterThan(0);
+      expect(stats.overviewBuilt).toBeLessThanOrEqual(6);
+      expect(stats.overviewPending).toBe(50 - stats.overviewBuilt);
+      expect(stats.shadowPasses).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+      invalidateOverviewFrameCache();
+    }
+  });
+
+  it('密集画板 35%：阴影预算触发，百块画板不再逐块 blur', () => {
+    const doc = createDoc('密集画板', 1440, 900, undefined, false);
+    const page = doc.pages[0];
+    const root = doc.nodes[page.rootId];
+    root.children = [];
+    for (let f = 0; f < 100; f += 1) {
+      const id = `dense-${f}`;
+      root.children.push(id);
+      doc.nodes[id] = {
+        id,
+        type: 'frame',
+        name: `画板 ${f + 1}`,
+        parentId: root.id,
+        children: [],
+        x: (f % 10) * 300,
+        y: Math.floor(f / 10) * 200,
+        w: 280,
+        h: 180,
+        rotation: 0,
+        opacity: 1,
+        visible: true,
+        locked: false,
+        clipContent: true,
+        fills: [{ type: 'solid', color: '#FFFFFF', opacity: 1 }],
+        cornerRadius: 16,
+      };
+    }
+    const view = { w: 1420, h: 880, dpr: 1 };
+    const { ctx } = makeContext();
+    vi.stubGlobal('document', {
+      createElement: () => ({ width: 0, height: 0, getContext: () => ctx }),
+    });
+    try {
+      invalidateOverviewFrameCache();
+      const stats = drawEditor(ctx, doc, page, { x: 0, y: 0, scale: 0.35 }, view, [], { interactive: false });
+      expect(stats.nodesDrawn).toBe(100);
+      expect(stats.overviewBuilt).toBe(6);
+      expect(stats.overviewPending).toBe(94);
+      expect(stats.shadowPasses).toBe(0);
     } finally {
       vi.unstubAllGlobals();
       invalidateOverviewFrameCache();

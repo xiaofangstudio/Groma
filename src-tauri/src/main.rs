@@ -397,11 +397,14 @@ fn groma_export_file(
         "png" => "png",
         "jpg" | "jpeg" => "jpg",
         "svg" => "svg",
+        "html" => "html",
+        "css" => "css",
+        "json" => "json",
         _ => return Err("不支持的导出格式".to_string()),
     };
-    let bytes = if ext == "svg" {
+    let bytes = if matches!(ext, "svg" | "html" | "css" | "json") {
         if payload.len() > 32_000_000 {
-            return Err("SVG 内容过大".to_string());
+            return Err(format!("{ext} 内容过大"));
         }
         payload.into_bytes()
     } else {
