@@ -1,4 +1,4 @@
-import type { GromaDoc, Guide, ImageAsset, NodeType, Page, Paint, SceneNode, Style, StyleKind } from './types';
+import type { GromaDoc, Guide, ImageAsset, NodeType, Page, Paint, SceneNode, Style, StyleKind, Variable, VariableCollection, VariableMode } from './types';
 
 const NODE_TYPES: NodeType[] = ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'path', 'image', 'group', 'slice'];
 const NODE_TYPE_SET = new Set<string>(NODE_TYPES);
@@ -146,8 +146,15 @@ function validateAsset(value: unknown): value is ImageAsset {
   return true;
 }
 
-function validateAutoLayout(value: unknown): boolean {
-  if (!isRecord(value)) return false;
+function validateVariableValue(type: string, value: unknown): boolean {
+  if (type === 'color') return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value);
+  if (type === 'number') return isFiniteNumber(value);
+  if (type === 'string') return typeof value === 'string' && value.length <= 200;
+  if (type === 'boolean') return typeof value === 'boolean';
+  return false;
+}
+
+function validateAutoLayout(value: unknown): boolean {  if (!isRecord(value)) return false;
   if (!['horizontal', 'vertical'].includes(String(value.mode))) return false;
   if (!isFiniteNumber(value.gap) || value.gap < 0 || value.gap > 10000) return false;
   if (!isRecord(value.padding)) return false;
@@ -176,6 +183,43 @@ function validatePage(value: unknown): value is Page {
     typeof value.background === 'string' &&
     guidesOk
   );
+}
+
+function validateInstanceOverrides(value: unknown, key: string, issues: string[]): void {
+  if (!isRecord(value)) {
+    issues.push(`节点 ${key} 的 instanceOverrides 必须是对象`);
+    return;
+  }
+  const numeric = new Set(['x', 'y', 'w', 'h', 'rotation', 'opacity', 'fontSize', 'fontWeight', 'cornerRadius']);
+  const allowed = new Set([...numeric, 'visible', 'text', 'fills']);
+  for (const [path, override] of Object.entries(value)) {
+    if (!/^\d+(\.\d+)*$/.test(path)) {
+      issues.push(`节点 ${key} 的实例覆盖路径不合法 ${path}`);
+      continue;
+    }
+    if (!isRecord(override)) {
+      issues.push(`节点 ${key} 的实例覆盖 ${path} 必须是对象`);
+      continue;
+    }
+    for (const [field, fieldValue] of Object.entries(override)) {
+      if (!allowed.has(field)) {
+        issues.push(`节点 ${key} 的实例覆盖 ${path} 含未知字段 ${field}`);
+        continue;
+      }
+      if (numeric.has(field) && !isFiniteNumber(fieldValue)) {
+        issues.push(`节点 ${key} 的实例覆盖 ${path}.${field} 必须是数字`);
+      }
+      if (field === 'visible' && typeof fieldValue !== 'boolean') {
+        issues.push(`节点 ${key} 的实例覆盖 ${path}.visible 必须是布尔值`);
+      }
+      if (field === 'text' && typeof fieldValue !== 'string') {
+        issues.push(`节点 ${key} 的实例覆盖 ${path}.text 必须是文本`);
+      }
+      if (field === 'fills' && (!Array.isArray(fieldValue) || !fieldValue.every(validatePaint))) {
+        issues.push(`节点 ${key} 的实例覆盖 ${path}.fills 必须是合法填充数组`);
+      }
+    }
+  }
 }
 
 function validateNode(node: SceneNode, key: string, assets: Record<string, ImageAsset>, issues: string[]): void {
@@ -243,6 +287,80 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
       issues.push(`节点 ${key} 的自动布局只支持画板/区块/分组`);
     }
   }
+  if (node.isComponent !== undefined) {
+    if (typeof node.isComponent !== 'boolean') issues.push(`节点 ${key} 的 isComponent 必须是布尔值`);
+    if (node.type !== 'frame') issues.push(`节点 ${key} 只有画板能作为主组件`);
+  }
+  if (node.componentOf !== undefined) {
+    if (typeof node.componentOf !== 'string' || !node.componentOf) {
+      issues.push(`节点 ${key} 的 componentOf 必须是非空 id`);
+    } else if (node.type !== 'frame') {
+      issues.push(`节点 ${key} 只有画板能作为组件实例`);
+    }
+    if (node.isComponent) issues.push(`节点 ${key} 不能同时是主组件和实例`);
+  }
+  if (node.librarySource !== undefined) {
+    if (!isRecord(node.librarySource)) {
+      issues.push(`节点 ${key} 的 librarySource 必须是对象`);
+    } else {
+      const source = node.librarySource;
+      for (const field of ['projectId', 'nodeId'] as const) {
+        if (typeof source[field] !== 'string' || !source[field]) {
+          issues.push(`节点 ${key} 的 librarySource.${field} 必须是非空 id`);
+        }
+      }
+      for (const field of ['projectName', 'nodeName'] as const) {
+        if (typeof source[field] !== 'string') issues.push(`节点 ${key} 的 librarySource.${field} 必须是字符串`);
+      }
+      if (!node.isComponent) issues.push(`节点 ${key} 只有主组件能记录本地库来源`);
+    }
+  }
+  if (node.instanceOverrides !== undefined) {
+    if (!node.componentOf) issues.push(`节点 ${key} 只有组件实例能保存实例覆盖`);
+    validateInstanceOverrides(node.instanceOverrides, key, issues);
+  }
+  if (node.isVariantSet !== undefined) {
+    if (typeof node.isVariantSet !== 'boolean') issues.push(`节点 ${key} 的 isVariantSet 必须是布尔值`);
+    if (node.type !== 'frame') issues.push(`节点 ${key} 只有画板能作为变体集`);
+    if (node.isComponent) issues.push(`节点 ${key} 的变体集不能同时是主组件`);
+    if (node.componentOf) issues.push(`节点 ${key} 的变体集不能同时是实例`);
+  }
+  if (node.variantSetId !== undefined) {
+    if (typeof node.variantSetId !== 'string' || !node.variantSetId) {
+      issues.push(`节点 ${key} 的 variantSetId 必须是非空 id`);
+    }
+    if (node.type !== 'frame' || !node.isComponent) {
+      issues.push(`节点 ${key} 只有主组件画板能属于变体集`);
+    }
+    if (node.isVariantSet) issues.push(`节点 ${key} 的变体集不能自己属于另一个变体集`);
+  }
+  if (node.variantProps !== undefined) {
+    if (!isRecord(node.variantProps)) {
+      issues.push(`节点 ${key} 的 variantProps 必须是对象`);
+    } else {
+      const props = Object.entries(node.variantProps);
+      if (props.length === 0) issues.push(`节点 ${key} 的 variantProps 不能为空`);
+      for (const [prop, value] of props) {
+        if (!prop.trim() || prop.length > 64) issues.push(`节点 ${key} 的变体属性名不合法`);
+        if (typeof value !== 'string' || !value.trim() || value.length > 128) {
+          issues.push(`节点 ${key} 的变体属性 ${prop} 值不合法`);
+        }
+      }
+    }
+    if (!node.variantSetId) issues.push(`节点 ${key} 的 variantProps 只能用于变体集内的主组件`);
+  }
+  if (node.prototype !== undefined) {
+    if (!isRecord(node.prototype)) {
+      issues.push(`节点 ${key} 的 prototype 必须是对象`);
+    } else {
+      if (typeof node.prototype.targetId !== 'string' || !node.prototype.targetId) {
+        issues.push(`节点 ${key} 的原型目标必须是非空画板 id`);
+      }
+      if (node.prototype.trigger !== undefined && node.prototype.trigger !== 'click') {
+        issues.push(`节点 ${key} 的原型触发只支持 click`);
+      }
+    }
+  }
   if (node.styleRefs !== undefined) {
     if (!isRecord(node.styleRefs)) {
       issues.push(`节点 ${key} 的 styleRefs 必须是对象`);
@@ -250,6 +368,19 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
       for (const [kind, id] of Object.entries(node.styleRefs)) {
         if (!STYLE_KINDS.has(kind as StyleKind) || typeof id !== 'string' || id.length === 0) {
           issues.push(`节点 ${key} 的 styleRefs 含非法样式引用`);
+          break;
+        }
+      }
+    }
+  }
+  if (node.variableBindings !== undefined) {
+    if (!isRecord(node.variableBindings)) {
+      issues.push(`节点 ${key} 的 variableBindings 必须是对象`);
+    } else {
+      const allowed = new Set(['fill', 'stroke', 'cornerRadius', 'strokeWidth', 'gap', 'padding', 'fontSize']);
+      for (const [prop, id] of Object.entries(node.variableBindings)) {
+        if (!allowed.has(prop) || typeof id !== 'string' || !id) {
+          issues.push(`节点 ${key} 的 variableBindings 含非法绑定`);
           break;
         }
       }
@@ -436,6 +567,122 @@ export function validateDoc(value: unknown): DocValidation {
     }
   }
 
+  const variables: Record<string, VariableCollection> = {};
+  if (value.variables !== undefined) {
+    if (!isRecord(value.variables)) {
+      issues.push('场景 variables 必须是对象');
+    } else {
+      for (const [collectionId, raw] of Object.entries(value.variables)) {
+        if (RESERVED_KEYS.has(collectionId)) {
+          issues.push(`变量集合 id ${collectionId} 是保留键`);
+          continue;
+        }
+        if (!isRecord(raw) || !Array.isArray(raw.modes) || !isRecord(raw.variables)) {
+          issues.push(`变量集合 ${collectionId} 结构非法`);
+          continue;
+        }
+        if (raw.id !== collectionId) issues.push(`变量集合 ${collectionId} 的 id 与键名不一致`);
+        if (typeof raw.name !== 'string' || !raw.name.trim()) issues.push(`变量集合 ${collectionId} 缺少名称`);
+        const modes: VariableMode[] = [];
+        const modeIds = new Set<string>();
+        for (const mode of raw.modes as unknown[]) {
+          if (!isRecord(mode) || typeof mode.id !== 'string' || !mode.id || typeof mode.name !== 'string' || !mode.name.trim()) {
+            issues.push(`变量集合 ${collectionId} 的 Mode 结构非法`);
+            continue;
+          }
+          if (modeIds.has(mode.id)) issues.push(`变量集合 ${collectionId} 的 Mode id 重复`);
+          modeIds.add(mode.id);
+          modes.push({ id: mode.id, name: mode.name });
+        }
+        if (modes.length === 0) issues.push(`变量集合 ${collectionId} 至少需要一个 Mode`);
+        if (modes.length > 16) issues.push(`变量集合 ${collectionId} 的 Mode 不能超过 16 个`);
+        if (typeof raw.defaultModeId !== 'string' || !modeIds.has(raw.defaultModeId)) {
+          issues.push(`变量集合 ${collectionId} 的 defaultModeId 无效`);
+        }
+        const collectionVars: Record<string, Variable> = {};
+        for (const [varId, variable] of Object.entries(raw.variables as Record<string, unknown>)) {
+          if (!isRecord(variable)) {
+            issues.push(`变量 ${varId} 结构非法`);
+            continue;
+          }
+          if (variable.id !== varId) issues.push(`变量 ${varId} 的 id 与键名不一致`);
+          if (typeof variable.name !== 'string' || !variable.name.trim()) issues.push(`变量 ${varId} 缺少名称`);
+          if (variable.collectionId !== collectionId) issues.push(`变量 ${varId} 的 collectionId 不一致`);
+          if (!['color', 'number', 'string', 'boolean'].includes(String(variable.type))) {
+            issues.push(`变量 ${varId} 的类型不受支持`);
+          }
+          if (!isRecord(variable.values)) {
+            issues.push(`变量 ${varId} 的 values 必须是对象`);
+            continue;
+          }
+          for (const mode of modes) {
+            if (!(mode.id in variable.values)) {
+              issues.push(`变量 ${varId} 缺少 Mode ${mode.name} 的值`);
+            } else if (!validateVariableValue(String(variable.type), variable.values[mode.id])) {
+              issues.push(`变量 ${varId} 在 Mode ${mode.name} 的值类型不匹配`);
+            }
+          }
+          for (const modeId of Object.keys(variable.values)) {
+            if (!modeIds.has(modeId)) issues.push(`变量 ${varId} 含未知 Mode ${modeId}`);
+          }
+          collectionVars[varId] = variable as unknown as Variable;
+        }
+        variables[collectionId] = {
+          id: collectionId,
+          name: String(raw.name ?? ''),
+          modes,
+          defaultModeId: String(raw.defaultModeId ?? ''),
+          variables: collectionVars,
+        };
+      }
+    }
+  }
+
+  const allVariables = new Map<string, Variable>();
+  for (const collection of Object.values(variables)) {
+    for (const variable of Object.values(collection.variables)) allVariables.set(variable.id, variable);
+  }
+  for (const variable of allVariables.values()) {
+    if (variable.alias === undefined) continue;
+    if (typeof variable.alias !== 'string' || !variable.alias) {
+      issues.push(`变量 ${variable.id} 的 alias 必须是变量 id`);
+      continue;
+    }
+    const target = allVariables.get(variable.alias);
+    if (!target) {
+      issues.push(`变量 ${variable.id} 引用了不存在的变量 ${variable.alias}`);
+    } else if (target.type !== variable.type) {
+      issues.push(`变量 ${variable.id} 只能引用同类型变量`);
+    }
+  }
+  for (const variable of allVariables.values()) {
+    if (!variable.alias) continue;
+    const seen = new Set<string>();
+    let cursor: Variable | undefined = variable;
+    while (cursor?.alias) {
+      if (seen.has(cursor.id)) {
+        issues.push(`变量 ${variable.id} 的 alias 形成循环引用`);
+        break;
+      }
+      seen.add(cursor.id);
+      cursor = allVariables.get(cursor.alias);
+    }
+  }
+
+  if (value.variableModes !== undefined) {
+    if (!isRecord(value.variableModes)) {
+      issues.push('场景 variableModes 必须是对象');
+    } else {
+      for (const [collectionId, modeId] of Object.entries(value.variableModes)) {
+        const collection = variables[collectionId];
+        if (!collection) issues.push(`variableModes 引用了不存在的集合 ${collectionId}`);
+        else if (typeof modeId !== 'string' || !collection.modes.some((mode) => mode.id === modeId)) {
+          issues.push(`variableModes 的集合 ${collectionId} 指向无效 Mode`);
+        }
+      }
+    }
+  }
+
   for (const key of nodeIds) {
     if (RESERVED_KEYS.has(key)) {
       issues.push(`节点 id ${key} 是保留键`);
@@ -453,6 +700,27 @@ export function validateDoc(value: unknown): DocValidation {
         issues.push(`节点 ${id} 引用了不存在的样式 ${String(styleId)}`);
       } else if (style.kind !== kind) {
         issues.push(`节点 ${id} 的 ${kind} 样式引用类型不匹配`);
+      }
+    }
+  }
+
+  for (const id of nodeIds) {
+    const bindings = nodes[id]?.variableBindings;
+    if (!bindings) continue;
+    for (const [prop, varId] of Object.entries(bindings)) {
+      let variable: Variable | undefined;
+      for (const collection of Object.values(variables)) {
+        if (collection.variables[String(varId)]) {
+          variable = collection.variables[String(varId)];
+          break;
+        }
+      }
+      if (!variable) {
+        issues.push(`节点 ${id} 绑定了不存在的变量 ${String(varId)}`);
+      } else if ((prop === 'fill' || prop === 'stroke') && variable.type !== 'color') {
+        issues.push(`节点 ${id} 的${prop === 'fill' ? '填充' : '描边'}变量必须是颜色类型`);
+      } else if (prop !== 'fill' && prop !== 'stroke' && variable.type !== 'number') {
+        issues.push(`节点 ${id} 的${prop}变量必须是数值类型`);
       }
     }
   }
@@ -508,6 +776,50 @@ export function validateDoc(value: unknown): DocValidation {
     }
     if (node.type !== 'rect' && node.type !== 'ellipse' && node.type !== 'path') {
       issues.push(`蒙版 ${id} 必须是矩形、椭圆或钢笔路径`);
+    }
+  }
+
+  for (const id of nodeIds) {
+    const node = nodes[id];
+    if (!node?.variantSetId) continue;
+    const set = nodes[node.variantSetId];
+    if (!set) {
+      issues.push(`变体 ${id} 引用了不存在的变体集 ${node.variantSetId}`);
+      continue;
+    }
+    if (!set.isVariantSet || set.type !== 'frame') {
+      issues.push(`变体 ${id} 的 variantSetId 必须指向变体集画板`);
+    }
+    if (node.parentId !== set.id) issues.push(`变体 ${id} 必须直接放在变体集 ${set.id} 内`);
+  }
+
+  for (const id of nodeIds) {
+    const node = nodes[id];
+    if (!node?.isVariantSet) continue;
+    if (!isStringArray(node.children) || node.children.length === 0) {
+      issues.push(`变体集 ${id} 必须至少包含一个变体`);
+      continue;
+    }
+    let propNames: string[] | null = null;
+    const combos = new Set<string>();
+    for (const childId of node.children) {
+      const child = nodes[childId];
+      if (!child || child.type !== 'frame' || !child.isComponent || child.variantSetId !== id) {
+        issues.push(`变体集 ${id} 的子层 ${childId} 必须是属于本集的变体主组件`);
+        continue;
+      }
+      if (!child.variantProps) {
+        issues.push(`变体 ${childId} 缺少 variantProps`);
+        continue;
+      }
+      const names = Object.keys(child.variantProps).sort();
+      if (!propNames) propNames = names;
+      else if (names.join('|') !== propNames.join('|')) {
+        issues.push(`变体集 ${id} 内的属性名不一致`);
+      }
+      const combo = names.map((name) => `${name}=${child.variantProps?.[name]}`).join('|');
+      if (combos.has(combo)) issues.push(`变体集 ${id} 内存在重复变体组合 ${combo}`);
+      combos.add(combo);
     }
   }
 

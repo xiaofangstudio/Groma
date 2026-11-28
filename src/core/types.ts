@@ -156,6 +156,74 @@ export type Style =
 
 export type StyleRefs = Partial<Record<StyleKind, string>>;
 
+export interface PrototypeLink {
+  /** 目标画板 id；同文档内生效。 */
+  targetId: string;
+  /** 一期只做点击。 */
+  trigger?: 'click';
+}
+
+export type VariableType = 'color' | 'number' | 'string' | 'boolean';
+
+export interface VariableMode {
+  id: string;
+  name: string;
+}
+
+/** 变量值按 Mode id 存；颜色为 #RRGGBB，数值为数字。 */
+export interface Variable {
+  id: string;
+  name: string;
+  type: VariableType;
+  collectionId: string;
+  values: Record<string, string | number | boolean>;
+  /** 引用同类型变量：取值沿 alias 链解析到目标变量的当前 Mode。 */
+  alias?: string;
+}
+
+export interface VariableCollection {
+  id: string;
+  name: string;
+  modes: VariableMode[];
+  defaultModeId: string;
+  variables: Record<string, Variable>;
+}
+
+/** 一期只绑定整层填充首色与四角统一圆角。 */
+export interface VariableBindings {
+  fill?: string;
+  stroke?: string;
+  cornerRadius?: string;
+  strokeWidth?: string;
+  gap?: string;
+  padding?: string;
+  fontSize?: string;
+}
+
+/** 实例内部覆盖：键为从实例根到子层的子索引路径，如 "0.1"。 */
+export interface InstanceOverride {
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  rotation?: number;
+  opacity?: number;
+  visible?: boolean;
+  text?: string;
+  fontSize?: number;
+  fontWeight?: number;
+  fills?: Paint[];
+  cornerRadius?: number;
+}
+
+/** 从本机另一个工程导入的主组件来源；只用于本地更新，不建立在线订阅。 */
+export interface LibrarySource {
+  projectId: string;
+  projectName: string;
+  nodeId: string;
+  nodeName: string;
+}
+
 export interface SceneNode {
   id: string;
   type: NodeType;
@@ -175,8 +243,26 @@ export interface SceneNode {
   constraints?: Constraints;
   /** 容器自动布局；缺省无，手动坐标生效。 */
   layout?: AutoLayout;
+  /** 该画板是主组件；实例通过 componentOf 指回它。 */
+  isComponent?: boolean;
+  /** 组件来自本机另一个工程时的来源；导入后仍是本地主组件。 */
+  librarySource?: LibrarySource;
+  /** 变体集画板：只装变体主组件，不参与实例。 */
+  isVariantSet?: boolean;
+  /** 变体主组件所属的变体集 id；实例从主组件推导。 */
+  variantSetId?: string;
+  /** 变体属性，如 { 状态: '悬停' }；同一变体集内属性名一致。 */
+  variantProps?: Record<string, string>;
+  /** 实例所属主组件 id；缺省不是实例。 */
+  /** 实例在主组件里的来源；子层改动只写 instanceOverrides，不脱离。 */
+  componentOf?: string;
+  instanceOverrides?: Record<string, InstanceOverride>;
+  /** 点击热区：触发后跳到同一文档里的目标画板。 */
+  prototype?: PrototypeLink;
   /** 已绑定的命名样式；直接改对应属性会解除绑定。 */
   styleRefs?: StyleRefs;
+  /** 变量绑定；切换 Mode 时刷新已绑定的字面值。 */
+  variableBindings?: VariableBindings;
   /** 形状蒙版：该节点定义同父级中位于其上方的兄弟图层裁切区域。 */
   isMask?: boolean;
   /** 蒙版取像素的方式；缺省 geometry 走快速轮廓裁切。 */
@@ -243,6 +329,10 @@ export interface GromaDoc {
   assets?: Record<string, ImageAsset>;
   /** 文档级命名样式；旧工程没有这个字段时视为空。 */
   styles?: Record<string, Style>;
+  /** 文档级变量集合；旧工程没有这个字段时视为空。 */
+  variables?: Record<string, VariableCollection>;
+  /** 每个集合当前生效 Mode；缺省用集合 defaultModeId。 */
+  variableModes?: Record<string, string>;
 }
 
 export interface Rect {

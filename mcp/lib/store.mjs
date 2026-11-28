@@ -680,7 +680,7 @@ export function updateNode(scene, nodeId, patch) {
   const node = findNode(scene, nodeId);
   const allowed = [
     'name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'cornerRadii', 'opacity', 'visible', 'locked', 'clipContent',
-    'fills', 'constraints', 'layout',
+    'fills', 'constraints', 'layout', 'prototype',
     'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle',
   ];
   const next = { ...node };
@@ -724,6 +724,19 @@ export function updateNode(scene, nodeId, patch) {
   if (patch.effects !== undefined) {
     next.effects = normalizeEffects(patch.effects);
     if (!next.effects.length) delete next.effects;
+  }
+  if (patch.prototype !== undefined) {
+    if (patch.prototype === null) {
+      delete next.prototype;
+    } else {
+      const targetId = patch.prototype?.targetId;
+      const target = typeof targetId === 'string' ? scene.nodes[targetId] : null;
+      if (!target || target.type !== 'frame') throw new Error('prototype.targetId 必须指向当前工程里存在的画板');
+      if (patch.prototype.trigger !== undefined && patch.prototype.trigger !== 'click') {
+        throw new Error('prototype.trigger 目前只支持 click');
+      }
+      next.prototype = { targetId, trigger: 'click' };
+    }
   }
   if (next.type === 'text') {
     if (typeof next.text !== 'string') throw new Error('text 必须是字符串');

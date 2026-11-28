@@ -28,7 +28,7 @@ import {
   writeScene,
 } from './lib/store.mjs';
 
-const VERSION = '0.3.3';
+const VERSION = '0.3.4';
 
 function ok(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
@@ -137,6 +137,10 @@ const nodePatchShape = {
   paragraphSpacing: z.number().min(0).optional(),
   listStyle: z.enum(['none', 'bullet', 'number']).optional(),
   effects: z.array(effectSchema).max(12).optional(),
+  prototype: z.union([
+    z.object({ targetId: z.string().min(1), trigger: z.literal('click').optional().default('click') }),
+    z.null(),
+  ]).optional(),
 };
 
 const server = new McpServer({ name: 'groma', version: VERSION });
@@ -155,10 +159,10 @@ server.registerTool(
     nodeTypes: {
       read: ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'group', 'path', 'image', 'slice'],
       create: ['frame', 'section', 'rect', 'ellipse', 'text', 'slice'],
-      update: ['name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'cornerRadii', 'opacity', 'visible', 'locked', 'clipContent', 'fillColor', 'fills', 'constraints', 'layout', 'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle', 'effects'],
+      update: ['name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'cornerRadii', 'opacity', 'visible', 'locked', 'clipContent', 'fillColor', 'fills', 'constraints', 'layout', 'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle', 'effects', 'prototype'],
     },
     limits: { listNodes: 1000, batchUpdate: 200, frameGrid: 500, effectsPerNode: 12, snapshots: 20 },
-    notSupported: ['group/ungroup write', 'boolean ops', 'path/image write', 'SVG/PNG/CSS export', 'prototype/component/variables'],
+    notSupported: ['group/ungroup write', 'boolean ops', 'path/image write', 'SVG/PNG/CSS export', 'component/variables'],
     writeGuard: '所有写工具默认 dryRun=true，dryRun=false 才落盘并写前快照',
   })),
 );
@@ -408,7 +412,7 @@ server.registerTool(
   {
     title: '修改节点属性',
     description:
-      '修改节点的位置、尺寸、旋转、圆角、透明度、显隐、锁定、裁剪、名称、纯色填充、约束与自动布局；文本还可改内容与字距、行高、段距、列表。默认 dryRun=true。',
+      '修改节点的位置、尺寸、旋转、圆角、透明度、显隐、锁定、裁剪、名称、纯色填充、约束、自动布局与点击原型目标；文本还可改内容与字距、行高、段距、列表。prototype 传 {targetId} 设置跳转，传 null 清除。默认 dryRun=true。',
     inputSchema: z.object({
       id: z.string(),
       nodeId: z.string(),
@@ -603,11 +607,21 @@ async function selftest() {
         { type: 'drop-shadow', x: 0, y: 8, blur: 16, color: '#221C00', opacity: 0.4, visible: true },
         { type: 'layer-blur', blur: 2, visible: true },
       ],
+      prototype: { targetId: frame.id },
     });
+    if (again.nodes[text.id].prototype?.targetId !== frame.id) throw new Error('原型目标未写入');
+    let prototypeRejected = false;
+    try {
+      updateNode(again, text.id, { prototype: { targetId: text.id } });
+    } catch {
+      prototypeRejected = true;
+    }
+    if (!prototypeRejected) throw new Error('原型目标未拒绝非画板');
     writeScene(created.id, again);
     const withText = readScene(created.id);
     const savedText = withText.nodes[text.id];
     if (!savedText || savedText.text !== 'MCP 文本' || savedText.effects.length !== 2) throw new Error('文本或效果未落盘');
+    if (savedText.prototype?.targetId !== frame.id) throw new Error('原型目标未落盘');
     if (savedText.letterSpacing !== 2 || savedText.listStyle !== 'bullet') throw new Error('文本样式未落盘');
     const listed = listNodes(withText, { type: 'text', query: 'MCP' });
     if (!listed.nodes.some((n) => n.id === text.id)) throw new Error('节点列表过滤失败');

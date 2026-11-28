@@ -96,6 +96,24 @@ describe('editor 命令与历史', () => {
     expect(resultIds.every((id) => getState().doc.nodes[id])).toBe(true);
   });
 
+  it('原型目标写入只接受 Frame，并一步撤销/重做', () => {
+    const home = editor.addNode({ type: 'frame', parentId: rootId(), x: 0, y: 0, w: 300, h: 600 });
+    const detail = editor.addNode({ type: 'frame', parentId: rootId(), x: 400, y: 0, w: 300, h: 600 });
+    const button = editor.addNode({ type: 'rect', parentId: home, x: 20, y: 500, w: 200, h: 48 });
+
+    editor.setPrototypeTarget(button, detail);
+    expect(getState().doc.nodes[button].prototype).toEqual({ targetId: detail, trigger: 'click' });
+
+    editor.setPrototypeTarget(button, 'missing-frame');
+    expect(getState().doc.nodes[button].prototype).toEqual({ targetId: detail, trigger: 'click' });
+
+    editor.undo();
+    expect(getState().doc.nodes[button].prototype).toBeUndefined();
+    editor.redo();
+    expect(getState().doc.nodes[button].prototype?.targetId).toBe(detail);
+  });
+
+
   it('描边转形状清空源描边，并一步撤销恢复', () => {
     const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
     editor.applyPatch(a, {

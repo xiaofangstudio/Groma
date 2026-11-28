@@ -2,11 +2,15 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
 import { childrenOf, countArtboards } from '../core/doc';
 import { searchPageNodes, type NodeSearchHit } from '../core/search';
+import { libraryComponents } from '../core/variants';
+import { externalComponents, type ExternalComponent } from '../core/library';
+import { listProjects, loadProject } from '../io/project';
 import type { GromaDoc, NodeType, Page, SceneNode } from '../core/types';
 import { PageThumbnail } from './PageThumbnail';
 import {
   IconChevronLeft,
   IconChevronRight,
+  IconComponent,
   IconEllipse,
   IconEye,
   IconEyeOff,
@@ -67,6 +71,7 @@ const LayerNode = memo(function LayerNode({
     <>
       <div
         className={`layer-row${selected ? ' is-selected' : ''}${dim ? ' is-hidden' : ''}`}
+        data-node-id={node.id}
         style={{ paddingLeft: 6 + depth * 14 }}
         onClick={(e) => editor.select(node.id, e.shiftKey)}
         role="button"
@@ -94,6 +99,11 @@ const LayerNode = memo(function LayerNode({
         </button>
         <NodeIcon node={node} />
         <span className="layer-name" title={node.name}>{node.name}</span>
+        {node.isVariantSet && <span className="mask-chip">变体集</span>}
+        {node.variantSetId && <span className="mask-chip">变体</span>}
+        {node.isComponent && !node.variantSetId && <span className="mask-chip">组件</span>}
+        {node.componentOf && <span className="mask-chip">实例</span>}
+        {node.prototype?.targetId && <span className="mask-chip">交互</span>}
         {node.isMask && <span className="mask-chip">蒙版</span>}
         <span className="layer-actions" onClick={(e) => e.stopPropagation()}>
           <button
@@ -155,6 +165,14 @@ export function LeftPanel() {
   const [dropLine, setDropLine] = useState<{ y: number; left: number; width: number } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryQuery, setLibraryQuery] = useState('');
+  const [libraryTab, setLibraryTab] = useState<'local' | 'external'>('local');
+  const [externalItems, setExternalItems] = useState<ExternalComponent[]>([]);
+  const [externalStatus, setExternalStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [libraryNotice, setLibraryNotice] = useState('');
+  const externalDocs = useRef(new Map<string, GromaDoc>());
+  const externalCache = useRef(new Map<string, { stamp: number; items: ExternalComponent[] }>());
   const pageRows = useRef(new Map<string, HTMLDivElement>());
   const pageListRef = useRef<HTMLDivElement>(null);
   const suppressClickRef = useRef<string | null>(null);
@@ -163,6 +181,9 @@ export function LeftPanel() {
   const searchInput = useRef<HTMLInputElement>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
   const searchPopRef = useRef<HTMLDivElement>(null);
+  const libraryInput = useRef<HTMLInputElement>(null);
+  const libraryButtonRef = useRef<HTMLButtonElement>(null);
+  const libraryPopRef = useRef<HTMLDivElement>(null);
   const cancelRenameRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -171,6 +192,116 @@ export function LeftPanel() {
     [searchOpen, searchQuery, s.doc],
   );
   const queryActive = searchQuery.trim().length > 0;
+  const libraryItems = useMemo(() => {
+    const items = libraryComponents(s.doc);
+    const query = libraryQuery.trim().toLowerCase();
+    if (!query) return items;
+    return items.filter((item) =>
+      [item.name, item.pageName, item.variantLabel ?? ''].some((value) => value.toLowerCase().includes(query)),
+    );
+  }, [s.doc, libraryQuery]);
+  const externalFiltered = useMemo(() => {
+    const query = libraryQuery.trim().toLowerCase();
+    if (!query) return externalItems;
+    return externalItems.filter((item) =>
+      [item.name, item.pageName, item.projectName, item.variantLabel ?? ''].some((value) =>
+        value.toLowerCase().includes(query),
+      ),
+    );
+  }, [externalItems, libraryQuery]);
+  const importableCount = externalItems.filter((item) => item.transferable).length;
+
+  useEffect(() => {
+    if (!libraryOpen || libraryTab !== 'external') return;
+    let alive = true;
+    setExternalStatus('loading');
+    setLibraryNotice('');
+    const currentId = s.projectId;
+    listProjects()
+      .then((entries) => {
+        const others = entries
+          .filter((entry) => entry.id !== currentId)
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .slice(0, 12);
+        return Promise.allSettled(
+          others.map(async (entry) => {
+            const cached = externalCache.current.get(entry.id);
+            if (cached && cached.stamp === entry.updatedAt) return cached.items;
+            const doc = await loadProject(entry.id);
+            const items = externalComponents(doc, entry.id, entry.name);
+            externalDocs.current.set(entry.id, doc);
+            externalCache.current.set(entry.id, { stamp: entry.updatedAt, items });
+            return items;
+          }),
+        );
+      })
+      .then((results) => {
+        if (!alive) return;
+        const groups = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+        const failed = results.length - groups.length;
+        const flat = groups
+          .flat()
+          .sort(
+            (a, b) =>
+              a.projectName.localeCompare(b.projectName, 'zh-Hans-CN') ||
+              a.name.localeCompare(b.name, 'zh-Hans-CN'),
+          );
+        setExternalItems(flat);
+        setExternalStatus('ready');
+        if (failed > 0) setLibraryNotice(`已跳过 ${failed} 个无法读取的工程`);
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setExternalItems([]);
+        setExternalStatus('error');
+        setLibraryNotice(err instanceof Error ? err.message : '读取本机工程失败');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [libraryOpen, libraryTab, s.projectId]);
+
+  async function importExternalComponent(item: ExternalComponent) {
+    if (!item.transferable) {
+      setLibraryNotice(`「${item.name}」含${item.issues.join('、')}，跨工程导入会丢失引用`);
+      return;
+    }
+    setLibraryNotice('正在导入组件…');
+    try {
+      let doc = externalDocs.current.get(item.projectId);
+      if (!doc) {
+        doc = await loadProject(item.projectId);
+        externalDocs.current.set(item.projectId, doc);
+      }
+      const created = editor.importExternalComponent(doc, item.id, {
+        projectId: item.projectId,
+        projectName: item.projectName,
+        nodeId: item.id,
+        nodeName: item.name,
+      });
+      if (!created) throw new Error('导入失败：目标页面不可写');
+      closeLibrary(false);
+    } catch (err) {
+      setLibraryNotice(err instanceof Error ? err.message : '导入失败');
+    }
+  }
+
+  function closeLibrary(restoreFocus = true) {
+    setLibraryOpen(false);
+    setLibraryQuery('');
+    setLibraryNotice('');
+    if (restoreFocus) requestAnimationFrame(() => libraryButtonRef.current?.focus());
+  }
+
+  function openLibrary() {
+    setSearchOpen(false);
+    setLibraryOpen(true);
+  }
+
+  function goToLibraryComponent(id: string) {
+    closeLibrary(false);
+    editor.openNode(id);
+  }
 
   function focusPage(pageId: string) {
     requestAnimationFrame(() => pageRows.current.get(pageId)?.focus());
@@ -178,6 +309,7 @@ export function LeftPanel() {
 
   function openSearch() {
     setMenu(null);
+    setLibraryOpen(false);
     setSearchOpen(true);
   }
 
@@ -368,6 +500,36 @@ export function LeftPanel() {
   }, [s.leftOpen, searchOpen]);
 
   useEffect(() => {
+    if (!s.leftOpen && libraryOpen) setLibraryOpen(false);
+  }, [s.leftOpen, libraryOpen]);
+
+  useEffect(() => {
+    if (!libraryOpen) return;
+    libraryInput.current?.focus();
+    libraryInput.current?.select();
+  }, [libraryOpen]);
+
+  useEffect(() => {
+    if (!libraryOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Node)) return;
+      if (libraryPopRef.current?.contains(e.target) || libraryButtonRef.current?.contains(e.target)) return;
+      closeLibrary(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closeLibrary(true);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [libraryOpen]);
+
+  useEffect(() => {
     if (!searchOpen) return;
     const onPointerDown = (e: PointerEvent) => {
       if (!(e.target instanceof Node)) return;
@@ -471,6 +633,16 @@ export function LeftPanel() {
             <IconSearch size={14} />
           </button>
           <button
+            ref={libraryButtonRef}
+            className={`icon-btn${libraryOpen ? ' is-active' : ''}`}
+            title="组件库"
+            aria-label="组件库"
+            aria-expanded={libraryOpen}
+            onClick={() => (libraryOpen ? closeLibrary(true) : openLibrary())}
+          >
+            <IconComponent size={14} />
+          </button>
+          <button
             className="icon-btn"
             title="新建页面"
             aria-label="新建页面"
@@ -486,6 +658,146 @@ export function LeftPanel() {
           </button>
         </div>
       </div>
+
+      {libraryOpen && (
+        <div
+          ref={libraryPopRef}
+          className="page-search component-library"
+          role="dialog"
+          aria-label="本地组件库"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              closeLibrary(true);
+            }
+          }}
+        >
+          <div className="component-library-tabs" role="tablist" aria-label="组件库范围">
+            <button
+              className={`component-library-tab${libraryTab === 'local' ? ' is-active' : ''}`}
+              role="tab"
+              aria-selected={libraryTab === 'local'}
+              onClick={() => {
+                setLibraryTab('local');
+                setLibraryQuery('');
+                setLibraryNotice('');
+              }}
+            >
+              本工程 <em>{libraryItems.length}</em>
+            </button>
+            <button
+              className={`component-library-tab${libraryTab === 'external' ? ' is-active' : ''}`}
+              role="tab"
+              aria-selected={libraryTab === 'external'}
+              onClick={() => {
+                setLibraryTab('external');
+                setLibraryQuery('');
+                setLibraryNotice('');
+              }}
+            >
+              本机工程 <em>{externalStatus === 'ready' ? importableCount : '…'}</em>
+            </button>
+          </div>
+          <div className="page-search-head">
+            <IconComponent size={13} />
+            <input
+              ref={libraryInput}
+              className="page-search-input"
+              value={libraryQuery}
+              placeholder={libraryTab === 'local' ? '搜索组件名或页面' : '搜索工程、组件或页面'}
+              aria-label="搜索组件"
+              spellCheck={false}
+              onChange={(e) => setLibraryQuery(e.target.value)}
+            />
+          </div>
+          <div className="page-search-results" role="listbox" aria-label="组件列表">
+            {libraryTab === 'local' ? (
+              libraryItems.length === 0 ? (
+                <div className="page-search-hint">
+                  {libraryQuery.trim() ? '没有匹配的组件' : '还没有主组件，选中画板创建一个'}
+                </div>
+              ) : (
+                libraryItems.map((item) => (
+                  <button
+                    key={item.id}
+                    className="page-search-row component-library-row"
+                    role="option"
+                    aria-selected={item.id === s.selectedId}
+                    title={`${item.pageName} / ${item.name}`}
+                    onClick={() => goToLibraryComponent(item.id)}
+                  >
+                    <IconComponent size={14} />
+                    <span className="page-search-main">
+                      <span className="page-search-name">
+                        {item.name}
+                        {item.variantLabel ? <em className="component-library-variant">{item.variantLabel}</em> : null}
+                      </span>
+                      <span className="page-search-path">
+                        {item.pageName} · {Math.round(item.w)}×{Math.round(item.h)}
+                      </span>
+                    </span>
+                    <span className="page-search-page">{item.instanceCount} 实例</span>
+                  </button>
+                ))
+              )
+            ) : externalStatus === 'loading' ? (
+              <div className="page-search-hint">正在读取本机工程…</div>
+            ) : externalStatus === 'error' ? (
+              <div className="page-search-hint">{libraryNotice || '读取本机工程失败'}</div>
+            ) : externalFiltered.length === 0 ? (
+              <div className="page-search-hint">
+                {libraryQuery.trim() ? '没有匹配的组件' : '其他工程里还没有可导入的主组件'}
+              </div>
+            ) : (
+              externalFiltered.map((item) => (
+                <button
+                  key={`${item.projectId}:${item.id}`}
+                  className={`page-search-row component-library-row${item.transferable ? '' : ' is-blocked'}`}
+                  role="option"
+                  aria-selected={false}
+                  aria-disabled={!item.transferable}
+                  title={
+                    item.transferable
+                      ? `${item.projectName} / ${item.pageName} / ${item.name}`
+                      : `不可导入：含${item.issues.join('、')}`
+                  }
+                  onClick={() => void importExternalComponent(item)}
+                >
+                  <IconComponent size={14} />
+                  <span className="page-search-main">
+                    <span className="page-search-name">
+                      {item.name}
+                      {item.variantLabel ? <em className="component-library-variant">{item.variantLabel}</em> : null}
+                    </span>
+                    <span className="page-search-path">
+                      {item.projectName} · {item.pageName} · {Math.round(item.w)}×{Math.round(item.h)}
+                    </span>
+                  </span>
+                  <span className={`component-library-badge${item.transferable ? ' is-ready' : ''}`}>
+                    {item.transferable ? '可导入' : item.issues[0]}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+          <div className="page-search-foot">
+            {libraryNotice && libraryTab === 'external' ? (
+              <span className="component-library-notice" title={libraryNotice}>
+                {libraryNotice}
+              </span>
+            ) : (
+              <span>
+                {libraryTab === 'local'
+                  ? `${libraryItems.length} 个主组件 · 本工程`
+                  : `${importableCount} 个可导入 · 最近 12 个工程`}
+              </span>
+            )}
+            <span className="page-search-kbd">
+              <kbd>Esc</kbd> 关闭
+            </span>
+          </div>
+        </div>
+      )}
 
       {searchOpen && (
         <div

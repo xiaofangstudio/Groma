@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { createDoc } from '../core/doc';
-import { applyCommand, type NodePatch, type SceneCommand } from '../core/commands';
+import { applyCommand, importComponentFromDoc, refreshComponentFromDoc, type NodePatch, type SceneCommand } from '../core/commands';
 import {
   addPage as addPageToDoc,
   duplicatePage as duplicatePageInDoc,
@@ -9,7 +9,7 @@ import {
   removePage as removePageFromDoc,
   renamePage as renamePageInDoc,
 } from '../core/pages';
-import type { GromaDoc, Guide, ImageAsset, NodeType, PathAnchor, Rect, SceneNode, Stroke, Style, StyleKind } from '../core/types';
+import type { GromaDoc, Guide, ImageAsset, LibrarySource, NodeType, PathAnchor, Rect, SceneNode, Stroke, Style, StyleKind, VariableType } from '../core/types';
 import { canCreateStyle, styleApplyPatch, styleFromNode, styleName, styleValuesPatch } from '../core/styles';
 import { clampScale, fitRect, zoomAt, type Viewport } from '../core/viewport';
 import type { ProjectUiState } from './project-ui';
@@ -20,6 +20,10 @@ import { shapePath, type ShapeKind } from '../core/shapes';
 import { nodePathContours, penContoursGeometry, type PenAnchor, type PenContour } from '../core/pen';
 import { vectorActionBuild, type BooleanOp, type VectorAction } from '../core/boolean';
 import { isAutoLayoutChild } from '../core/autoLayout';
+import { prototypeStart } from '../core/prototype';
+import { pageOfNode } from '../core/variants';
+import { ancestorInstance, instancePath, mergeInstanceOverride, overrideFromPatch } from '../core/instance';
+import { activeModeId, canAliasVariable, canBindVariable, defaultValueForType, materializeNodeVariables, materializeVariables, variableById, type VariableProp } from '../core/variables';
 
 export type Tool = 'move' | 'hand' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'line' | 'arrow' | 'polygon' | 'star' | 'slice' | 'pen';
 export type SaveState = 'local' | 'saving' | 'saved' | 'error';
@@ -85,6 +89,8 @@ interface EditorState {
   tool: Tool;
   /** 图片裁剪模式的目标；退出或改选其他图层时清空。 */
   cropId: string | null;
+  /** 正在演示的起始画板；null 表示演示窗口关闭。 */
+  prototypeStartId: string | null;
   leftOpen: boolean;
   rightOpen: boolean;
   needsFit: boolean;
@@ -100,6 +106,7 @@ let state: EditorState;
 let transaction: Transaction | null = null;
 let idSeq = 0;
 let styleSeq = 0;
+let variableSeq = 0;
 let viewportAnimFrame = 0;
 
 function freshState(): EditorState {
@@ -116,6 +123,7 @@ function freshState(): EditorState {
     viewSize: { w: 0, h: 0 },
     tool: 'move',
     cropId: null,
+    prototypeStartId: null,
     leftOpen: true,
     rightOpen: true,
     needsFit: true,
@@ -421,6 +429,22 @@ function patchItems(
         }
       }
       for (const item of changedDescendants(beforeApply, next, id)) record(item.before, item.after);
+
+      // 实例子层的可覆盖字段写回实例根，主组件同步时再重放。
+      const instance = ancestorInstance(next, id);
+      if (instance) {
+        const path = instancePath(next, instance.id, id);
+        const override = overrideFromPatch(patch as Record<string, unknown>);
+        if (path && Object.keys(override).length > 0) {
+          const currentRoot = next.nodes[instance.id];
+          const overrides = mergeInstanceOverride(currentRoot.instanceOverrides, path, override);
+          if (overrides) {
+            const nextRoot: SceneNode = { ...currentRoot, instanceOverrides: overrides };
+            record(currentRoot, nextRoot);
+            next = { ...next, nodes: { ...next.nodes, [currentRoot.id]: nextRoot } };
+          }
+        }
+      }
     } catch {
       // 单个节点补丁失败不应让整批操作停在中途
     }
@@ -703,8 +727,30 @@ export const editor = {
     });
   },
 
+  /** 跨页选中组件：切到所属页面再选中，供本地组件库跳转。 */
+  openNode(id: string) {
+    const node = state.doc.nodes[id];
+    if (!node) return;
+    const page = pageOfNode(state.doc, id);
+    if (page && page.id !== state.pageId) {
+      stopViewportAnimation();
+      set((s) => ({ ...pageViewportState({ ...s, pageId: page.id }, page.id), selectedId: id, selectedIds: [id] }));
+      return;
+    }
+    editor.select(id);
+  },
+
   selectMany(ids: string[]) {
     set((s) => withSelection(s, validSelection(s.doc, [...new Set(ids)])));
+  },
+
+  selectAll() {
+    set((s) => {
+      const page = s.doc.pages.find((item) => item.id === s.pageId) ?? s.doc.pages[0];
+      const root = s.doc.nodes[page.rootId];
+      if (!root) return s;
+      return withSelection(s, validSelection(s.doc, root.children.filter((id) => !s.doc.nodes[id]?.locked)));
+    });
   },
 
   clearSelection() {
@@ -980,6 +1026,189 @@ export const editor = {
       past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
       future: [],
     }));
+    return true;
+  },
+
+  createVariableCollection(name = '主题'): string {
+    variableSeq += 1;
+    const collectionId = `collection-${Date.now().toString(36)}-${variableSeq}`;
+    const modeId = `mode-${Date.now().toString(36)}-${variableSeq}`;
+    const after: GromaDoc = {
+      ...state.doc,
+      variables: {
+        ...(state.doc.variables ?? {}),
+        [collectionId]: {
+          id: collectionId,
+          name: name.trim() || `集合 ${variableSeq}`,
+          modes: [{ id: modeId, name: '默认' }],
+          defaultModeId: modeId,
+          variables: {},
+        },
+      },
+      variableModes: { ...(state.doc.variableModes ?? {}), [collectionId]: modeId },
+    };
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return collectionId;
+  },
+
+  addVariableMode(collectionId: string, name: string): string | null {
+    const collection = state.doc.variables?.[collectionId];
+    if (!collection || collection.modes.length >= 16) return null;
+    variableSeq += 1;
+    const modeId = `mode-${Date.now().toString(36)}-${variableSeq}`;
+    const modeName = name.trim() || `Mode ${collection.modes.length + 1}`;
+    const variables = { ...collection.variables };
+    for (const [id, variable] of Object.entries(variables)) {
+      const base = variable.values[activeModeId(state.doc, collection)];
+      variables[id] = { ...variable, values: { ...variable.values, [modeId]: base ?? defaultValueForType(variable.type) } };
+    }
+    const after: GromaDoc = {
+      ...state.doc,
+      variables: {
+        ...(state.doc.variables ?? {}),
+        [collectionId]: { ...collection, modes: [...collection.modes, { id: modeId, name: modeName }], variables },
+      },
+    };
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return modeId;
+  },
+
+  addVariable(collectionId: string, name: string, type: VariableType): string | null {
+    const collection = state.doc.variables?.[collectionId];
+    if (!collection) return null;
+    variableSeq += 1;
+    const variableId = `var-${Date.now().toString(36)}-${variableSeq}`;
+    const values: Record<string, string | number | boolean> = {};
+    const fallback = defaultValueForType(type);
+    for (const mode of collection.modes) values[mode.id] = fallback;
+    const after: GromaDoc = {
+      ...state.doc,
+      variables: {
+        ...(state.doc.variables ?? {}),
+        [collectionId]: {
+          ...collection,
+          variables: {
+            ...collection.variables,
+            [variableId]: {
+              id: variableId,
+              name: name.trim() || `变量 ${Object.keys(collection.variables).length + 1}`,
+              type,
+              collectionId,
+              values,
+            },
+          },
+        },
+      },
+    };
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return variableId;
+  },
+
+  setVariableValue(collectionId: string, variableId: string, modeId: string, value: string | number | boolean): boolean {
+    const collection = state.doc.variables?.[collectionId];
+    const variable = collection?.variables[variableId];
+    if (!collection || !variable || !collection.modes.some((mode) => mode.id === modeId)) return false;
+    if (variable.type === 'color' && !/^#[0-9a-fA-F]{6}$/.test(String(value))) return false;
+    if (variable.type === 'number' && !Number.isFinite(Number(value))) return false;
+    const nextVariable = { ...variable, values: { ...variable.values, [modeId]: value } };
+    let after: GromaDoc = {
+      ...state.doc,
+      variables: {
+        ...(state.doc.variables ?? {}),
+        [collectionId]: { ...collection, variables: { ...collection.variables, [variableId]: nextVariable } },
+      },
+    };
+    if (activeModeId(after, collection) === modeId) after = materializeVariables(after, collectionId).doc;
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return true;
+  },
+
+  setVariableAlias(collectionId: string, variableId: string, targetId: string | null): boolean {
+    const collection = state.doc.variables?.[collectionId];
+    const variable = collection?.variables[variableId];
+    if (!collection || !variable) return false;
+    if (targetId && !canAliasVariable(state.doc, variableId, targetId)) return false;
+    const { alias: _previous, ...base } = variable;
+    const nextVariable = targetId ? { ...base, alias: targetId } : base;
+    let after: GromaDoc = {
+      ...state.doc,
+      variables: {
+        ...(state.doc.variables ?? {}),
+        [collectionId]: { ...collection, variables: { ...collection.variables, [variableId]: nextVariable } },
+      },
+    };
+    after = materializeVariables(after).doc;
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return true;
+  },
+
+  setVariableMode(collectionId: string, modeId: string): boolean {
+    const collection = state.doc.variables?.[collectionId];
+    if (!collection || !collection.modes.some((mode) => mode.id === modeId)) return false;
+    const after = materializeVariables(
+      { ...state.doc, variableModes: { ...(state.doc.variableModes ?? {}), [collectionId]: modeId } },
+      collectionId,
+    ).doc;
+    set((s) => ({
+      ...s,
+      doc: after,
+      past: [...s.past, { kind: 'doc', beforeDoc: s.doc, afterDoc: after } as HistoryEntry].slice(-200),
+      future: [],
+    }));
+    return true;
+  },
+
+  bindVariable(prop: VariableProp, variableId: string, nodeId?: string): boolean {
+    const id = nodeId ?? state.selectedId;
+    const node = id ? state.doc.nodes[id] : undefined;
+    const variable = variableById(state.doc, variableId);
+    if (!node || node.locked || !variable || !canBindVariable(variable, prop)) return false;
+    const bindings = { ...(node.variableBindings ?? {}), [prop]: variableId };
+    const materialized = materializeNodeVariables(state.doc, { ...node, variableBindings: bindings });
+    editor.applyPatch(node.id, {
+      variableBindings: bindings,
+      fills: materialized.fills,
+      strokes: materialized.strokes,
+      layout: materialized.layout,
+      cornerRadius: materialized.cornerRadius,
+      cornerRadii: materialized.cornerRadii,
+      fontSize: materialized.fontSize,
+    });
+    return true;
+  },
+
+  clearVariableBinding(prop: VariableProp, nodeId?: string): boolean {
+    const id = nodeId ?? state.selectedId;
+    const node = id ? state.doc.nodes[id] : undefined;
+    if (!node?.variableBindings?.[prop]) return false;
+    const bindings = { ...node.variableBindings };
+    delete bindings[prop];
+    editor.applyPatch(node.id, { variableBindings: Object.keys(bindings).length ? bindings : undefined });
     return true;
   },
 
@@ -1566,6 +1795,429 @@ export const editor = {
       const past = [...s.past, { kind: 'addBatch', items } as HistoryEntry].slice(-200);
       return { ...withSelection(s, selected), doc: next, past, future: [] };
     });
+  },
+
+  importExternalComponent(sourceDoc: GromaDoc, sourceId: string, sourceRef: LibrarySource): string | null {
+    let created: string | null = null;
+    set((s) => {
+      const page = s.doc.pages.find((p) => p.id === s.pageId);
+      if (!page) return s;
+      const root = s.doc.nodes[page.rootId];
+      if (!root) return s;
+      const sourceNode = sourceDoc.nodes[sourceId];
+      if (!sourceNode) return s;
+      // 和 Figma 一样落在当前视口中心，导入后立刻可见，而不是排到所有画板下方。
+      const centerX = (s.viewSize.w / 2 - s.viewport.x) / s.viewport.scale;
+      const centerY = (s.viewSize.h / 2 - s.viewport.y) / s.viewport.scale;
+      const result = importComponentFromDoc(
+        s.doc,
+        sourceDoc,
+        sourceId,
+        newNodeId,
+        root.id,
+        Math.round(centerX - sourceNode.w / 2),
+        Math.round(centerY - sourceNode.h / 2),
+        sourceRef,
+      );
+      if (!result.node || !result.parentId || result.index === undefined || !result.subtree) return s;
+      created = result.node.id;
+      const past = [
+        ...s.past,
+        {
+          kind: 'addBatch',
+          items: [{ node: result.node, parentId: result.parentId, index: result.index, subtree: result.subtree }],
+        } as HistoryEntry,
+      ].slice(-200);
+      return { ...withSelection(s, [result.node.id]), doc: result.doc, past, future: [] };
+    });
+    return created;
+  },
+
+  refreshExternalComponent(sourceDoc: GromaDoc, sourceId: string, targetId: string): boolean {
+    let done = false;
+    set((s) => {
+      const target = s.doc.nodes[targetId];
+      if (!target?.isComponent || !target.librarySource) return s;
+      try {
+        let next = refreshComponentFromDoc(s.doc, target.id, sourceDoc, sourceId, newNodeId).doc;
+        // 来源更新后实例跟着走，和 Figma 的库更新一致；覆盖仍按路径重放。
+        const instances = Object.values(next.nodes).filter((node) => node.componentOf === target.id).map((node) => node.id);
+        for (const instanceId of instances) {
+          try {
+            next = applyCommand(next, { type: 'sync-instance', id: instanceId, makeId: newNodeId }).doc;
+          } catch {
+            // 单个实例结构异常不阻断主组件更新。
+          }
+        }
+        done = true;
+        const past = [
+          ...s.past,
+          { kind: 'doc', beforeDoc: s.doc, afterDoc: next } as HistoryEntry,
+        ].slice(-200);
+        return { ...s, doc: next, past, future: [] };
+      } catch {
+        return s;
+      }
+    });
+    return done;
+  },
+
+  createComponent() {
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node || node.type !== 'frame' || node.locked || node.isComponent || node.componentOf) return s;
+      const result = applyCommand(s.doc, { type: 'patch', id: node.id, patch: { isComponent: true } });
+      if (!result.after) return s;
+      return {
+        ...s,
+        doc: result.doc,
+        past: [...s.past, { kind: 'patch', id: node.id, before: node, after: result.after } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+  },
+
+  createVariantSetFromSelection() {
+    set((s) => {
+      const ids = topLevelSelection(s.doc, s.selectedIds);
+      if (ids.length < 2) return s;
+      try {
+        const result = applyCommand(s.doc, { type: 'create-variant-set', ids, makeId: newNodeId });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: result.undoRemove ?? [],
+          redoRemove: result.redoRemove ?? [],
+          selectionBefore: ids,
+          selectionAfter: [result.node.id],
+        };
+        return { ...withSelection(s, [result.node.id]), doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  addVariant() {
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node?.isComponent || !node.variantSetId) return s;
+      try {
+        const result = applyCommand(s.doc, { type: 'add-variant', id: node.id, makeId: newNodeId });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: result.undoRemove ?? [],
+          redoRemove: result.redoRemove ?? [],
+          selectionBefore: [node.id],
+          selectionAfter: [result.node.id],
+        };
+        return { ...withSelection(s, [result.node.id]), doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  addVariantProperty(name: string) {
+    let changed = false;
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node?.isVariantSet || node.locked) return s;
+      try {
+        const result = applyCommand(s.doc, { type: 'add-variant-property', setId: node.id, name });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: [],
+          redoRemove: [],
+          selectionBefore: [node.id],
+          selectionAfter: [node.id],
+        };
+        changed = true;
+        return { ...s, doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+    return changed;
+  },
+
+  addVariantCombo(props: Record<string, string>, sourceId?: string) {
+    let changed = false;
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      const setNode = node?.isVariantSet ? node : node?.variantSetId ? s.doc.nodes[node.variantSetId] : null;
+      if (!setNode?.isVariantSet || setNode.locked) return s;
+      try {
+        const result = applyCommand(s.doc, { type: 'create-variant-combo', setId: setNode.id, props, makeId: newNodeId, sourceId });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: result.undoRemove ?? [],
+          redoRemove: result.redoRemove ?? [],
+          selectionBefore: [setNode.id],
+          selectionAfter: [setNode.id],
+        };
+        changed = true;
+        return { ...s, doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+    return changed;
+  },
+
+  switchVariant(targetId: string) {
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node?.componentOf || node.type !== 'frame') return s;
+      try {
+        const result = applyCommand(s.doc, { type: 'switch-variant', id: node.id, targetId, makeId: newNodeId });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: result.undoRemove ?? [],
+          redoRemove: result.redoRemove ?? [],
+          selectionBefore: [node.id],
+          selectionAfter: [node.id],
+        };
+        return { ...s, doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  swapComponentInstance(targetId: string) {
+    set((s) => {
+      const selected = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!selected) return s;
+      const node = selected.componentOf ? selected : ancestorInstance(s.doc, selected.id);
+      if (!node?.componentOf || node.type !== 'frame') return s;
+      try {
+        const result = applyCommand(s.doc, { type: 'swap-instance', id: node.id, targetId, makeId: newNodeId });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: result.undoRemove ?? [],
+          redoRemove: result.redoRemove ?? [],
+          selectionBefore: [selected.id],
+          selectionAfter: [node.id],
+        };
+        return { ...s, doc: result.doc, selectedId: node.id, selectedIds: [node.id], past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  renameVariantProperty(prop: string, value: string) {
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node?.variantSetId || !node.isComponent || node.locked) return s;
+      const key = prop.trim();
+      if (!key || !value.trim()) return s;
+      const nextProps = { ...(node.variantProps ?? {}), [key]: value.trim() };
+      const result = applyCommand(s.doc, { type: 'patch', id: node.id, patch: { variantProps: nextProps } });
+      if (!result.after) return s;
+      const entry: HistoryEntry = { kind: 'patch', id: node.id, before: node, after: result.after };
+      return { ...s, doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+    });
+  },
+
+  createComponentInstance() {
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node?.isComponent || node.type !== 'frame') return s;
+      try {
+        const result = applyCommand(s.doc, {
+          type: 'create-instance',
+          id: node.id,
+          makeId: newNodeId,
+        });
+        if (!result.node || !result.parentId || result.index === undefined) return s;
+        const entry: HistoryEntry = {
+          kind: 'add',
+          node: result.node,
+          parentId: result.parentId,
+          index: result.index,
+          subtree: result.subtree,
+        };
+        return { ...withSelection(s, [result.node.id]), doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  syncComponentInstance() {
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node?.componentOf || node.type !== 'frame') return s;
+      try {
+        const result = applyCommand(s.doc, { type: 'sync-instance', id: node.id, makeId: newNodeId });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: result.undoRemove ?? [],
+          redoRemove: result.redoRemove ?? [],
+          selectionBefore: [node.id],
+          selectionAfter: [node.id],
+        };
+        return { ...s, doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  syncComponentInstances() {
+    set((s) => {
+      const master = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!master?.isComponent || master.type !== 'frame') return s;
+      const instanceIds = Object.values(s.doc.nodes)
+        .filter((node) => node.componentOf === master.id && node.type === 'frame')
+        .map((node) => node.id);
+      if (instanceIds.length === 0) return s;
+      let next = s.doc;
+      const beforeNodes: Record<string, SceneNode> = {};
+      const afterNodes: Record<string, SceneNode> = {};
+      const undoRemove: string[] = [];
+      const redoRemove: string[] = [];
+      for (const id of instanceIds) {
+        try {
+          const result = applyCommand(next, { type: 'sync-instance', id, makeId: newNodeId });
+          next = result.doc;
+          Object.assign(beforeNodes, result.beforeNodes ?? {});
+          Object.assign(afterNodes, result.afterNodes ?? {});
+          undoRemove.push(...(result.undoRemove ?? []));
+          redoRemove.push(...(result.redoRemove ?? []));
+        } catch {
+          // 单个实例失效不应阻断其余实例
+        }
+      }
+      if (Object.keys(afterNodes).length === 0) return s;
+      const entry: HistoryEntry = {
+        kind: 'structure',
+        beforeNodes,
+        afterNodes,
+        undoRemove,
+        redoRemove,
+        selectionBefore: [master.id],
+        selectionAfter: [master.id],
+      };
+      return { ...s, doc: next, past: [...s.past, entry].slice(-200), future: [] };
+    });
+  },
+
+  resetInstanceOverride() {
+    set((s) => {
+      const id = s.selectedId;
+      const node = id ? s.doc.nodes[id] : null;
+      if (!node) return s;
+      const instance = ancestorInstance(s.doc, node.id);
+      if (!instance) return s;
+      const path = instancePath(s.doc, instance.id, node.id);
+      if (!path || !instance.instanceOverrides?.[path]) return s;
+      const overrides = { ...instance.instanceOverrides };
+      delete overrides[path];
+      const nextOverrides = Object.keys(overrides).length > 0 ? overrides : undefined;
+      let doc = s.doc;
+      const past = [...s.past];
+      const patch = applyCommand(doc, { type: 'patch', id: instance.id, patch: { instanceOverrides: nextOverrides } });
+      if (!patch.after) return s;
+      doc = patch.doc;
+      past.push({ kind: 'patch', id: instance.id, before: patch.before ?? instance, after: patch.after });
+      const sync = applyCommand(doc, { type: 'sync-instance', id: instance.id, makeId: newNodeId });
+      if (!sync.node) {
+        return { ...s, doc, past: past.slice(-200), future: [] };
+      }
+      const rootAfter = sync.doc.nodes[instance.id] ?? sync.node;
+      past.push({
+        kind: 'structure',
+        beforeNodes: sync.beforeNodes ?? {},
+        afterNodes: sync.afterNodes ?? {},
+        undoRemove: sync.undoRemove ?? [],
+        redoRemove: sync.redoRemove ?? [],
+        selectionBefore: [node.id],
+        selectionAfter: [rootAfter.id],
+      });
+      return {
+        ...s,
+        doc: sync.doc,
+        selectedId: rootAfter.id,
+        selectedIds: [rootAfter.id],
+        past: past.slice(-200),
+        future: [],
+      };
+    });
+  },
+
+  detachComponentInstance() {
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node?.componentOf || node.locked) return s;
+      const result = applyCommand(s.doc, { type: 'patch', id: node.id, patch: { componentOf: undefined, instanceOverrides: undefined } });
+      if (!result.after) return s;
+      return {
+        ...s,
+        doc: result.doc,
+        past: [...s.past, { kind: 'patch', id: node.id, before: node, after: result.after } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+  },
+
+  selectComponentMaster() {
+    const node = state.selectedId ? state.doc.nodes[state.selectedId] : null;
+    const master = node?.componentOf ? state.doc.nodes[node.componentOf] : null;
+    if (master) editor.select(master.id);
+  },
+
+  setPrototypeTarget(id: string, targetId: string) {
+    set((s) => {
+      const node = s.doc.nodes[id];
+      const target = targetId ? s.doc.nodes[targetId] : null;
+      if (!node || node.locked) return s;
+      if (targetId && (!target || target.type !== 'frame')) return s;
+      const patch = { prototype: targetId ? { targetId, trigger: 'click' as const } : undefined };
+      const result = applyCommand(s.doc, { type: 'patch', id, patch });
+      if (!result.after) return s;
+      return {
+        ...s,
+        doc: result.doc,
+        past: [...s.past, { kind: 'patch', id, before: node, after: result.after } as HistoryEntry].slice(-200),
+        future: [],
+      };
+    });
+  },
+
+  openPrototype(startId?: string) {
+    const current = state;
+    const page = current.doc.pages.find((item) => item.id === current.pageId) ?? current.doc.pages[0];
+    const explicit = startId ? current.doc.nodes[startId] : null;
+    const start = explicit?.type === 'frame' ? explicit : prototypeStart(current.doc, page, current.selectedId);
+    if (!start || start.type !== 'frame') return;
+    set((s) => ({ ...s, prototypeStartId: start.id }));
+  },
+
+  closePrototype() {
+    set((s) => ({ ...s, prototypeStartId: null }));
   },
 
   moveLayoutOrder(direction: -1 | 1) {

@@ -4,11 +4,14 @@ import { vectorActionEligibility, type BooleanOp, type VectorAction } from '../c
 import { renameProject } from '../io/project';
 import { parseSvgDrawing } from '../io/importSvg';
 import { applySvgImport } from '../io/applySvgImport';
+import { topLevelFrames } from '../core/prototype';
 import { importImageAsset, isImageFile } from '../io/images';
 import { ExportDialog } from './ExportDialog';
 import { VersionHistory } from './VersionHistory';
+import { VariablesDialog } from './VariablesDialog';
 import {
   IconCursor,
+  IconComponent,
   IconEllipse,
   IconExport,
   IconFit,
@@ -20,6 +23,7 @@ import {
   IconLine,
   IconMinus,
   IconPen,
+  IconPlay,
   IconPlus,
   IconPolygon,
   IconRect,
@@ -48,9 +52,12 @@ const VECTOR_ACTIONS = [...BOOLEAN_ACTIONS, ...EXTRA_ACTIONS];
 
 export function TopBar() {
   const s = useEditor();
+  const page = s.doc.pages.find((item) => item.id === s.pageId) ?? s.doc.pages[0];
+  const canPresent = page ? topLevelFrames(s.doc, page).length > 0 : false;
   const [name, setName] = useState(s.doc.name);
   const [exportOpen, setExportOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
+  const [variablesOpen, setVariablesOpen] = useState(false);
   const [toast, setToast] = useState<{ title: string; detail: string } | null>(null);
   const [importing, setImporting] = useState(false);
   const [boolMenuOpen, setBoolMenuOpen] = useState(false);
@@ -467,6 +474,24 @@ export function TopBar() {
             <span>{importing ? '导入中…' : '导入'}</span>
           </button>
           <button
+            className="export-btn"
+            title={canPresent ? '从当前画板开始演示原型' : '当前页还没有画板'}
+            disabled={!canPresent}
+            onClick={() => editor.openPrototype()}
+          >
+            <IconPlay size={14} />
+            <span>演示</span>
+          </button>
+          <button
+            className="version-btn"
+            title="变量与多 Mode"
+            aria-label="变量与多 Mode"
+            onClick={() => setVariablesOpen(true)}
+          >
+            <IconComponent size={14} />
+            <span>变量</span>
+          </button>
+          <button
             className="version-btn"
             title="版本历史"
             aria-label="版本历史"
@@ -512,6 +537,7 @@ export function TopBar() {
       )}
 
       {versionOpen && <VersionHistory onClose={() => setVersionOpen(false)} />}
+      {variablesOpen && <VariablesDialog onClose={() => setVariablesOpen(false)} />}
 
       {toast && (
         <div className="toast" role="status">

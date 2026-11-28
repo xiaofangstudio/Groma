@@ -32,6 +32,23 @@ export function IconHand(props: IconProps) {
   );
 }
 
+export function IconPlay(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M5.2 3.3v9.4L12.8 8 5.2 3.3z" />
+    </svg>
+  );
+}
+
+export function IconComponent(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M8 2.2 13.2 5.2v5.6L8 13.8 2.8 10.8V5.2z" />
+      <path d="M8 6.1 10.6 8 8 9.9 5.4 8z" />
+    </svg>
+  );
+}
+
 export function IconFlowHorizontal(props: IconProps) {
   return (
     <svg {...base(props)}>

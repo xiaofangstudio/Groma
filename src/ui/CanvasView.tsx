@@ -177,6 +177,7 @@ export function CanvasView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const selectionCanvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<PanDrag | null>(null);
   const moveRef = useRef<MoveDrag | null>(null);
   const resizeRef = useRef<ResizeDrag | null>(null);
@@ -217,9 +218,35 @@ export function CanvasView() {
   const [guideDraft, setGuideDraft] = useState<GuideDraft | null>(null);
   const [hoverGuide, setHoverGuide] = useState<number | null>(null);
   const [assetTick, setAssetTick] = useState(0);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   const { doc, pageId, viewport, selectedIds, viewSize } = s;
   const page = doc.pages.find((p) => p.id === pageId) ?? doc.pages[0];
+  const ctxNode = selectedIds.length === 1 ? doc.nodes[selectedIds[0]] : null;
+  const ctxTop = topLevelSelection(doc, selectedIds);
+  const ctxParentId = ctxTop.length ? doc.nodes[ctxTop[0]]?.parentId ?? null : null;
+  const ctxCanVariant =
+    ctxTop.length >= 2 &&
+    Boolean(ctxParentId) &&
+    ctxTop.every((id) => {
+      const node = doc.nodes[id];
+      return Boolean(
+        node &&
+          node.type === 'frame' &&
+          node.isComponent &&
+          !node.variantSetId &&
+          !node.componentOf &&
+          node.parentId === ctxParentId &&
+          !node.locked,
+      );
+    });
+  const ctxCanGroup =
+    ctxTop.length >= 2 &&
+    Boolean(ctxParentId) &&
+    ctxTop.every((id) => {
+      const node = doc.nodes[id];
+      return Boolean(node && node.type !== 'page' && node.parentId === ctxParentId && !node.locked);
+    });
   const activePenNodeId = selectedIds.length === 1 ? selectedIds[0] : null;
 
   useEffect(() => {
@@ -456,6 +483,25 @@ export function CanvasView() {
       setAssetTick((tick) => tick + 1);
     });
   }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target instanceof Node && contextMenuRef.current?.contains(e.target)) return;
+      setContextMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('blur', onPointerDown as EventListener);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('blur', onPointerDown as EventListener);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [contextMenu]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1063,6 +1109,25 @@ export function CanvasView() {
       setPenAnchorIndex(null);
     }
   }, [s.tool, s.selectedIds, s.doc]);
+
+  function openContextMenu(e: React.MouseEvent<HTMLCanvasElement>) {
+    e.preventDefault();
+    flushZoomPreview();
+    const p = contentPoint(e);
+    const current = getState();
+    const statePage = current.doc.pages.find((pg) => pg.id === current.pageId) ?? current.doc.pages[0];
+    let hit: SceneNode | null = null;
+    if (p.x >= 0 && p.y >= 0) {
+      const world = screenToWorld(current.viewport, p.x, p.y);
+      hit = hitTestDeep(current.doc, statePage, world.x, world.y) ?? null;
+    }
+    if (hit) {
+      if (!current.selectedIds.includes(hit.id)) editor.select(hit.id);
+    } else {
+      editor.clearSelection();
+    }
+    setContextMenu({ x: Math.round(e.clientX), y: Math.round(e.clientY) });
+  }
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
     flushZoomPreview();
@@ -1852,7 +1917,7 @@ export function CanvasView() {
           if (penRef.current) setPenHover(null);
         }}
         onDoubleClick={onDoubleClick}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={openContextMenu}
       />
       <canvas
         ref={selectionCanvasRef}
@@ -1860,6 +1925,94 @@ export function CanvasView() {
         aria-hidden="true"
         style={{ display: selectedIds.length > 0 ? 'block' : 'none' }}
       />
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="canvas-context-menu"
+          role="menu"
+          aria-label="图层右键菜单"
+          style={{
+            left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 238)),
+            top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 420)),
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div className="canvas-context-head">
+            {ctxTop.length > 1 ? `已选 ${selectedIds.length} 个图层` : ctxNode?.name ?? '画布'}
+          </div>
+          {ctxNode || selectedIds.length > 0 ? (
+            <>
+              <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.duplicateSelected(); }}>
+                <span>复制图层</span><kbd>Ctrl+D</kbd>
+              </button>
+              {(ctxNode?.isComponent && !ctxNode.variantSetId) || ctxNode?.variantSetId ? (
+                <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.createComponentInstance(); }}>
+                  <span>创建实例</span>
+                </button>
+              ) : null}
+              {ctxNode?.variantSetId ? (
+                <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.addVariant(); }}>
+                  <span>新增变体</span>
+                </button>
+              ) : null}
+              {ctxNode?.componentOf ? (
+                <>
+                  <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.syncComponentInstance(); }}>
+                    <span>同步主组件</span>
+                  </button>
+                  <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.detachComponentInstance(); }}>
+                    <span>脱离组件</span>
+                  </button>
+                  <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.selectComponentMaster(); }}>
+                    <span>选中主组件</span>
+                  </button>
+                </>
+              ) : null}
+              {ctxCanVariant ? (
+                <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.createVariantSetFromSelection(); }}>
+                  <span>合并为变体集</span>
+                </button>
+              ) : null}
+              {ctxNode?.type === 'frame' && !ctxNode.isComponent && !ctxNode.componentOf && !ctxNode.isVariantSet ? (
+                <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.createComponent(); }}>
+                  <span>创建组件</span>
+                </button>
+              ) : null}
+              {ctxCanGroup ? (
+                <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.groupSelected(); }}>
+                  <span>成组</span><kbd>Ctrl+G</kbd>
+                </button>
+              ) : null}
+              {ctxNode?.type === 'group' ? (
+                <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.ungroupSelected(); }}>
+                  <span>解散分组</span>
+                </button>
+              ) : null}
+              <div className="canvas-context-sep" />
+              {ctxNode ? (
+                <>
+                  <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.applyPatch(ctxNode.id, { visible: !ctxNode.visible }); }}>
+                    <span>{ctxNode.visible ? '隐藏图层' : '显示图层'}</span>
+                  </button>
+                  <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.applyPatch(ctxNode.id, { locked: !ctxNode.locked }); }}>
+                    <span>{ctxNode.locked ? '解锁图层' : '锁定图层'}</span>
+                  </button>
+                </>
+              ) : null}
+              <button type="button" className="canvas-context-item is-danger" onClick={() => { setContextMenu(null); editor.deleteSelected(); }}>
+                <span>删除</span><kbd>Del</kbd>
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="canvas-context-empty">右键画布可打开 Groma 菜单；先选中图层再操作。</div>
+              <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.selectAll(); }}>
+                <span>全选当前页</span><kbd>Ctrl+A</kbd>
+              </button>
+            </>
+          )}
+        </div>
+      )}
       {penHint && (
         <div className="toast" role="status">
           <span className="toast-dot" />

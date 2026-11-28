@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { editor, useEditor } from '../state/editor';
 import { getAssetDataUrl, getImageProjectId, importImageAsset } from '../io/images';
-import { exportTextFile } from '../io/project';
+import { exportTextFile, loadProject } from '../io/project';
 import { styleTokensCss, styleTokensJson } from '../io/tokens';
 import type { AutoLayout, Constraints, Effect, LayoutAlign, LayoutJustify, Paint, PaintStop, SceneNode, StrokeCap, StrokeJoin, StyleKind } from '../core/types';
 import { defaultAutoLayout, supportsAutoLayout } from '../core/autoLayout';
@@ -27,6 +27,11 @@ import { cropPercent, imageCropOf, isFullImageCrop } from '../core/image';
 import { usePenAnchorSelection } from '../state/pen-selection';
 import { absolutePosition, absoluteRect, selectionBounds, topLevelSelection } from '../core/geometry';
 import { countArtboards } from '../core/doc';
+import { framesInPage } from '../core/prototype';
+import { libraryComponents, variantFacets, variantLabel, variantMatchesFacet, variantOptions, variantPropertyNames, variantSetOf } from '../core/variants';
+import { componentTransferIssues } from '../core/library';
+import { ancestorInstance, instancePath, overrideLabels } from '../core/instance';
+import { activeModeId, canBindVariable, VARIABLE_PROP_LABEL, variableBindingProps, variableCollections, type VariableProp } from '../core/variables';
 import { cornerRadiiOf, type CornerRadii } from '../core/corners';
 import { addFill, fillLabel, moveFill, removeFill, toggleFillVisible, updateFill } from '../core/fills';
 import {
@@ -39,8 +44,8 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconClose,
-  IconDistributeH,
-  IconDistributeV,
+  IconComponent,
+  IconDistributeH,  IconDistributeV,
   IconFlowHorizontal,
   IconFlowVertical,
   IconRefresh,
@@ -52,6 +57,8 @@ import {
   IconGroup,
   IconImage,
   IconPage,
+  IconPlay,
+  IconPlus,
   IconRect,
   IconSection,
   IconSlice,
@@ -1412,6 +1419,451 @@ function AutoLayoutSection({ node }: { node: SceneNode }) {
   );
 }
 
+function PrototypeSection({ node }: { node: SceneNode }) {
+  const s = useEditor();
+  const page = s.doc.pages.find((item) => item.id === s.pageId) ?? s.doc.pages[0];
+  const frames = framesInPage(s.doc, page).filter((frame) => frame.id !== node.id);
+  const linked = node.prototype?.targetId ?? '';
+  const missing = Boolean(linked && !s.doc.nodes[linked]);
+
+  return (
+    <section className="ins-section">
+      <div className="ins-title-row">
+        <h3 className="ins-title">原型</h3>
+        <span className="style-count">{linked ? '点击' : '无交互'}</span>
+      </div>
+      <label className="proto-target-row">
+        <span className="field-label">点击跳转</span>
+        <select
+          className="proto-select"
+          value={linked}
+          disabled={node.locked || frames.length === 0}
+          aria-label="原型跳转目标"
+          onChange={(event) => editor.setPrototypeTarget(node.id, event.currentTarget.value)}
+        >
+          <option value="">{frames.length === 0 ? '当前页没有其他画板' : '无'}</option>
+          {missing && <option value={linked}>目标已失效</option>}
+          {frames.map((frame) => (
+            <option key={frame.id} value={frame.id}>
+              {frame.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="ins-action-row component-actions">
+        <button type="button" className="wide-action" disabled={!framesInPage(s.doc, page).length} onClick={() => editor.openPrototype()}>
+          <IconPlay size={15} />
+          <span>演示</span>
+        </button>
+      </div>
+      <p className="ins-note">选中画板或画板内任意图层后演示；点击热区跳转，Esc 退出。</p>
+    </section>
+  );
+}
+
+function VariablesSection({ node }: { node: SceneNode }) {
+  const s = useEditor();
+  const collections = variableCollections(s.doc);
+  if (collections.length === 0) return null;
+  const all = collections.flatMap((collection) =>
+    Object.values(collection.variables).map((variable) => ({ collection, variable })),
+  );
+  const colors = all.filter((item) => canBindVariable(item.variable, 'fill'));
+  const numbers = all.filter((item) => canBindVariable(item.variable, 'cornerRadius'));
+  const supported = variableBindingProps(node);
+  const visibleProps = supported.filter((prop) => (prop === 'fill' || prop === 'stroke' ? colors.length > 0 : numbers.length > 0));
+  if (visibleProps.length === 0) return null;
+  const optionsFor = (prop: VariableProp) =>
+    (prop === 'fill' || prop === 'stroke' ? colors : numbers).map(({ collection, variable }) => ({
+      value: variable.id,
+      label: `${collection.name} / ${variable.name}`,
+    }));
+
+  return (
+    <section className="ins-section">
+      <div className="ins-title-row">
+        <h3 className="ins-title">变量</h3>
+        <span className="style-count">{collections.length} 集合</span>
+      </div>
+      {visibleProps.map((prop) => (
+        <SelectField
+          key={prop}
+          label={VARIABLE_PROP_LABEL[prop]}
+          value={(node.variableBindings?.[prop] ?? '') || 'none'}
+          disabled={node.locked}
+          options={[
+            { value: 'none', label: '未绑定' },
+            ...optionsFor(prop),
+          ]}
+          onChange={(value) => (value === 'none' ? editor.clearVariableBinding(prop) : editor.bindVariable(prop, value))}
+        />
+      ))}
+      {collections.map((collection) => (
+        <Row
+          key={collection.id}
+          label={collection.name}
+          value={collection.modes.find((mode) => mode.id === activeModeId(s.doc, collection))?.name ?? '默认'}
+        />
+      ))}
+      <p className="ins-note">绑定后改 Mode 会刷新已绑定属性；内边距变量写入四边同值，值仍是本地工程里的字面量，导出不依赖网络。</p>
+    </section>
+  );
+}
+
+function VariantSetSection({ node }: { node: SceneNode }) {
+  const s = useEditor();
+  const [propDraft, setPropDraft] = useState('');
+  const [facetIndex, setFacetIndex] = useState(0);
+  const options = variantOptions(s.doc, node.id);
+  const names = variantPropertyNames(s.doc, node.id);
+  const first = names[0];
+  const second = names[1];
+  const extraNames = names.slice(2);
+  const values = (name: string) => [...new Set(options.map((option) => option.props[name]).filter((value): value is string => Boolean(value)))];
+  const rows = first ? values(first) : [];
+  const cols = second ? values(second) : [];
+  const combos = first && second ? rows.flatMap((row) => cols.map((col) => ({ row, col }))) : [];
+  const facets = variantFacets(options, extraNames);
+  const facetCursor = Math.min(facetIndex, Math.max(0, facets.length - 1));
+  const facetValues = facets[facetCursor]?.values ?? {};
+  const inFacet = (option: (typeof options)[number]) => variantMatchesFacet(option, extraNames, facetValues);
+  const filledInFacet = options.filter((option) => option.props[first] && option.props[second] && inFacet(option)).length;
+  return (
+    <section className="ins-section">
+      <div className="ins-title-row">
+        <h3 className="ins-title">组件</h3>
+        <span className="style-count">变体集</span>
+      </div>
+      <Row label="变体" value={`${options.length} 个`} />
+      {names.length > 0 ? (
+        <div className="variant-property-chips">
+          {names.map((name) => (
+            <span className="variant-property-chip" key={name}>
+              {name}
+              <em>{values(name).length}</em>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="variant-prop-add">
+        <input
+          className="field-input"
+          value={propDraft}
+          placeholder="新属性名，如 尺寸"
+          disabled={node.locked}
+          onChange={(e) => setPropDraft(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            if (editor.addVariantProperty(propDraft)) setPropDraft('');
+          }}
+        />
+        <button
+          type="button"
+          className="mini-action"
+          disabled={node.locked || !propDraft.trim()}
+          onClick={() => {
+            if (editor.addVariantProperty(propDraft)) setPropDraft('');
+          }}
+        >
+          添加属性
+        </button>
+      </div>
+      {first && second ? (
+        <>
+          {extraNames.length > 0 && facets.length > 0 ? (
+            <SelectField
+              label={extraNames.length === 1 ? extraNames[0] : '其余属性'}
+              value={String(facetCursor)}
+              disabled={node.locked}
+              options={facets.map((facet, index) => ({
+                value: String(index),
+                label: extraNames.length === 1 ? facet.values[extraNames[0]] || '空' : facet.label,
+              }))}
+              onChange={(value) => setFacetIndex(Number(value))}
+            />
+          ) : null}
+          <div className="ins-title-row variant-matrix-head">
+            <span>组合</span>
+            <span className="style-count">
+              {filledInFacet} / {combos.length}
+            </span>
+          </div>
+          <div className="variant-matrix" style={{ gridTemplateColumns: `68px repeat(${cols.length}, minmax(0, 1fr))` }}>
+            <div className="variant-matrix-corner">
+              {first} / {second}
+            </div>
+            {cols.map((col) => (
+              <div className="variant-matrix-axis" key={`col-${col}`} title={`${second}：${col}`}>
+                {col}
+              </div>
+            ))}
+            {rows.map((row) => (
+              <Fragment key={`row-${row}`}>
+                <div className="variant-matrix-axis" title={`${first}：${row}`}>
+                  {row}
+                </div>
+                {cols.map((col) => {
+                  const option = options.find((item) => item.props[first] === row && item.props[second] === col && inFacet(item));
+                  return option ? (
+                    <button
+                      type="button"
+                      key={`${row}-${col}`}
+                      className={`variant-matrix-cell is-filled${s.selectedId === option.id ? ' is-selected' : ''}`}
+                      title={`${first}：${row} · ${second}：${col}`}
+                      onClick={() => editor.select(option.id)}
+                    >
+                      ✓
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      key={`${row}-${col}`}
+                      className="variant-matrix-cell"
+                      title={`新增组合：${first} ${row} / ${second} ${col}`}
+                      onClick={() =>
+                        editor.addVariantCombo(
+                          { ...(options[0]?.props ?? {}), [first]: row, [second]: col, ...facetValues },
+                          options[0]?.id,
+                        )
+                      }
+                    >
+                      +
+                    </button>
+                  );
+                })}
+              </Fragment>
+            ))}
+          </div>
+        </>
+      ) : null}
+      <p className="ins-note">
+        {names.length > 2
+          ? '组合矩阵画前两个属性，其余属性用上方筛选；点空格会复制当前变体并带上筛选值。'
+          : '添加属性后，点空组合格可复制当前变体并生成新组合；切换仍只在同一变体集内生效。'}
+      </p>
+    </section>
+  );
+}
+
+function InstanceOverrideSection({ node }: { node: SceneNode }) {
+  const s = useEditor();
+  const instance = ancestorInstance(s.doc, node.id);
+  if (!instance) return null;
+  const path = instancePath(s.doc, instance.id, node.id);
+  if (!path) return null;
+  const override = instance.instanceOverrides?.[path];
+  const labels = overrideLabels(override);
+  return (
+    <section className="ins-section instance-override">
+      <div className="instance-override-head">
+        <h3 className="ins-title">实例覆盖</h3>
+        <span className={`instance-override-state${labels.length ? ' is-on' : ''}`}>{labels.length ? '已覆盖' : '随主组件'}</span>
+      </div>
+      <div className="instance-override-path">
+        <span className="instance-override-name">{instance.name}</span>
+        <span className="instance-override-route">路径 {path}</span>
+      </div>
+      {labels.length > 0 && (
+        <div className="instance-override-chips">
+          {labels.map((label) => (
+            <span className="instance-override-chip" key={label}>
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="ins-action-row instance-override-actions">
+        <button className="wide-action" onClick={() => editor.select(instance.id)}>
+          <IconComponent size={15} />
+          <span>选中实例</span>
+        </button>
+        {labels.length > 0 && (
+          <button className="wide-action" onClick={() => editor.resetInstanceOverride()} title="从主组件恢复这一层并保留其他覆盖">
+            <span>重置此层</span>
+          </button>
+        )}
+      </div>
+      <div className="instance-override-hint">改文字、填充、尺寸只记在当前实例，同步主组件不会丢；重置后回到主组件内容。</div>
+    </section>
+  );
+}
+
+function ComponentSection({ node }: { node: SceneNode }) {
+  const s = useEditor();
+  const [sourceBusy, setSourceBusy] = useState(false);
+  const [sourceNotice, setSourceNotice] = useState('');
+  if (node.type !== 'frame') return null;
+  const instanceCount = Object.values(s.doc.nodes).filter((item) => item.componentOf === node.id).length;
+  const master = node.componentOf ? s.doc.nodes[node.componentOf] : null;
+  const masterMissing = Boolean(node.componentOf && (!master || !master.isComponent));
+  const variantSet = variantSetOf(s.doc, node);
+
+  async function refreshFromSource() {
+    const source = node.librarySource;
+    if (!source) return;
+    setSourceBusy(true);
+    setSourceNotice('');
+    try {
+      const doc = await loadProject(source.projectId);
+      const issues = componentTransferIssues(doc, source.nodeId);
+      if (issues.length > 0) throw new Error(`来源含${issues.join('、')}，不能直接更新`);
+      const ok = editor.refreshExternalComponent(doc, source.nodeId, node.id);
+      if (!ok) throw new Error('来源主组件已删除或更新失败');
+      setSourceNotice('已从来源更新，实例同步完成');
+    } catch (err) {
+      setSourceNotice(err instanceof Error ? err.message : '更新失败');
+    } finally {
+      setSourceBusy(false);
+    }
+  }
+
+  if (node.isVariantSet) {
+    return <VariantSetSection key={node.id} node={node} />;
+  }
+
+  if (node.variantSetId && node.isComponent) {
+    const options = variantSet ? variantOptions(s.doc, node.variantSetId) : [];
+    return (
+      <section className="ins-section">
+        <div className="ins-title-row">
+          <h3 className="ins-title">组件</h3>
+          <span className="style-count">变体</span>
+        </div>
+        <Row label="变体集" value={variantSet?.name ?? '已失效'} />
+        {Object.entries(node.variantProps ?? {}).map(([prop, value]) => (
+          <label className="field" key={prop}>
+            <span className="field-label">{prop}</span>
+            <input
+              key={`${node.id}-${prop}-${value}`}
+              className="field-input"
+              defaultValue={value}
+              disabled={node.locked}
+              onBlur={(e) => {
+                const next = e.currentTarget.value.trim();
+                if (next && next !== value) editor.renameVariantProperty(prop, next);
+              }}
+            />
+          </label>
+        ))}
+        <Row label="集内变体" value={`${options.length} 个`} />
+        <div className="ins-action-row component-actions">
+          <button type="button" className="wide-action" disabled={node.locked} onClick={() => editor.createComponentInstance()}>
+            <IconGroup size={15} />
+            <span>创建实例</span>
+          </button>
+          <button type="button" className="wide-action" disabled={node.locked} onClick={() => editor.addVariant()}>
+            <IconPlus size={15} />
+            <span>新增变体</span>
+          </button>
+        </div>
+        <p className="ins-note">新增变体会复制当前变体内容；实例在变体集外侧生成。</p>
+      </section>
+    );
+  }
+
+  if (!node.isComponent && !node.componentOf) {
+    return (
+      <section className="ins-section">
+        <h3 className="ins-title">组件</h3>
+        <button type="button" className="wide-action" disabled={node.locked} onClick={() => editor.createComponent()}>
+          <IconComponent size={15} />
+          <span>创建组件</span>
+        </button>
+        <p className="ins-note">把选中画板变成主组件；多选两个以上主组件可在选区面板合并为变体集。</p>
+      </section>
+    );
+  }
+
+  if (node.componentOf) {
+    const variantSource = variantSetOf(s.doc, node);
+    const options = variantSource ? variantOptions(s.doc, variantSource.id) : [];
+    const swapOptions = libraryComponents(s.doc)
+      .filter((item) => item.id !== node.id)
+      .map((item) => ({
+        value: item.id,
+        label: item.variantSetId ? `${item.name} · ${item.variantLabel}` : item.name,
+      }));
+    return (
+      <section className="ins-section">
+        <div className="ins-title-row">
+          <h3 className="ins-title">组件</h3>
+          <span className="style-count">实例</span>
+        </div>
+        <Row label="主组件" value={master ? variantLabel(master) : '已失效'} />
+        {swapOptions.length > 0 ? (
+          <SelectField
+            label="替换组件"
+            value={master?.id ?? ''}
+            disabled={node.locked || masterMissing}
+            options={swapOptions}
+            onChange={(value) => editor.swapComponentInstance(value)}
+          />
+        ) : null}
+        {variantSource ? (
+          <SelectField
+            label="变体"
+            value={node.componentOf ?? ''}
+            disabled={node.locked || masterMissing}
+            options={options.map((option) => ({ value: option.id, label: option.props ? Object.values(option.props).join(' / ') : option.name }))}
+            onChange={(value) => editor.switchVariant(value)}
+          />
+        ) : null}
+        <div className="ins-action-row component-actions">
+          <button type="button" className="wide-action" disabled={node.locked || masterMissing} onClick={() => editor.syncComponentInstance()}>
+            <IconRefresh size={15} />
+            <span>同步主组件</span>
+          </button>
+          <button type="button" className="wide-action" disabled={node.locked} onClick={() => editor.detachComponentInstance()}>
+            <IconUngroup size={15} />
+            <span>脱离组件</span>
+          </button>
+        </div>
+        <button type="button" className="link-btn component-master-link" disabled={!master} onClick={() => editor.selectComponentMaster()}>
+          选中主组件
+        </button>
+        <p className="ins-note">切换变体会保留实例位置，采用目标变体的尺寸与内容；替换组件同样保留位置，同路径同类型同名的覆盖继续沿用。</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="ins-section">
+      <div className="ins-title-row">
+        <h3 className="ins-title">组件</h3>
+        <span className="style-count">主组件</span>
+      </div>
+      <Row label="实例" value={`${instanceCount} 个`} />
+      {node.librarySource ? (
+        <>
+          <Row label="本地库" value={`${node.librarySource.projectName} / ${node.librarySource.nodeName}`} />
+          <button
+            type="button"
+            className="wide-action component-source-refresh"
+            disabled={node.locked || sourceBusy}
+            onClick={() => void refreshFromSource()}
+          >
+            <IconRefresh size={15} />
+            <span>{sourceBusy ? '正在读取来源…' : '从来源更新'}</span>
+          </button>
+          {sourceNotice ? <p className="ins-note component-source-note">{sourceNotice}</p> : null}
+        </>
+      ) : null}
+      <div className="ins-action-row component-actions">
+        <button type="button" className="wide-action" disabled={node.locked} onClick={() => editor.createComponentInstance()}>
+          <IconGroup size={15} />
+          <span>创建实例</span>
+        </button>
+        <button type="button" className="wide-action" disabled={node.locked || instanceCount === 0} onClick={() => editor.syncComponentInstances()}>
+          <IconRefresh size={15} />
+          <span>同步全部</span>
+        </button>
+      </div>
+      <p className="ins-note">新实例放在主组件下方；改主组件后选中实例点“同步主组件”，或在这里一次同步全部。</p>
+    </section>
+  );
+}
+
 function LayoutChildOrder({ node }: { node: SceneNode }) {
   const s = useEditor();
   const parent = node.parentId ? s.doc.nodes[node.parentId] : null;
@@ -1501,7 +1953,7 @@ function FrameInspector({ node }: { node: SceneNode }) {
       <div className="inspector-sel">
         <IconFrame size={14} />
         <NameField node={node} />
-        <span className="type-chip">画板</span>
+        <span className="type-chip">{node.isComponent ? '主组件' : node.componentOf ? '实例' : '画板'}</span>
       </div>
 
       <section className="ins-section">
@@ -1513,6 +1965,9 @@ function FrameInspector({ node }: { node: SceneNode }) {
           <NumField label="H" value={node.h} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { h: n })} />
         </div>
       </section>
+
+      <ComponentSection key={node.id} node={node} />
+      <PrototypeSection node={node} />
 
       <section className="ins-section">
         <CornerRadiusEditor node={node} title="圆角与透明度" />
@@ -1528,6 +1983,7 @@ function FrameInspector({ node }: { node: SceneNode }) {
       <LayoutChildOrder node={node} />
 
       <EffectsEditor node={node} />
+      <VariablesSection node={node} />
       <StylesSection node={node} />
       <CssSection node={node} />
       <ConstraintsSection node={node} />
@@ -1562,6 +2018,7 @@ function SliceInspector({ node }: { node: SceneNode }) {
         <Row label="格式" value="PNG · JPG · SVG" />
         <p className="ins-note">选中切片后点顶部“导出”，只输出这个矩形里的画面。画布上的虚线只是编辑标记，不会进入导出文件。</p>
       </section>
+      <VariablesSection node={node} />
       <StylesSection node={node} />
       <CssSection node={node} />
       <ConstraintsSection node={node} />
@@ -1618,6 +2075,8 @@ function ShapeInspector({ node }: { node: SceneNode }) {
           <NumField label="H" value={node.h} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { h: n })} />
         </div>
       </section>
+
+      <PrototypeSection node={node} />
 
       {node.type === 'section' && <AutoLayoutSection node={node} />}
       <LayoutChildOrder node={node} />
@@ -1975,6 +2434,7 @@ function ShapeInspector({ node }: { node: SceneNode }) {
         </section>
       )}
 
+      <VariablesSection node={node} />
       <StylesSection node={node} />
       <CssSection node={node} />
       <ConstraintsSection node={node} />
@@ -2031,6 +2491,8 @@ function ImageInspector({ node }: { node: SceneNode }) {
           <NumField label="H" value={node.h} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { h: n })} />
         </div>
       </section>
+
+      <PrototypeSection node={node} />
 
       <section className="ins-section">
         <h3 className="ins-title">图片</h3>
@@ -2099,6 +2561,7 @@ function ImageInspector({ node }: { node: SceneNode }) {
       </section>
 
       <EffectsEditor node={node} />
+      <VariablesSection node={node} />
       <StylesSection node={node} />
       <CssSection node={node} />
       <ConstraintsSection node={node} />
@@ -2143,6 +2606,22 @@ function MultiInspector({ ids }: { ids: string[] }) {
     top.every((id) => {
       const node = s.doc.nodes[id];
       return Boolean(node && node.type !== 'page' && !node.locked && node.parentId === parentId);
+    });
+  const canVariant =
+    top.length >= 2 &&
+    Boolean(parentId) &&
+    top.every((id) => {
+      const node = s.doc.nodes[id];
+      return Boolean(
+        node &&
+          node.type === 'frame' &&
+          node.isComponent &&
+          !node.isVariantSet &&
+          !node.variantSetId &&
+          !node.componentOf &&
+          node.parentId === parentId &&
+          !node.locked,
+      );
     });
 
   return (
@@ -2228,6 +2707,20 @@ function MultiInspector({ ids }: { ids: string[] }) {
         </button>
       </section>
 
+      {canVariant ? (
+        <section className="ins-section">
+          <div className="ins-title-row">
+            <h3 className="ins-title">组件变体</h3>
+            <span className="style-count">可合并</span>
+          </div>
+          <button type="button" className="wide-action" onClick={() => editor.createVariantSetFromSelection()}>
+            <IconComponent size={15} />
+            <span>合并为变体集</span>
+          </button>
+          <p className="ins-note">两个以上主组件会收进同一画板，首个作为默认变体。</p>
+        </section>
+      ) : null}
+
       <div className="ins-hint">Shift 点击追加或取消 · 拖动一起移动 · Esc 取消选择</div>
     </>
   );
@@ -2269,6 +2762,8 @@ function GroupInspector({ node }: { node: SceneNode }) {
         <Row label="子图层" value={`${childCount} 个`} />
       </section>
 
+      <PrototypeSection node={node} />
+
       <AutoLayoutSection node={node} />
       <LayoutChildOrder node={node} />
       <EffectsEditor node={node} />
@@ -2281,6 +2776,7 @@ function GroupInspector({ node }: { node: SceneNode }) {
           <kbd>Ctrl+Shift+G</kbd>
         </button>
       </section>
+      <VariablesSection node={node} />
       <StylesSection node={node} />
       <CssSection node={node} />
       <ConstraintsSection node={node} />
@@ -2350,6 +2846,7 @@ export function RightPanel() {
         </button>
       </div>
       <div className="inspector-scroll">
+        {!multiple && node && node.type !== 'page' && <InstanceOverrideSection node={node} />}
         {multiple ? (
           <MultiInspector ids={s.selectedIds} />
         ) : !node || node.type === 'page' ? (

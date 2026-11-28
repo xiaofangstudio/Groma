@@ -7,6 +7,7 @@ import { LeftPanel } from './LeftPanel';
 import { RightPanel } from './RightPanel';
 import { CanvasView } from './CanvasView';
 import { StatusBar } from './StatusBar';
+import { PrototypePlayer } from './PrototypePlayer';
 
 function isTyping(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -67,6 +68,7 @@ export function EditorShell() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (getState().prototypeStartId) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
 
@@ -168,6 +170,7 @@ export function EditorShell() {
         <RightPanel />
       </div>
       <StatusBar />
+      {s.prototypeStartId && <PrototypePlayer />}
     </div>
   );
 }
