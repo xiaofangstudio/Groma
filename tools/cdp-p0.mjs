@@ -478,14 +478,15 @@ async function main() {
       width: [...document.querySelectorAll('.right-panel input')].find((el) => el.closest('.field')?.innerText.includes('W'))?.value ?? '',
     };
   })()`);
-  const instanceSelected = await evaluate(`(() => {
+  await shoot(process.env.P0_REFRESH_OUT);
+  const libraryInstanceSelected = await evaluate(`(() => {
     const rows = [...document.querySelectorAll('.layer-row[data-node-id]')];
     const instance = rows.find((el) => el.textContent?.includes('状态标签') && el.textContent?.includes('实例'));
     instance?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     return Boolean(instance);
   })()`);
   await sleep(700);
-  const instanceState = await evaluate(`(() => {
+  const libraryInstanceState = await evaluate(`(() => {
     const selected = document.querySelector('.layer-row.is-selected');
     return {
       selectedName: selected?.innerText.replace(/\\n/g, ' | ') ?? '',
@@ -548,8 +549,8 @@ async function main() {
     masterSelected,
     refreshClicked,
     refreshState,
-    instanceSelected,
-    instanceState,
+    libraryInstanceSelected,
+    libraryInstanceState,
     overflow,
   }, null, 2));
   ws.close();
