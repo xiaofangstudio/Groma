@@ -3,9 +3,14 @@ import {
   addGradientStop,
   createGradient,
   linearAngle,
+  linearGradientOffsetAt,
+  linearGradientPoint,
+  moveLinearGradient,
   paintPreview,
   removeGradientStop,
   rotateLinearGradient,
+  setGradientStopOffset,
+  setLinearGradientEndpoint,
   toGradientPaint,
   toSolidPaint,
   updateGradientStops,
@@ -80,5 +85,42 @@ describe('渐变填充编辑', () => {
     const preview = paintPreview(gradient, 300, 200);
     expect(preview.startsWith('linear-gradient(90deg')).toBe(true);
     expect(preview).toContain('rgba(229, 72, 77, 0.2)');
+  });
+
+  it('整条线性渐变平移时角度、长度、色标都不变', () => {
+    const linear = { ...createGradient('linear', '#000000', 1, 200, 100), x1: 20, y1: 30, x2: 180, y2: 70 };
+    const moved = moveLinearGradient(linear, 12, 25);
+    expect(moved.x1).toBe(32);
+    expect(moved.y1).toBe(55);
+    expect(moved.x2).toBe(192);
+    expect(moved.y2).toBe(95);
+    expect(linearAngle(moved)).toBeCloseTo(linearAngle(linear), 6);
+    expect(moved.stops).toEqual(linear.stops);
+  });
+
+  it('拖端点只改一端，另一端与色标保持', () => {
+    const linear = { ...createGradient('linear', '#000000', 1, 200, 100), x1: 20, y1: 30, x2: 180, y2: 70 };
+    const next = setLinearGradientEndpoint(linear, 'end', 50, 160);
+    expect(next.x1).toBe(20);
+    expect(next.y1).toBe(30);
+    expect(next.x2).toBe(50);
+    expect(next.y2).toBe(160);
+    expect(next.stops).toEqual(linear.stops);
+    expect(linearGradientPoint(next, 0.5)).toEqual({ x: 35, y: 95 });
+    expect(linearGradientOffsetAt(next, 50, 160)).toBe(1);
+    expect(linearGradientOffsetAt(next, 20, 30)).toBe(0);
+  });
+
+  it('画布拖色标只移动指定色标并夹在 0-1', () => {
+    const linear = updateGradientStops(createGradient('linear', '#000000', 1, 100, 100), [
+      { offset: 0, color: '#FF0000', opacity: 1 },
+      { offset: 0.5, color: '#00FF00', opacity: 1 },
+      { offset: 1, color: '#0000FF', opacity: 1 },
+    ]);
+    const moved = setGradientStopOffset(linear, 1, 0.72);
+    expect(moved.stops.map((stop) => stop.offset)).toEqual([0, 0.72, 1]);
+    expect(moved.stops[1].color).toBe('#00FF00');
+    expect(setGradientStopOffset(linear, 1, -0.3).stops[1].offset).toBe(0);
+    expect(setGradientStopOffset(linear, 1, 1.8).stops[1].offset).toBe(1);
   });
 });

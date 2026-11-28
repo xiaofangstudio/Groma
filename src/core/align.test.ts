@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createDoc } from './doc';
 import { applyCommand } from './commands';
-import { alignDeltas, distributeDeltas } from './align';
+import { alignDeltas, alignToParentDeltas, distributeDeltas } from './align';
+import { absoluteRect } from './geometry';
 import type { GromaDoc, SceneNode } from './types';
 
 function addRect(doc: GromaDoc, parentId: string, id: string, x: number, y: number, w: number, h: number): GromaDoc {
@@ -53,6 +54,15 @@ describe('align / distribute', () => {
       dx: 260,
       dy: 0,
     });
+  });
+
+  it('单选相对直接父画板对齐，页面根子节点不强行对齐', () => {
+    const doc = fixture();
+    const frameId = doc.nodes[doc.pages[0].rootId].children[0];
+    const frame = absoluteRect(doc, frameId);
+    expect(alignToParentDeltas(doc, 'a', 'right')).toEqual([{ id: 'a', dx: frame.w - 100, dy: 0 }]);
+    expect(alignToParentDeltas(doc, 'a', 'bottom')).toEqual([{ id: 'a', dx: 0, dy: frame.h - 50 }]);
+    expect(alignToParentDeltas(doc, frameId, 'left')).toEqual([]);
   });
 
   it('上对齐、垂直居中、下对齐按选区外接框计算', () => {

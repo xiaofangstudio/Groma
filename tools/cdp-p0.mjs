@@ -397,6 +397,17 @@ async function main() {
   })()`);
   await shoot(process.env.P0_FACET_OUT);
 
+  const libScenePath = 'C:/Users/ASUS/Documents/Groma/Library.groma/scene.json';
+  const bumpLibrary = (version) => {
+    const libScene = JSON.parse(fs.readFileSync(libScenePath, 'utf8'));
+    libScene.nodes['lib-badge'].libraryPublication = {
+      version,
+      publishedAt: version === 1 ? '2026-11-28T05:00:00.000Z' : '2026-11-28T06:00:00.000Z',
+    };
+    fs.writeFileSync(libScenePath, JSON.stringify(libScene, null, 2));
+  };
+  bumpLibrary(1);
+
   await evaluate(`(() => {
     document.querySelector('[aria-label="组件库"]')?.click();
     return true;
@@ -454,13 +465,36 @@ async function main() {
   })()`);
   await sleep(500);
 
-  const libScenePath = 'C:/Users/ASUS/Documents/Groma/Library.groma/scene.json';
   const libScene = JSON.parse(fs.readFileSync(libScenePath, 'utf8'));
   libScene.nodes['lib-badge'].w = 170;
   libScene.nodes['badge-text'].text = '来源已更新';
   libScene.nodes['badge-text'].x = 24;
   libScene.nodes['badge-text'].w = 122;
   fs.writeFileSync(libScenePath, JSON.stringify(libScene, null, 2));
+  bumpLibrary(2);
+
+  const versionProbeInstance = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.layer-row[data-node-id]')];
+    const instance = rows.find((el) => el.textContent?.includes('状态标签') && el.textContent?.includes('实例'));
+    instance?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return Boolean(instance);
+  })()`);
+  await sleep(400);
+  const versionProbeMaster = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.layer-row[data-node-id]')];
+    const master = rows.find((el) => el.textContent?.includes('状态标签') && !el.textContent?.includes('实例'));
+    master?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return Boolean(master);
+  })()`);
+  await sleep(900);
+  const sourceVersionState = await evaluate(`(() => {
+    const text = document.querySelector('.right-panel')?.innerText ?? '';
+    return {
+      hasNewVersion: text.includes('来源已发布新版本'),
+      text: text.replace(/\\n/g, ' | ').slice(0, 320),
+    };
+  })()`);
+  await shoot(process.env.P0_SOURCE_VERSION_OUT);
 
   const refreshClicked = await evaluate(`(() => {
     const btn = [...document.querySelectorAll('.right-panel button')].find((el) => el.textContent?.includes('从来源更新'));
@@ -475,9 +509,11 @@ async function main() {
       selectedName: selected?.innerText.replace(/\\n/g, ' | ') ?? '',
       sourceNotice: [...document.querySelectorAll('.component-source-note')].map((el) => el.textContent?.trim() ?? ''),
       sourceRow: [...document.querySelectorAll('.right-panel .field')].map((el) => el.innerText.replace(/\\n/g, ' | ')).find((text) => text.includes('本地库')) ?? '',
+      sourceStatus: [...document.querySelectorAll('.right-panel .field')].map((el) => el.innerText.replace(/\\n/g, ' | ')).find((text) => text.includes('来源状态')) ?? '',
       width: [...document.querySelectorAll('.right-panel input')].find((el) => el.closest('.field')?.innerText.includes('W'))?.value ?? '',
     };
   })()`);
+  await sleep(350);
   await shoot(process.env.P0_REFRESH_OUT);
   const libraryInstanceSelected = await evaluate(`(() => {
     const rows = [...document.querySelectorAll('.layer-row[data-node-id]')];
@@ -494,6 +530,60 @@ async function main() {
     };
   })()`);
   await shoot(process.env.P0_UPDATE_OUT);
+
+  const masterReselected = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.layer-row[data-node-id]')];
+    const master = rows.find((el) => el.textContent?.includes('状态标签') && !el.textContent?.includes('实例'));
+    master?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return Boolean(master);
+  })()`);
+  await sleep(500);
+  const detachClicked = await evaluate(`(() => {
+    const btn = document.querySelector('.component-source-detach');
+    btn?.click();
+    return Boolean(btn);
+  })()`);
+  await sleep(500);
+  const detachState = await evaluate(`(() => ({
+    sourceRow: [...document.querySelectorAll('.right-panel .field')].map((el) => el.innerText).find((text) => text.includes('本地库')) ?? '',
+    refreshButton: Boolean(document.querySelector('.component-source-refresh')),
+    undoDisabled: document.querySelector('button[aria-label="撤销"]')?.hasAttribute('disabled') ?? true,
+  }))()`);
+  await shoot(process.env.P0_DETACH_OUT);
+  const undidDetach = await evaluate(`(() => {
+    document.querySelector('button[aria-label="撤销"]')?.click();
+    return true;
+  })()`);
+  await sleep(500);
+  const detachRestored = await evaluate(`(() => ({
+    sourceRow: [...document.querySelectorAll('.right-panel .field')].map((el) => el.innerText).find((text) => text.includes('本地库')) ?? '',
+    refreshButton: Boolean(document.querySelector('.component-source-refresh')),
+  }))()`);
+
+  const publishTargetSelected = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.layer-row[data-node-id]')];
+    const master = rows.find((el) => el.textContent?.includes('次要按钮') && !el.textContent?.includes('实例'));
+    master?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return Boolean(master);
+  })()`);
+  await sleep(500);
+  const publishBefore = await evaluate(`(() => ({
+    row: document.querySelector('.component-publish-row')?.innerText.replace(/\\n/g, ' | ') ?? '',
+    button: document.querySelector('.component-publish')?.textContent?.trim() ?? '',
+  }))()`);
+  await shoot(process.env.P0_PUBLISH_BEFORE);
+  const publishClicked = await evaluate(`(() => {
+    const btn = document.querySelector('.component-publish');
+    if (!btn || btn.disabled) return false;
+    btn.click();
+    return true;
+  })()`);
+  await sleep(500);
+  const publishAfter = await evaluate(`(() => ({
+    row: document.querySelector('.component-publish-row')?.innerText.replace(/\\n/g, ' | ') ?? '',
+    button: document.querySelector('.component-publish')?.textContent?.trim() ?? '',
+  }))()`);
+  await shoot(process.env.P0_PUBLISH_OUT);
 
 
   const overflow = await evaluate(`(() => {
@@ -547,10 +637,22 @@ async function main() {
     importState,
     instanceCreated,
     masterSelected,
+    versionProbeInstance,
+    versionProbeMaster,
+    sourceVersionState,
     refreshClicked,
     refreshState,
     libraryInstanceSelected,
     libraryInstanceState,
+    masterReselected,
+    detachClicked,
+    detachState,
+    undidDetach,
+    detachRestored,
+    publishTargetSelected,
+    publishBefore,
+    publishClicked,
+    publishAfter,
     overflow,
   }, null, 2));
   ws.close();

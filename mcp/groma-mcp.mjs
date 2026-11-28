@@ -110,6 +110,8 @@ const layoutSchema = z.object({
   align: z.enum(['start', 'center', 'end', 'stretch']),
   justify: z.enum(['start', 'center', 'end', 'space-between']),
   hug: z.boolean(),
+  hugWidth: z.boolean().optional(),
+  hugHeight: z.boolean().optional(),
 });
 
 const nodePatchShape = {
@@ -129,6 +131,10 @@ const nodePatchShape = {
   fills: z.array(paintSchema).max(16).optional(),
   constraints: z.object({ horizontal: z.enum(['left', 'right', 'center', 'leftRight', 'scale']), vertical: z.enum(['top', 'bottom', 'center', 'topBottom', 'scale']) }).optional(),
   layout: layoutSchema.optional(),
+  layoutGrow: z.boolean().optional(),
+  layoutBaseW: z.number().positive().optional(),
+  layoutBaseH: z.number().positive().optional(),
+  layoutAlignSelf: z.enum(['start', 'center', 'end', 'stretch']).optional(),
   text: z.string().optional(),
   fontSize: z.number().positive().optional(),
   fontWeight: z.number().positive().optional(),
@@ -157,9 +163,9 @@ server.registerTool(
     version: VERSION,
     tools: 19,
     nodeTypes: {
-      read: ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'group', 'path', 'image', 'slice'],
+      read: ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'group', 'boolean', 'path', 'image', 'slice'],
       create: ['frame', 'section', 'rect', 'ellipse', 'text', 'slice'],
-      update: ['name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'cornerRadii', 'opacity', 'visible', 'locked', 'clipContent', 'fillColor', 'fills', 'constraints', 'layout', 'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle', 'effects', 'prototype'],
+      update: ['name', 'x', 'y', 'w', 'h', 'rotation', 'cornerRadius', 'cornerRadii', 'opacity', 'visible', 'locked', 'clipContent', 'fillColor', 'fills', 'constraints', 'layout', 'layoutGrow', 'layoutBaseW', 'layoutBaseH', 'layoutAlignSelf', 'text', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'paragraphSpacing', 'listStyle', 'effects', 'prototype'],
     },
     limits: { listNodes: 1000, batchUpdate: 200, frameGrid: 500, effectsPerNode: 12, snapshots: 20 },
     notSupported: ['group/ungroup write', 'boolean ops', 'path/image write', 'SVG/PNG/CSS export', 'component/variables'],

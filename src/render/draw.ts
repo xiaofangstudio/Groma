@@ -961,7 +961,7 @@ function drawNodeCore(
     drawSection(ctx, doc, node, ox, oy, v, opts, bounds, depth);
   } else if (node.type === 'slice') {
     drawSlice(ctx, node, ox, oy, v, opts);
-  } else if (node.type === 'path') {
+  } else if (node.type === 'path' || node.type === 'boolean') {
     drawVectorPath(ctx, doc, node, ox, oy, v);
   } else if (node.type === 'image') {
     drawImageNode(ctx, doc, node, ox, oy, v, opts.cropPreviewId);
@@ -973,6 +973,42 @@ function drawNodeCore(
     drawChildren(ctx, doc, node, ox + node.x, oy + node.y, v, opts, bounds, depth + 1);
     ctx.restore();
   }
+}
+
+/**
+ * 背景模糊：先把节点轮廓内已有的画面截图并模糊，再让节点自身内容叠上去。
+ * 这里用整张画布快照，保证画板、图片和已绘制的兄弟层都进入背景。
+ */
+function drawBackgroundBlur(
+  ctx: CanvasRenderingContext2D,
+  node: SceneNode,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  scale: number,
+  blur: number,
+) {
+  const snapshot = document.createElement('canvas');
+  snapshot.width = ctx.canvas.width;
+  snapshot.height = ctx.canvas.height;
+  const snapCtx = snapshot.getContext('2d');
+  if (!snapCtx || snapshot.width < 1 || snapshot.height < 1) return;
+  snapCtx.drawImage(ctx.canvas, 0, 0);
+  const transform = ctx.getTransform();
+  const cssWidth = snapshot.width / Math.max(0.01, Math.abs(transform.a));
+  const cssHeight = snapshot.height / Math.max(0.01, Math.abs(transform.d));
+  ctx.save();
+  if (node.type === 'ellipse') {
+    ctx.beginPath();
+    ctx.ellipse(x + w / 2, y + h / 2, Math.max(0.5, w / 2), Math.max(0.5, h / 2), 0, 0, Math.PI * 2);
+  } else {
+    nodeRoundRect(ctx, node, x, y, w, h, scale);
+  }
+  ctx.clip();
+  ctx.filter = `blur(${Math.max(0, blur)}px)`;
+  ctx.drawImage(snapshot, 0, 0, snapshot.width, snapshot.height, 0, 0, cssWidth, cssHeight);
+  ctx.restore();
 }
 
 /**
@@ -1001,6 +1037,11 @@ function drawNodeWithEffects(
     drawNodeCore(ctx, doc, node, ox, oy, v, opts, bounds, depth);
     return;
   }
+  const backgroundBlur = effects.find((effect) => effect.type === 'background-blur');
+  if (backgroundBlur && backgroundBlur.type === 'background-blur') {
+    drawBackgroundBlur(ctx, node, x, y, w, h, v.scale, backgroundBlur.blur);
+    opts.stats.shadowPasses += 1;
+  }
   const left = Math.floor(x - pad);
   const top = Math.floor(y - pad);
   const width = Math.ceil(w + pad * 2);
@@ -1021,6 +1062,24 @@ function drawNodeWithEffects(
 
   const layerBlur = effectsFilter(effects);
   for (const effect of effects) {
+    if (effect.type === 'inner-shadow') {
+      const inner = document.createElement('canvas');
+      inner.width = canvas.width;
+      inner.height = canvas.height;
+      const innerCtx = inner.getContext('2d');
+      if (!innerCtx) continue;
+      innerCtx.fillStyle = shadowColor(effect);
+      innerCtx.fillRect(0, 0, inner.width, inner.height);
+      innerCtx.globalCompositeOperation = 'destination-out';
+      innerCtx.filter = `blur(${Math.max(0, effect.blur) * scale}px)`;
+      innerCtx.drawImage(canvas, effect.x * scale, effect.y * scale);
+      innerCtx.filter = 'none';
+      innerCtx.globalCompositeOperation = 'destination-in';
+      innerCtx.drawImage(canvas, 0, 0);
+      ctx.drawImage(inner, left, top, width, height);
+      opts.stats.shadowPasses += 1;
+      continue;
+    }
     if (effect.type !== 'drop-shadow') continue;
     const shadow = document.createElement('canvas');
     shadow.width = canvas.width;
@@ -1210,7 +1269,15 @@ function drawSelection(ctx: CanvasRenderingContext2D, doc: GromaDoc, selectedIds
   ctx.setLineDash([]);
   for (const node of nodes) {
     const r = absoluteRect(doc, node.id);
-    ctx.strokeRect(r.x * v.scale + v.x - 0.5, r.y * v.scale + v.y - 0.5, r.w * v.scale + 1, r.h * v.scale + 1);
+    const cx = (r.x + r.w / 2) * v.scale + v.x;
+    const cy = (r.y + r.h / 2) * v.scale + v.y;
+    const w = r.w * v.scale + 1;
+    const h = r.h * v.scale + 1;
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (node.rotation) ctx.rotate((node.rotation * Math.PI) / 180);
+    ctx.strokeRect(-w / 2 - 0.5, -h / 2 - 0.5, w, h);
+    ctx.restore();
   }
 
   if (nodes.length === 1 && nodes[0].type !== 'group') {
@@ -1219,20 +1286,26 @@ function drawSelection(ctx: CanvasRenderingContext2D, doc: GromaDoc, selectedIds
     const y = r.y * v.scale + v.y;
     const w = r.w * v.scale;
     const h = r.h * v.scale;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
     const hs = 6;
     const corners: Array<[number, number]> = [
-      [x, y],
-      [x + w, y],
-      [x, y + h],
-      [x + w, y + h],
+      [-w / 2, -h / 2],
+      [w / 2, -h / 2],
+      [-w / 2, h / 2],
+      [w / 2, h / 2],
     ];
-    for (const [cx, cy] of corners) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (nodes[0].rotation) ctx.rotate((nodes[0].rotation * Math.PI) / 180);
+    for (const [hx, hy] of corners) {
       ctx.fillStyle = '#FFFFFF';
       ctx.strokeStyle = '#F2B705';
       ctx.lineWidth = 1;
-      ctx.fillRect(cx - hs / 2, cy - hs / 2, hs, hs);
-      ctx.strokeRect(cx - hs / 2, cy - hs / 2, hs, hs);
+      ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+      ctx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs);
     }
+    ctx.restore();
   } else {
     const bounds = selectionBounds(doc, selectedIds);
     if (bounds) {

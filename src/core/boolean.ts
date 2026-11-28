@@ -149,6 +149,12 @@ export function nodeWorldRings(doc: GromaDoc, node: SceneNode): Ring[] {
   const origin = absolutePosition(doc, node.id);
   if (node.type === 'rect') return [rectRing(node, origin)];
   if (node.type === 'ellipse') return [ellipseRing(node, origin)];
+  if (node.type === 'boolean') {
+    return pathContoursToWorld(node, origin)
+      .filter((contour) => contour.closed && contour.anchors.length >= 3)
+      .map((contour) => flattenClosedContour(contour.anchors))
+      .filter((ring) => ring.length >= 3);
+  }
   if (node.type !== 'path') return [];
   if (node.shapeKind === 'polygon' || node.shapeKind === 'star') return [parametricRing(node, origin)];
   const contours = pathContoursToWorld(node, origin);
@@ -160,7 +166,9 @@ export function nodeWorldRings(doc: GromaDoc, node: SceneNode): Ring[] {
 
 function eligibleReason(doc: GromaDoc, ids: string[], action: VectorAction): string {
   const unique = [...new Set(ids)];
-  const minimum = action === 'outline' ? 1 : 2;
+  const singleBooleanFlatten =
+    action === 'flatten' && unique.length === 1 && doc.nodes[unique[0]]?.type === 'boolean';
+  const minimum = action === 'outline' || action === 'flatten' || singleBooleanFlatten ? 1 : 2;
   if (unique.length < minimum) {
     return action === 'outline' ? '描边转形状需要一个对象' : '布尔需要至少两个对象';
   }
@@ -174,10 +182,10 @@ function eligibleReason(doc: GromaDoc, ids: string[], action: VectorAction): str
     if (!node.parentId) return '对象没有父级';
     if (parentId === undefined) parentId = node.parentId;
     else if (node.parentId !== parentId) return '矢量对象必须在同一父级';
-    if (node.type !== 'rect' && node.type !== 'ellipse' && node.type !== 'path') {
-      return '仅支持矩形、椭圆和钢笔路径';
+    if (node.type !== 'rect' && node.type !== 'ellipse' && node.type !== 'path' && node.type !== 'boolean') {
+      return '仅支持矩形、椭圆、钢笔路径和布尔组';
     }
-    if (node.children.length > 0) return '对象不能包含子图层';
+    if (node.children.length > 0 && node.type !== 'boolean') return '对象不能包含子图层';
     if (node.type === 'path' && node.shapeKind === 'arrow') return '箭头不能参与矢量运算';
     if (node.type === 'path' && !node.shapeKind) {
       const contours = pathContoursToWorld(node, absolutePosition(doc, id));
@@ -599,4 +607,133 @@ export function booleanPathNode(
   const build = vectorActionBuild(doc, ids, op, () => id);
   if ('error' in build) return build;
   return { node: build.nodes[0], sourceIds: build.sourceIds, parentId: build.parentId };
+}
+
+export interface BooleanGroupBuild {
+  node: SceneNode;
+  sourcePatches: Record<string, SceneNode>;
+  sourceIds: string[];
+  parentId: string;
+}
+
+/**
+ * Figma 式布尔组：保留源图层作为可展开子层，节点自身缓存合并后的路径用于渲染。
+ * 子层仍是真实场景节点，移动/改形后可重算缓存。
+ */
+export function booleanGroupBuild(
+  doc: GromaDoc,
+  ids: string[],
+  op: BooleanOp,
+  id: string,
+  name?: string,
+): BooleanGroupBuild | { error: string } {
+  const build = vectorActionBuild(doc, ids, op, () => id);
+  if ('error' in build) return build;
+  const path = build.nodes[0];
+  const sourcePatches: Record<string, SceneNode> = {};
+  for (const sourceId of build.sourceIds) {
+    const source = doc.nodes[sourceId];
+    if (!source) return { error: '源图层不存在' };
+    sourcePatches[sourceId] = {
+      ...source,
+      parentId: id,
+      x: Math.round((source.x - path.x) * 100) / 100,
+      y: Math.round((source.y - path.y) * 100) / 100,
+    };
+  }
+  const node: SceneNode = {
+    ...path,
+    id,
+    type: 'boolean',
+    name: name ?? path.name,
+    parentId: build.parentId,
+    children: build.sourceIds,
+    booleanOp: op,
+    x: path.x,
+    y: path.y,
+    w: path.w,
+    h: path.h,
+    rotation: 0,
+    cornerRadius: 0,
+    cornerRadii: undefined,
+    shapeKind: undefined,
+    shapeSides: undefined,
+    shapeInnerRatio: undefined,
+    arrowHeadData: undefined,
+  };
+  return { node, sourcePatches, sourceIds: build.sourceIds, parentId: build.parentId };
+}
+
+/** 重算一个布尔组的缓存路径；源子层坐标按包围盒原点变化同步补偿，世界位置不变。 */
+export function refreshBooleanNode(
+  doc: GromaDoc,
+  id: string,
+): { node: SceneNode; childPatches: Record<string, SceneNode> } | null {
+  const current = doc.nodes[id];
+  if (!current || current.type !== 'boolean') return null;
+  const visible = current.children.filter((childId) => {
+    const child = doc.nodes[childId];
+    return Boolean(child && child.visible);
+  });
+  if (visible.length === 0) return null;
+  const action: VectorAction = visible.length === 1 ? 'flatten' : (current.booleanOp ?? 'union');
+  const build = vectorActionBuild(doc, visible, action, () => `${id}-cache`);
+  if ('error' in build) return null;
+  const path = build.nodes[0];
+  // vectorActionBuild 以布尔组自身为父级，path.x/y 是相对布尔组原点的局部包围盒偏移。
+  // 世界位置保持不变：布尔组原点跟着偏移，子层反向平移回局部 0 起点。
+  const dx = -path.x;
+  const dy = -path.y;
+  const nextX = Math.round((current.x + path.x) * 100) / 100;
+  const nextY = Math.round((current.y + path.y) * 100) / 100;
+  const childPatches: Record<string, SceneNode> = {};
+  for (const childId of current.children) {
+    const child = doc.nodes[childId];
+    if (!child) continue;
+    if (dx === 0 && dy === 0) continue;
+    childPatches[childId] = {
+      ...child,
+      x: Math.round((child.x + dx) * 100) / 100,
+      y: Math.round((child.y + dy) * 100) / 100,
+    };
+  }
+  return {
+    node: {
+      ...current,
+      x: nextX,
+      y: nextY,
+      w: path.w,
+      h: path.h,
+      pathData: path.pathData,
+      pathW: path.pathW,
+      pathH: path.pathH,
+      pathAnchors: path.pathAnchors,
+      pathClosed: path.pathClosed,
+      pathContours: path.pathContours,
+      fillRule: path.fillRule,
+    },
+    childPatches,
+  };
+}
+
+/** 从改动点向上刷新所有布尔组缓存，返回新的文档与真正变化的节点 id。 */
+export function refreshBooleanChain(doc: GromaDoc, startId: string): { doc: GromaDoc; changedIds: string[] } {
+  let next: GromaDoc = doc;
+  const changed = new Set<string>();
+  let cursor: string | null = startId;
+  while (cursor) {
+    const node: SceneNode | undefined = next.nodes[cursor];
+    if (!node) break;
+    if (node.type === 'boolean') {
+      const refreshed = refreshBooleanNode(next, cursor);
+      if (refreshed) {
+        const nodes = { ...next.nodes, [cursor]: refreshed.node, ...refreshed.childPatches };
+        changed.add(cursor);
+        for (const childId of Object.keys(refreshed.childPatches)) changed.add(childId);
+        next = { ...next, nodes };
+      }
+    }
+    cursor = node.parentId;
+  }
+  return { doc: next, changedIds: [...changed] };
 }

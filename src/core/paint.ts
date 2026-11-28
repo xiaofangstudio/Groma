@@ -175,6 +175,57 @@ export function linearAngle(paint: Extract<GradientPaint, { type: 'linear' }>): 
   return ((Math.round(angle * 10) / 10) % 360 + 360) % 360;
 }
 
+/** 整条线性渐变平移；方向、长度与色标全部保持。 */
+export function moveLinearGradient(
+  paint: Extract<GradientPaint, { type: 'linear' }>,
+  dx: number,
+  dy: number,
+): Extract<GradientPaint, { type: 'linear' }> {
+  return { ...paint, x1: paint.x1 + dx, y1: paint.y1 + dy, x2: paint.x2 + dx, y2: paint.y2 + dy };
+}
+
+/** 拖线性渐变端点：另一端不动，角度与长度随指针改变。 */
+export function setLinearGradientEndpoint(
+  paint: Extract<GradientPaint, { type: 'linear' }>,
+  endpoint: 'start' | 'end',
+  x: number,
+  y: number,
+): Extract<GradientPaint, { type: 'linear' }> {
+  if (endpoint === 'start') return { ...paint, x1: x, y1: y };
+  return { ...paint, x2: x, y2: y };
+}
+
+/** 线性渐变线上按 0-1 进度取点，用于画布色标定位。 */
+export function linearGradientPoint(
+  paint: Extract<GradientPaint, { type: 'linear' }>,
+  offset: number,
+): { x: number; y: number } {
+  const t = clamp(finite(offset, 0), 0, 1);
+  return { x: paint.x1 + (paint.x2 - paint.x1) * t, y: paint.y1 + (paint.y2 - paint.y1) * t };
+}
+
+/** 拖动线性渐变色标；只改位置，不重新排序，避免拖到一半色标跳位。 */
+export function setGradientStopOffset(paint: GradientPaint, index: number, offset: number): GradientPaint {
+  if (index < 0 || index >= paint.stops.length) return paint;
+  return {
+    ...paint,
+    stops: paint.stops.map((stop, i) => (i === index ? { ...stop, offset: clamp(finite(offset, 0), 0, 1) } : stop)),
+  };
+}
+
+/** 把线上任意点投影回 0-1 色标进度。 */
+export function linearGradientOffsetAt(
+  paint: Extract<GradientPaint, { type: 'linear' }>,
+  x: number,
+  y: number,
+): number {
+  const dx = paint.x2 - paint.x1;
+  const dy = paint.y2 - paint.y1;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq < 0.0001) return 0;
+  return clamp(((x - paint.x1) * dx + (y - paint.y1) * dy) / lengthSq, 0, 1);
+}
+
 export function rotateLinearGradient(
   paint: Extract<GradientPaint, { type: 'linear' }>,
   degrees: number,

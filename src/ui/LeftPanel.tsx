@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { editor, useEditor } from '../state/editor';
 import { childrenOf, countArtboards } from '../core/doc';
 import { searchPageNodes, type NodeSearchHit } from '../core/search';
@@ -11,6 +11,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconComponent,
+  IconBoolean,
   IconEllipse,
   IconEye,
   IconEyeOff,
@@ -41,6 +42,7 @@ function NodeIcon({ node, type }: { node?: SceneNode; type?: NodeType }) {
   if (kind === 'path') return (node?.pathAnchors?.length ?? 0) > 0 ? <IconPen size={14} /> : <IconPath size={14} />;
   if (kind === 'image') return <IconImage size={14} />;
   if (kind === 'group') return <IconGroup size={14} />;
+  if (kind === 'boolean') return <IconBoolean op={node?.booleanOp ?? 'union'} size={14} />;
   if (kind === 'slice') return <IconSlice size={14} />;
   return <IconPage size={14} />;
 }
@@ -53,6 +55,7 @@ const LayerNode = memo(function LayerNode({
   dimmed,
   expanded,
   onToggle,
+  onMenu,
 }: {
   node: SceneNode;
   depth: number;
@@ -61,8 +64,9 @@ const LayerNode = memo(function LayerNode({
   dimmed: boolean;
   expanded: Set<string>;
   onToggle: (id: string) => void;
+  onMenu: (e: ReactMouseEvent<HTMLDivElement>, node: SceneNode) => void;
 }) {
-  const children = childrenOf(doc, node.id);
+  const children = [...childrenOf(doc, node.id)].reverse();
   const dim = dimmed || !node.visible;
   const open = expanded.has(node.id);
   const selected = selectedIds.has(node.id);
@@ -72,8 +76,10 @@ const LayerNode = memo(function LayerNode({
       <div
         className={`layer-row${selected ? ' is-selected' : ''}${dim ? ' is-hidden' : ''}`}
         data-node-id={node.id}
+        draggable={!node.locked}
         style={{ paddingLeft: 6 + depth * 14 }}
         onClick={(e) => editor.select(node.id, e.shiftKey)}
+        onContextMenu={(e) => onMenu(e, node)}
         role="button"
         tabIndex={0}
         aria-pressed={selected}
@@ -134,6 +140,7 @@ const LayerNode = memo(function LayerNode({
           dimmed={dim}
           expanded={expanded}
           onToggle={onToggle}
+          onMenu={onMenu}
         />
       ))}
     </>
@@ -152,7 +159,7 @@ export function LeftPanel() {
   const s = useEditor();
   const page = s.doc.pages.find((p) => p.id === s.pageId) ?? s.doc.pages[0];
   const root = s.doc.nodes[page.rootId];
-  const top = root ? childrenOf(s.doc, root.id) : [];
+  const top = root ? [...childrenOf(s.doc, root.id)].reverse() : [];
   const frameCount = useMemo(() => countType(s.doc, page.rootId, 'frame'), [s.doc, page.rootId]);
   const sectionCount = useMemo(() => countType(s.doc, page.rootId, 'section'), [s.doc, page.rootId]);
   const total = Object.keys(s.doc.nodes).length - s.doc.pages.length;
@@ -161,6 +168,7 @@ export function LeftPanel() {
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [menu, setMenu] = useState<{ pageId: string; x: number; y: number } | null>(null);
+  const [layerMenu, setLayerMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropLine, setDropLine] = useState<{ y: number; left: number; width: number } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -186,6 +194,11 @@ export function LeftPanel() {
   const libraryPopRef = useRef<HTMLDivElement>(null);
   const cancelRenameRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const layerMenuRef = useRef<HTMLDivElement>(null);
+  const layerScrollRef = useRef<HTMLDivElement>(null);
+  const layerDragRef = useRef<{ id: string; targetId: string; mode: 'before' | 'after' | 'inside'; parentId: string; index: number } | null>(null);
+  const layerDropRowRef = useRef<HTMLDivElement | null>(null);
+  const layerDragIdRef = useRef<string | null>(null);
 
   const searchResults = useMemo(
     () => (searchOpen ? searchPageNodes(s.doc, searchQuery, 30) : []),
@@ -593,6 +606,30 @@ export function LeftPanel() {
     };
   }, [menu]);
 
+  useEffect(() => {
+    if (!layerMenu) return;
+    const menuEl = layerMenuRef.current;
+    menuEl?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    const onPointerDown = (e: PointerEvent) => {
+      if (layerMenuRef.current && e.target instanceof Node && layerMenuRef.current.contains(e.target)) return;
+      setLayerMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setLayerMenu(null);
+    };
+    const onResize = () => setLayerMenu(null);
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [layerMenu]);
+
   const toggleLayer = useCallback((id: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -601,6 +638,106 @@ export function LeftPanel() {
       return next;
     });
   }, []);
+
+  const openLayerMenu = useCallback((e: ReactMouseEvent<HTMLDivElement>, node: SceneNode) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!selectedIds.has(node.id)) editor.select(node.id);
+    setMenu(null);
+    setSearchOpen(false);
+    setLayerMenu({
+      nodeId: node.id,
+      x: Math.max(8, Math.min(e.clientX, window.innerWidth - 208)),
+      y: Math.max(8, Math.min(e.clientY, window.innerHeight - 380)),
+    });
+  }, [selectedIds]);
+
+  function clearLayerDrop() {
+    const row = layerDropRowRef.current;
+    if (row) row.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-inside');
+    layerDropRowRef.current = null;
+    layerDragRef.current = null;
+    layerScrollRef.current?.querySelectorAll('.layer-row.is-dragging').forEach((el) => el.classList.remove('is-dragging'));
+  }
+
+  function canDropInto(target: SceneNode, draggedId: string): boolean {
+    let walker: SceneNode | undefined = target;
+    while (walker) {
+      if (walker.id === draggedId) return false;
+      walker = walker.parentId ? s.doc.nodes[walker.parentId] : undefined;
+    }
+    return true;
+  }
+
+  function layerDropIndex(target: SceneNode, draggedId: string, mode: 'before' | 'after' | 'inside'): { parentId: string; index: number } | null {
+    if (mode === 'inside') {
+      return { parentId: target.id, index: target.children.length };
+    }
+    if (!target.parentId) return null;
+    const parent = s.doc.nodes[target.parentId];
+    if (!parent || !parent.children.includes(target.id)) return null;
+    const visual = [...parent.children].reverse();
+    const filtered = visual.filter((id) => id !== draggedId);
+    const targetVisual = filtered.indexOf(target.id);
+    if (targetVisual < 0) return null;
+    filtered.splice(targetVisual + (mode === 'after' ? 1 : 0), 0, draggedId);
+    const actual = [...filtered].reverse();
+    return { parentId: parent.id, index: actual.indexOf(draggedId) };
+  }
+
+  function onLayerDragStart(e: ReactDragEvent<HTMLDivElement>) {
+    const row = (e.target as HTMLElement).closest<HTMLDivElement>('.layer-row');
+    const id = row?.dataset.nodeId;
+    if (!id || !row) return;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-groma-node', id);
+    e.dataTransfer.setData('text/plain', id);
+    layerDragIdRef.current = id;
+    row.classList.add('is-dragging');
+    setLayerMenu(null);
+    setMenu(null);
+  }
+
+  function onLayerDragOver(e: ReactDragEvent<HTMLDivElement>) {
+    const draggedId = layerDragIdRef.current;
+    if (!draggedId) return;
+    const row = (e.target as HTMLElement).closest<HTMLDivElement>('.layer-row');
+    if (!row || !layerScrollRef.current?.contains(row)) return;
+    const targetId = row.dataset.nodeId;
+    if (!targetId || targetId === draggedId) return;
+    const target = s.doc.nodes[targetId];
+    if (!target) return;
+    const canInside = ['frame', 'group', 'section'].includes(target.type) && !target.locked && canDropInto(target, draggedId);
+    const rect = row.getBoundingClientRect();
+    const ratio = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+    let mode: 'before' | 'after' | 'inside';
+    if (canInside && ratio > 0.25 && ratio < 0.75) mode = 'inside';
+    else mode = ratio < 0.5 ? 'before' : 'after';
+    if (!canDropInto(target, draggedId)) return;
+    const targetInfo = layerDropIndex(target, draggedId, mode);
+    if (!targetInfo) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (layerDropRowRef.current !== row) {
+      layerDropRowRef.current?.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-inside');
+      layerDropRowRef.current = row;
+    }
+    row.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-inside');
+    row.classList.add(`is-drop-${mode}`);
+    layerDragRef.current = { id: draggedId, targetId, mode, ...targetInfo };
+  }
+
+  function onLayerDrop(e: ReactDragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const drag = layerDragRef.current;
+    if (drag) editor.reparentNode(drag.id, drag.parentId, drag.index);
+    clearLayerDrop();
+  }
+
+  function onLayerDragEnd() {
+    layerDragIdRef.current = null;
+    clearLayerDrop();
+  }
 
   const menuPage = menu ? s.doc.pages.find((p) => p.id === menu.pageId) : null;
 
@@ -771,6 +908,7 @@ export function LeftPanel() {
                     </span>
                     <span className="page-search-path">
                       {item.projectName} · {item.pageName} · {Math.round(item.w)}×{Math.round(item.h)}
+                      {item.publishedVersion > 0 ? ` · v${item.publishedVersion}` : ''}
                     </span>
                   </span>
                   <span className={`component-library-badge${item.transferable ? ' is-ready' : ''}`}>
@@ -981,7 +1119,14 @@ export function LeftPanel() {
         <span className="layer-head-count">{top.length} 个顶层</span>
       </div>
 
-      <div className="layer-scroll">
+      <div
+        ref={layerScrollRef}
+        className="layer-scroll"
+        onDragStart={onLayerDragStart}
+        onDragOver={onLayerDragOver}
+        onDrop={onLayerDrop}
+        onDragEnd={onLayerDragEnd}
+      >
         {top.map((node) => (
           <LayerNode
             key={node.id}
@@ -992,6 +1137,7 @@ export function LeftPanel() {
             dimmed={false}
             expanded={expanded}
             onToggle={toggleLayer}
+            onMenu={openLayerMenu}
           />
         ))}
 
@@ -1004,6 +1150,86 @@ export function LeftPanel() {
         </span>
         <span className="panel-foot-dim">{total} 个图层</span>
       </div>
+
+      {layerMenu && s.doc.nodes[layerMenu.nodeId] && (
+        <div
+          ref={layerMenuRef}
+          className="page-menu layer-menu"
+          style={{ left: layerMenu.x, top: layerMenu.y }}
+          role="menu"
+          aria-label={`${s.doc.nodes[layerMenu.nodeId].name} 图层操作`}
+        >
+          <button
+            role="menuitem"
+            onClick={() => {
+              setLayerMenu(null);
+              editor.duplicateSelected();
+            }}
+          >
+            复制图层<span className="page-menu-key">Ctrl+D</span>
+          </button>
+          <div className="page-menu-sep" />
+          <button role="menuitem" onClick={() => { setLayerMenu(null); editor.moveSelectedToEdge('front'); }}>
+            置于顶层<span className="page-menu-key">Ctrl+Shift+]</span>
+          </button>
+          <button role="menuitem" onClick={() => { setLayerMenu(null); editor.moveSelectedLayer(1); }}>
+            上移一层<span className="page-menu-key">Ctrl+]</span>
+          </button>
+          <button role="menuitem" onClick={() => { setLayerMenu(null); editor.moveSelectedLayer(-1); }}>
+            下移一层<span className="page-menu-key">Ctrl+[</span>
+          </button>
+          <button role="menuitem" onClick={() => { setLayerMenu(null); editor.moveSelectedToEdge('back'); }}>
+            置于底层<span className="page-menu-key">Ctrl+Shift+[</span>
+          </button>
+          {(s.selectedIds.length > 1 || s.doc.nodes[layerMenu.nodeId].type === 'group' || s.doc.nodes[layerMenu.nodeId].type === 'boolean') && <div className="page-menu-sep" />}
+          {s.selectedIds.length > 1 && (
+            <button role="menuitem" onClick={() => { setLayerMenu(null); editor.groupSelected(); }}>
+              成组<span className="page-menu-key">Ctrl+G</span>
+            </button>
+          )}
+          {(s.doc.nodes[layerMenu.nodeId].type === 'group' || s.doc.nodes[layerMenu.nodeId].type === 'boolean') && (
+            <button role="menuitem" onClick={() => { setLayerMenu(null); editor.ungroupSelected(); }}>
+              {s.doc.nodes[layerMenu.nodeId].type === 'boolean' ? '解散布尔组' : '解散分组'}
+            </button>
+          )}
+          {s.doc.nodes[layerMenu.nodeId].type === 'boolean' && (
+            <button role="menuitem" onClick={() => { setLayerMenu(null); editor.vectorSelected('flatten'); }}>
+              拍平为路径
+            </button>
+          )}
+          <div className="page-menu-sep" />
+          <button
+            role="menuitem"
+            onClick={() => {
+              const node = s.doc.nodes[layerMenu.nodeId];
+              setLayerMenu(null);
+              if (node) editor.applyPatch(node.id, { visible: !node.visible });
+            }}
+          >
+            {s.doc.nodes[layerMenu.nodeId].visible ? '隐藏图层' : '显示图层'}
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              const node = s.doc.nodes[layerMenu.nodeId];
+              setLayerMenu(null);
+              if (node) editor.applyPatch(node.id, { locked: !node.locked });
+            }}
+          >
+            {s.doc.nodes[layerMenu.nodeId].locked ? '解锁图层' : '锁定图层'}
+          </button>
+          <button
+            role="menuitem"
+            className="is-danger"
+            onClick={() => {
+              setLayerMenu(null);
+              editor.deleteSelected();
+            }}
+          >
+            删除<span className="page-menu-key">Del</span>
+          </button>
+        </div>
+      )}
 
       {menu && menuPage && (
         <div

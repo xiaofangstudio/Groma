@@ -74,11 +74,13 @@ function imageNodeMarkup(doc: GromaDoc, node: SceneNode): string {
 }
 
 function effectFilter(node: SceneNode): string {
-  const parts = activeEffects(node).map((effect) =>
-    effect.type === 'layer-blur'
-      ? `blur(${num(effect.blur)}px)`
-      : `drop-shadow(${num(effect.x)}px ${num(effect.y)}px ${num(effect.blur)}px ${rgba(effect.color, effect.opacity)})`,
-  );
+  const parts: string[] = [];
+  for (const effect of activeEffects(node)) {
+    if (effect.type === 'layer-blur') parts.push(`blur(${num(effect.blur)}px)`);
+    else if (effect.type === 'drop-shadow') {
+      parts.push(`drop-shadow(${num(effect.x)}px ${num(effect.y)}px ${num(effect.blur)}px ${rgba(effect.color, effect.opacity)})`);
+    }
+  }
   return parts.length > 0 ? `filter:${parts.join(' ')};` : '';
 }
 
@@ -119,7 +121,7 @@ function nodeMarkup(doc: GromaDoc, node: SceneNode, rootX: number, rootY: number
   if (node.type === 'image') {
     return `<div class="groma-node" data-node="${esc(node.id)}" style="${common}overflow:hidden;">${imageNodeMarkup(doc, node)}</div>`;
   }
-  if (node.type === 'path') {
+  if (node.type === 'path' || node.type === 'boolean') {
     const svg = renderNodeSvg(doc, node.id, true, 1);
     return svg
       ? `<div class="groma-node" data-node="${esc(node.id)}" style="${common}overflow:hidden;">${svg.svg}</div>`

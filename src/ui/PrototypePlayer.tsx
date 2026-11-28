@@ -77,7 +77,7 @@ export function PrototypePlayer() {
         </div>
         <div className="proto-stage">
           <div
-            className="proto-frame"
+            className={`proto-frame${frame.h > frame.w ? ' is-device' : ''}`}
             style={{
               aspectRatio: `${frame.w} / ${frame.h}`,
               width: `min(92vw, 1400px, ${(84 * frame.w) / frame.h}vh)`,
@@ -111,7 +111,7 @@ export function PrototypePlayer() {
             })}
           </div>
         </div>
-        <div className="proto-hint">点击蓝色虚线热区跳转 · Esc 退出 · 返回键逐步回退</div>
+        <div className="proto-hint">点击黄色虚线热区跳转 · Esc 退出 · 返回键逐步回退</div>
       </div>
     </div>
   );

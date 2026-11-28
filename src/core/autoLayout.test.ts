@@ -77,6 +77,172 @@ describe('自动布局', () => {
     expect(next.nodes.b.x).toBe(126);
   });
 
+  it('子层主轴 Fill 吃掉剩余空间，固定项保持原宽', () => {
+    const doc = docWithFrame();
+    const a = box(doc, 'a', 100, 40);
+    box(doc, 'b', 80, 40);
+    a.layoutGrow = true;
+    frameOf(doc).layout = { ...defaultAutoLayout(), gap: 10 };
+    const next = reflowPageFrom(doc, 'a');
+    expect(next.nodes.a.w).toBe(278);
+    expect(next.nodes.b.x).toBe(304);
+    expect(next.nodes.b.w).toBe(80);
+  });
+
+  it('子层交叉轴 Fill 拉满父容器内高', () => {
+    const doc = docWithFrame();
+    const a = box(doc, 'a', 100, 40);
+    a.layoutAlignSelf = 'stretch';
+    frameOf(doc).layout = { ...defaultAutoLayout(), gap: 10, align: 'center' };
+    const next = reflowPageFrom(doc, 'a');
+    expect(next.nodes.a.h).toBe(168);
+    expect(next.nodes.a.y).toBe(16);
+  });
+
+  it('父级适应主轴时忽略 Fill，按开启 Fill 前的固定宽度收缩', () => {
+    const doc = docWithFrame();
+    const a = box(doc, 'a', 210, 40);
+    box(doc, 'b', 50, 40);
+    a.layoutGrow = true;
+    a.layoutBaseW = 150;
+    frameOf(doc).layout = {
+      ...defaultAutoLayout(),
+      gap: 10,
+      hug: false,
+      hugWidth: true,
+      hugHeight: false,
+    };
+    const next = reflowPageFrom(doc, 'a');
+    expect(next.nodes[frameOf(doc).id].w).toBe(242);
+    expect(next.nodes.a.w).toBe(150);
+    expect(next.nodes.b.x).toBe(176);
+  });
+
+  it('父级适应交叉轴时忽略交叉 Fill，按开启 Fill 前的高度收缩', () => {
+    const doc = docWithFrame();
+    const a = box(doc, 'a', 100, 104);
+    a.layoutAlignSelf = 'stretch';
+    a.layoutBaseH = 40;
+    frameOf(doc).layout = {
+      ...defaultAutoLayout(),
+      gap: 10,
+      hug: false,
+      hugWidth: false,
+      hugHeight: true,
+    };
+    const next = reflowPageFrom(doc, 'a');
+    expect(next.nodes[frameOf(doc).id].h).toBe(72);
+    expect(next.nodes.a.h).toBe(40);
+  });
+
+  it('宽高分别 Hug 时同时包住主内容和交叉轴最高子层', () => {
+    const doc = docWithFrame();
+    box(doc, 'a', 100, 40);
+    box(doc, 'b', 50, 80);
+    frameOf(doc).layout = {
+      ...defaultAutoLayout(),
+      gap: 10,
+      hug: false,
+      hugWidth: true,
+      hugHeight: true,
+    };
+    const next = reflowPageFrom(doc, 'a');
+    const frame = next.nodes[frameOf(doc).id];
+    expect(frame.w).toBe(192);
+    expect(frame.h).toBe(112);
+    expect(next.nodes.a.y).toBe(16);
+    expect(next.nodes.b.y).toBe(16);
+  });
+
+  it('嵌套容器被父级 Fill 拉伸后，内部子层再回流', () => {
+    const doc = docWithFrame();
+    const outer = frameOf(doc);
+    const fixed = box(doc, 'fixed', 80, 40);
+    const inner: SceneNode = {
+      id: 'inner',
+      type: 'frame',
+      name: 'inner',
+      parentId: outer.id,
+      children: ['inner-child'],
+      x: 0,
+      y: 0,
+      w: 100,
+      h: 100,
+      rotation: 0,
+      opacity: 1,
+      visible: true,
+      locked: false,
+      clipContent: false,
+      fills: [],
+      cornerRadius: 0,
+      layout: { ...defaultAutoLayout(), mode: 'vertical' },
+      layoutGrow: true,
+    };
+    const child: SceneNode = {
+      ...inner,
+      id: 'inner-child',
+      type: 'rect',
+      name: 'inner-child',
+      parentId: 'inner',
+      children: [],
+      w: 40,
+      h: 20,
+      layout: undefined,
+      layoutGrow: undefined,
+      layoutAlignSelf: 'stretch',
+    };
+    doc.nodes.inner = inner;
+    doc.nodes['inner-child'] = child;
+    outer.children = ['inner', fixed.id];
+    const next = reflowPageFrom(doc, 'inner');
+    expect(next.nodes.inner.w).toBe(276);
+    expect(next.nodes['inner-child'].w).toBe(244);
+    expect(next.nodes.fixed.x).toBe(304);
+  });
+
+  it('插入 / 删除 / 恢复子层都立即重排，不靠手动按钮', () => {
+    const doc = docWithFrame();
+    const frame = frameOf(doc);
+    box(doc, 'a', 100, 40);
+    box(doc, 'b', 80, 40);
+    frame.layout = { ...defaultAutoLayout(), gap: 10 };
+    const c: SceneNode = {
+      id: 'c',
+      type: 'rect',
+      name: 'c',
+      parentId: frame.id,
+      children: [],
+      x: 0,
+      y: 0,
+      w: 50,
+      h: 40,
+      rotation: 0,
+      opacity: 1,
+      visible: true,
+      locked: false,
+      clipContent: false,
+      fills: [],
+      cornerRadius: 0,
+    };
+    const added = applyCommand(doc, { type: 'insert', parentId: frame.id, node: c });
+    expect(added.doc.nodes.a.x).toBe(16);
+    expect(added.doc.nodes.b.x).toBe(126);
+    expect(added.doc.nodes.c.x).toBe(216);
+
+    const removed = applyCommand(added.doc, { type: 'remove', id: 'b' });
+    expect(removed.doc.nodes.a.x).toBe(16);
+    expect(removed.doc.nodes.c.x).toBe(126);
+
+    const restored = applyCommand(removed.doc, {
+      type: 'restore',
+      parentId: frame.id,
+      index: removed.index ?? 1,
+      subtree: { b: added.doc.nodes.b },
+    });
+    expect(restored.doc.nodes.b.x).toBe(126);
+    expect(restored.doc.nodes.c.x).toBe(216);
+  });
+
   it('补丁改动子层宽度后自动重排，并标记父容器被接管', () => {
     const doc = docWithFrame();
     box(doc, 'a', 100, 40);

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { createDoc } from '../core/doc';
-import { applyCommand, importComponentFromDoc, refreshComponentFromDoc, type NodePatch, type SceneCommand } from '../core/commands';
+import { applyCommand, collectSubtree, importComponentFromDoc, masterOfEditedNode, publishComponent as publishComponentToLibrary, refreshComponentFromDoc, syncInstancesOfMaster, type NodePatch, type SceneCommand } from '../core/commands';
 import {
   addPage as addPageToDoc,
   duplicatePage as duplicatePageInDoc,
@@ -14,7 +14,7 @@ import { canCreateStyle, styleApplyPatch, styleFromNode, styleName, styleValuesP
 import { clampScale, fitRect, zoomAt, type Viewport } from '../core/viewport';
 import type { ProjectUiState } from './project-ui';
 import type { ImportedNode, SvgImport } from '../io/importSvg';
-import { alignDeltas, distributeDeltas, type AlignMode, type DistributeMode } from '../core/align';
+import { alignDeltas, alignToParentDeltas, distributeDeltas, type AlignMode, type DistributeMode } from '../core/align';
 import { absolutePosition, absoluteRect, deepestFrame, selectionBounds, topLevelSelection } from '../core/geometry';
 import { shapePath, type ShapeKind } from '../core/shapes';
 import { nodePathContours, penContoursGeometry, type PenAnchor, type PenContour } from '../core/pen';
@@ -93,6 +93,10 @@ interface EditorState {
   prototypeStartId: string | null;
   leftOpen: boolean;
   rightOpen: boolean;
+  /** 参考线是否显示；隐藏后也不参与吸附。 */
+  guidesVisible: boolean;
+  /** 参考线锁定；锁定后不可拖动或删除。 */
+  guidesLocked: boolean;
   needsFit: boolean;
   past: HistoryEntry[];
   future: HistoryEntry[];
@@ -100,6 +104,7 @@ interface EditorState {
 
 interface Transaction {
   items: Record<string, SceneNode>;
+  docBefore: GromaDoc;
 }
 
 let state: EditorState;
@@ -108,6 +113,22 @@ let idSeq = 0;
 let styleSeq = 0;
 let variableSeq = 0;
 let viewportAnimFrame = 0;
+let pasteSeq = 0;
+let nodeClipboard: NodeClipboard | null = null;
+
+interface NodeClipboardItem {
+  rootId: string;
+  parentId: string;
+  pageId: string;
+  pageX: number;
+  pageY: number;
+  subtree: Record<string, SceneNode>;
+}
+
+interface NodeClipboard {
+  projectId: string | null;
+  items: NodeClipboardItem[];
+}
 
 function freshState(): EditorState {
   const doc = createDoc();
@@ -126,6 +147,8 @@ function freshState(): EditorState {
     prototypeStartId: null,
     leftOpen: true,
     rightOpen: true,
+    guidesVisible: true,
+    guidesLocked: false,
     needsFit: true,
     past: [],
     future: [],
@@ -401,6 +424,17 @@ function pageHasAutoLayout(doc: GromaDoc, rootId: string): boolean {
     stack.push(...node.children);
   }
   return false;
+}
+
+function liveSyncMasters(doc: GromaDoc, changedIds: string[]): GromaDoc {
+  const masters = new Set<string>();
+  for (const id of changedIds) {
+    const masterId = masterOfEditedNode(doc, id);
+    if (masterId) masters.add(masterId);
+  }
+  let next = doc;
+  for (const masterId of masters) next = syncInstancesOfMaster(next, masterId, newNodeId);
+  return next;
 }
 
 function patchItems(
@@ -790,6 +824,14 @@ export const editor = {
     set((s) => ({ ...s, rightOpen: !s.rightOpen }));
   },
 
+  toggleGuidesVisible() {
+    set((s) => ({ ...s, guidesVisible: !s.guidesVisible }));
+  },
+
+  toggleGuidesLocked() {
+    set((s) => ({ ...s, guidesLocked: !s.guidesLocked }));
+  },
+
   renameDoc(name: string) {
     set((s) => ({ ...s, doc: { ...s.doc, name } }));
   },
@@ -919,12 +961,20 @@ export const editor = {
 
   applyPatch(id: string, patch: NodePatch) {
     set((s) => {
+      const beforeDoc = s.doc;
       const result = patchItems(s.doc, [{ id, patch }]);
+      const nextDoc = result.items.length === 0 ? result.doc : liveSyncMasters(result.doc, result.items.map((item) => item.id));
       if (result.items.length === 0) return { ...s, doc: result.doc };
+      const synced = nextDoc !== result.doc;
       return {
         ...s,
-        doc: result.doc,
-        past: [...s.past, { kind: 'batch', items: result.items } as HistoryEntry].slice(-200),
+        doc: nextDoc,
+        past: [
+          ...s.past,
+          synced
+            ? ({ kind: 'doc', beforeDoc, afterDoc: nextDoc } as HistoryEntry)
+            : ({ kind: 'batch', items: result.items } as HistoryEntry),
+        ].slice(-200),
         future: [],
       };
     });
@@ -1687,7 +1737,7 @@ export const editor = {
       items[id] = node;
       stack.push(...node.children);
     }
-    transaction = Object.keys(items).length > 0 ? { items } : null;
+    transaction = Object.keys(items).length > 0 ? { items, docBefore: state.doc } : null;
   },
 
   updateSilent(id: string, patch: NodePatch) {
@@ -1718,16 +1768,27 @@ export const editor = {
       if (JSON.stringify(before) !== JSON.stringify(after)) items.push({ id, before, after });
     }
     if (items.length === 0) return;
-    set((s) => ({
-      ...s,
-      past: [
-        ...s.past,
-        items.length === 1
-          ? ({ kind: 'patch', ...items[0] } as HistoryEntry)
-          : ({ kind: 'batch', items } as HistoryEntry),
-      ].slice(-200),
-      future: [],
-    }));
+    set((s) => {
+      const nextDoc = liveSyncMasters(s.doc, items.map((item) => item.id));
+      if (nextDoc !== s.doc) {
+        return {
+          ...s,
+          doc: nextDoc,
+          past: [...s.past, { kind: 'doc', beforeDoc: tx.docBefore, afterDoc: nextDoc } as HistoryEntry].slice(-200),
+          future: [],
+        };
+      }
+      return {
+        ...s,
+        past: [
+          ...s.past,
+          items.length === 1
+            ? ({ kind: 'patch', ...items[0] } as HistoryEntry)
+            : ({ kind: 'batch', items } as HistoryEntry),
+        ].slice(-200),
+        future: [],
+      };
+    });
   },
 
   cancelTransaction() {
@@ -1768,7 +1829,7 @@ export const editor = {
     });
   },
 
-  duplicateSelected() {
+  duplicateSelected(dx = 12, dy = 12) {
     set((s) => {
       const ids = topLevelSelection(s.doc, s.selectedIds);
       let next = s.doc;
@@ -1779,8 +1840,8 @@ export const editor = {
             type: 'clone',
             id,
             makeId: newNodeId,
-            dx: 12,
-            dy: 12,
+            dx,
+            dy,
             nameSuffix: ' 副本',
           });
           if (!result.node || !result.parentId || result.index === undefined || !result.subtree) continue;
@@ -1795,6 +1856,98 @@ export const editor = {
       const past = [...s.past, { kind: 'addBatch', items } as HistoryEntry].slice(-200);
       return { ...withSelection(s, selected), doc: next, past, future: [] };
     });
+  },
+
+  /** 写入应用内剪贴板。返回是否真的有节点被复制，供快捷键决定是否拦截浏览器默认行为。 */
+  copySelected() {
+    const s = state;
+    const ids = topLevelSelection(s.doc, s.selectedIds);
+    if (ids.length === 0) return false;
+    const items: NodeClipboardItem[] = [];
+    for (const id of ids) {
+      const node = s.doc.nodes[id];
+      if (!node || !node.parentId) continue;
+      const page = pageOfNode(s.doc, id);
+      if (!page) continue;
+      const subtree: Record<string, SceneNode> = {};
+      const walk = (currentId: string) => {
+        const current = s.doc.nodes[currentId];
+        if (!current) return;
+        subtree[currentId] = current;
+        for (const childId of current.children) walk(childId);
+      };
+      walk(id);
+      const pagePosition = absolutePosition(s.doc, id);
+      items.push({
+        rootId: id,
+        parentId: node.parentId,
+        pageId: page.id,
+        pageX: pagePosition.x,
+        pageY: pagePosition.y,
+        subtree,
+      });
+    }
+    if (items.length === 0) return false;
+    nodeClipboard = { projectId: s.projectId, items };
+    pasteSeq = 0;
+    return true;
+  },
+
+  /** 粘贴应用内剪贴板；同工程同一页尽量落回原父级，跨页或父级已删除则落到当前页根。 */
+  pasteClipboard() {
+    const clip = nodeClipboard;
+    if (!clip || clip.items.length === 0 || clip.projectId !== state.projectId) return false;
+    const offset = 12 * (pasteSeq + 1);
+    let created: string[] = [];
+    set((s) => {
+      const page = s.doc.pages.find((item) => item.id === s.pageId) ?? s.doc.pages[0];
+      const pageRoot = s.doc.nodes[page.rootId];
+      if (!pageRoot) return s;
+      let next = s.doc;
+      const items: AddItem[] = [];
+      const roots: string[] = [];
+      for (const entry of clip.items) {
+        const sourceRoot = entry.subtree[entry.rootId];
+        if (!sourceRoot) continue;
+        const preferredParentId = entry.pageId === s.pageId && next.nodes[entry.parentId] ? entry.parentId : pageRoot.id;
+        const parent = next.nodes[preferredParentId];
+        if (!parent) continue;
+        const idMap = new Map<string, string>();
+        for (const [oldId, oldNode] of Object.entries(entry.subtree)) idMap.set(oldId, newNodeId(oldNode.type));
+        const clones: Record<string, SceneNode> = {};
+        for (const [oldId, oldNode] of Object.entries(entry.subtree)) {
+          const cloneId = idMap.get(oldId) as string;
+          const isRoot = oldId === entry.rootId;
+          clones[cloneId] = {
+            ...oldNode,
+            id: cloneId,
+            parentId: isRoot ? preferredParentId : (idMap.get(oldNode.parentId ?? '') ?? preferredParentId),
+            children: oldNode.children.map((childId) => idMap.get(childId)).filter((x): x is string => Boolean(x)),
+            ...(isRoot
+              ? {
+                  x: (preferredParentId === entry.parentId && entry.pageId === s.pageId ? oldNode.x : entry.pageX) + offset,
+                  y: (preferredParentId === entry.parentId && entry.pageId === s.pageId ? oldNode.y : entry.pageY) + offset,
+                }
+              : {}),
+          };
+        }
+        const root = clones[idMap.get(entry.rootId) as string];
+        if (!root) continue;
+        const at = parent.children.length;
+        next = {
+          ...next,
+          nodes: { ...next.nodes, ...clones, [parent.id]: { ...parent, children: [...parent.children, root.id] } },
+        };
+        items.push({ node: root, parentId: parent.id, index: at, subtree: clones });
+        roots.push(root.id);
+      }
+      if (items.length === 0) return s;
+      created = roots;
+      const past = [...s.past, { kind: 'addBatch', items } as HistoryEntry].slice(-200);
+      return { ...withSelection(s, roots), doc: next, past, future: [] };
+    });
+    if (created.length > 0) pasteSeq += 1;
+    return created.length > 0;
   },
 
   importExternalComponent(sourceDoc: GromaDoc, sourceId: string, sourceRef: LibrarySource): string | null {
@@ -1855,6 +2008,28 @@ export const editor = {
           { kind: 'doc', beforeDoc: s.doc, afterDoc: next } as HistoryEntry,
         ].slice(-200);
         return { ...s, doc: next, past, future: [] };
+      } catch {
+        return s;
+      }
+    });
+    return done;
+  },
+
+  publishComponent(): boolean {
+    let done = false;
+    set((s) => {
+      const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+      if (!node) return s;
+      try {
+        const result = publishComponentToLibrary(s.doc, node.id);
+        if (!result.before || !result.after) return s;
+        done = true;
+        return {
+          ...s,
+          doc: result.doc,
+          past: [...s.past, { kind: 'patch', id: node.id, before: result.before, after: result.after } as HistoryEntry].slice(-200),
+          future: [],
+        };
       } catch {
         return s;
       }
@@ -2244,6 +2419,134 @@ export const editor = {
     });
   },
 
+  /** 图层树拖拽换父级；世界位置保持不变，整棵子树跟着移动。 */
+  reparentNode(id: string, parentId: string, toIndex: number) {
+    set((s) => {
+      try {
+        const result = applyCommand(s.doc, { type: 'reparent', id, parentId, toIndex });
+        if (!result.beforeNodes || !result.afterNodes || Object.keys(result.beforeNodes).length === 0) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: [],
+          redoRemove: [],
+          selectionBefore: s.selectedIds,
+          selectionAfter: s.selectedIds,
+        };
+        return { ...s, doc: result.doc, past: [...s.past, entry].slice(-200), future: [] };
+      } catch {
+        return s;
+      }
+    });
+  },
+
+  /** 上移/下移一层；同级多选保持相对顺序，整批只进一条撤销。 */
+  moveSelectedLayer(direction: -1 | 1) {
+    set((s) => {
+      const ids = topLevelSelection(s.doc, s.selectedIds).filter((id) => {
+        const node = s.doc.nodes[id];
+        return Boolean(node && !node.locked && node.parentId && s.doc.nodes[node.parentId]);
+      });
+      if (ids.length === 0) return s;
+      const groups = new Map<string, string[]>();
+      for (const id of ids) {
+        const parentId = s.doc.nodes[id]?.parentId;
+        if (!parentId) continue;
+        const list = groups.get(parentId) ?? [];
+        list.push(id);
+        groups.set(parentId, list);
+      }
+      let next = s.doc;
+      const beforeNodes: Record<string, SceneNode> = {};
+      const afterNodes: Record<string, SceneNode> = {};
+      let changed = false;
+      for (const [parentId, group] of groups) {
+        const parent = next.nodes[parentId];
+        if (!parent) continue;
+        const ordered = [...group].sort((a, b) => parent.children.indexOf(a) - parent.children.indexOf(b));
+        if (direction === 1) ordered.reverse();
+        for (const id of ordered) {
+          const currentParent = next.nodes[parentId];
+          if (!currentParent) continue;
+          const index = currentParent.children.indexOf(id);
+          const target = index + direction;
+          if (index < 0 || target < 0 || target >= currentParent.children.length) continue;
+          const result = applyCommand(next, { type: 'reorder', id, toIndex: target });
+          if (!result.beforeNodes || !result.afterNodes || Object.keys(result.beforeNodes).length === 0) continue;
+          for (const [key, node] of Object.entries(result.beforeNodes)) {
+            if (!(key in beforeNodes)) beforeNodes[key] = node;
+          }
+          for (const [key, node] of Object.entries(result.afterNodes)) afterNodes[key] = node;
+          next = result.doc;
+          changed = true;
+        }
+      }
+      if (!changed) return s;
+      const entry: HistoryEntry = {
+        kind: 'structure',
+        beforeNodes,
+        afterNodes,
+        undoRemove: [],
+        redoRemove: [],
+        selectionBefore: s.selectedIds,
+        selectionAfter: s.selectedIds,
+      };
+      return { ...s, doc: next, past: [...s.past, entry].slice(-200), future: [] };
+    });
+  },
+
+  /** 置顶 / 置底；同级多选保持原有相对顺序，整批只进一条撤销。 */
+  moveSelectedToEdge(edge: 'front' | 'back') {
+    set((s) => {
+      const ids = topLevelSelection(s.doc, s.selectedIds);
+      if (ids.length === 0) return s;
+      const groups = new Map<string, string[]>();
+      for (const id of ids) {
+        const parent = s.doc.nodes[s.doc.nodes[id]?.parentId ?? ''];
+        if (!parent) continue;
+        const list = groups.get(parent.id) ?? [];
+        list.push(id);
+        groups.set(parent.id, list);
+      }
+      if (groups.size === 0) return s;
+      let next = s.doc;
+      const beforeNodes: Record<string, SceneNode> = {};
+      const afterNodes: Record<string, SceneNode> = {};
+      let changed = false;
+      for (const [parentId, group] of groups) {
+        const parent = next.nodes[parentId];
+        if (!parent) continue;
+        const ordered = [...group].sort((a, b) => parent.children.indexOf(a) - parent.children.indexOf(b));
+        if (edge === 'back') ordered.reverse();
+        for (const id of ordered) {
+          const currentParent = next.nodes[parentId];
+          if (!currentParent) continue;
+          const target = edge === 'front' ? currentParent.children.length - 1 : 0;
+          const result = applyCommand(next, { type: 'reorder', id, toIndex: target });
+          if (!result.beforeNodes || !result.afterNodes || Object.keys(result.beforeNodes).length === 0) continue;
+          for (const [key, node] of Object.entries(result.beforeNodes)) {
+            if (!(key in beforeNodes)) beforeNodes[key] = node;
+          }
+          for (const [key, node] of Object.entries(result.afterNodes)) afterNodes[key] = node;
+          next = result.doc;
+          changed = true;
+        }
+      }
+      if (!changed) return s;
+      const entry: HistoryEntry = {
+        kind: 'structure',
+        beforeNodes,
+        afterNodes,
+        undoRemove: [],
+        redoRemove: [],
+        selectionBefore: s.selectedIds,
+        selectionAfter: s.selectedIds,
+      };
+      return { ...s, doc: next, past: [...s.past, entry].slice(-200), future: [] };
+    });
+  },
+
   nudgeSelected(dx: number, dy: number) {
     set((s) => {
       const ids = topLevelSelection(s.doc, s.selectedIds).filter((id) => !isAutoLayoutChild(s.doc, id));
@@ -2264,7 +2567,8 @@ export const editor = {
 
   alignSelection(mode: AlignMode) {
     set((s) => {
-      const deltas = alignDeltas(s.doc, s.selectedIds, mode);
+      const top = topLevelSelection(s.doc, s.selectedIds);
+      const deltas = top.length === 1 ? alignToParentDeltas(s.doc, top[0], mode) : alignDeltas(s.doc, s.selectedIds, mode);
       if (deltas.length === 0) return s;
       const result = patchItems(
         s.doc,
@@ -2305,10 +2609,55 @@ export const editor = {
   },
 
   booleanSelected(op: BooleanOp): boolean {
-    return editor.vectorSelected(op);
+    return editor.booleanGroupSelected(op);
+  },
+
+  booleanGroupSelected(op: BooleanOp): boolean {
+    let changed = false;
+    set((s) => {
+      try {
+        const result = applyCommand(s.doc, {
+          type: 'boolean',
+          ids: s.selectedIds,
+          op,
+          makeId: newNodeId,
+        });
+        if (!result.node || !result.beforeNodes || !result.afterNodes) return s;
+        const entry: HistoryEntry = {
+          kind: 'structure',
+          beforeNodes: result.beforeNodes,
+          afterNodes: result.afterNodes,
+          undoRemove: [result.node.id],
+          redoRemove: [],
+          selectionBefore: s.selectedIds,
+          selectionAfter: [result.node.id],
+        };
+        changed = true;
+        return {
+          ...withSelection(s, [result.node.id]),
+          doc: result.doc,
+          past: [...s.past, entry].slice(-200),
+          future: [],
+        };
+      } catch {
+        return s;
+      }
+    });
+    return changed;
+  },
+
+  setBooleanOp(op: BooleanOp): boolean {
+    const current = getState();
+    const node = current.selectedIds.length === 1 ? current.doc.nodes[current.selectedIds[0]] : undefined;
+    if (!node || node.type !== 'boolean' || node.booleanOp === op) return false;
+    editor.applyPatch(node.id, { booleanOp: op });
+    return true;
   },
 
   vectorSelected(action: VectorAction): boolean {
+    if (action === 'union' || action === 'subtract' || action === 'intersect' || action === 'exclude') {
+      return editor.booleanGroupSelected(action);
+    }
     let changed = false;
     set((s) => {
       const build = vectorActionBuild(s.doc, s.selectedIds, action, () => newNodeId('path'));
@@ -2317,25 +2666,36 @@ export const editor = {
       const beforeNodes: Record<string, SceneNode> = {};
       const afterNodes: Record<string, SceneNode> = {};
       const parentIds = new Set<string>();
+      const removeIds = new Set(build.removeSourceIds);
+      for (const removedId of [...removeIds]) {
+        const removed = s.doc.nodes[removedId];
+        if (removed?.type === 'boolean') {
+          for (const descendantId of Object.keys(collectSubtree(s.doc, removedId))) removeIds.add(descendantId);
+        }
+      }
       for (const sourceId of build.sourceIds) {
         const source = s.doc.nodes[sourceId];
         if (!source?.parentId) return s;
         beforeNodes[sourceId] = source;
         parentIds.add(source.parentId);
       }
+      for (const removedId of removeIds) {
+        const removed = s.doc.nodes[removedId];
+        if (removed) beforeNodes[removedId] = removed;
+      }
       for (const parentId of parentIds) {
         const parent = s.doc.nodes[parentId];
         if (!parent) return s;
         beforeNodes[parentId] = parent;
       }
-      for (const sourceId of build.removeSourceIds) delete nodes[sourceId];
+      for (const sourceId of removeIds) delete nodes[sourceId];
       for (const [sourceId, patched] of Object.entries(build.sourcePatches)) {
         nodes[sourceId] = patched;
         afterNodes[sourceId] = patched;
       }
       for (const parentId of parentIds) {
         const parent = s.doc.nodes[parentId];
-        const children = parent.children.filter((childId) => !build.removeSourceIds.includes(childId));
+        const children = parent.children.filter((childId) => !removeIds.has(childId));
         const firstIndex = parent.children.indexOf(build.sourceIds[0]);
         const insertIndex = build.replaceSources
           ? children.filter((childId) => parent.children.indexOf(childId) < firstIndex).length
@@ -2356,7 +2716,7 @@ export const editor = {
         beforeNodes,
         afterNodes,
         undoRemove: build.nodes.map((node) => node.id),
-        redoRemove: build.removeSourceIds,
+        redoRemove: [...removeIds],
         selectionBefore: s.selectedIds,
         selectionAfter: build.nodes.map((node) => node.id),
       };
@@ -2401,7 +2761,7 @@ export const editor = {
     set((s) => {
       if (s.selectedIds.length !== 1) return s;
       const node = s.doc.nodes[s.selectedIds[0]];
-      if (!node || node.type !== 'group') return s;
+      if (!node || (node.type !== 'group' && node.type !== 'boolean')) return s;
       try {
         const result = applyCommand(s.doc, { type: 'ungroup', id: node.id });
         if (!result.childIds || !result.beforeNodes || !result.afterNodes || !result.parentId) return s;

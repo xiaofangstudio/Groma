@@ -1,6 +1,7 @@
-import { useEditor } from '../state/editor';
+import { editor, useEditor } from '../state/editor';
 import { useCursor } from '../state/cursor';
 import { countArtboards } from '../core/doc';
+import { IconEye, IconEyeOff, IconLock, IconUnlock } from './icons';
 
 export function StatusBar() {
   const s = useEditor();
@@ -8,6 +9,7 @@ export function StatusBar() {
   const page = s.doc.pages.find((p) => p.id === s.pageId) ?? s.doc.pages[0];
   const root = s.doc.nodes[page.rootId];
   const frames = root ? countArtboards(s.doc, root.id) : 0;
+  const guideCount = page.guides?.length ?? 0;
   const selected = s.selectedId ? s.doc.nodes[s.selectedId] : null;
 
   const saveLabel = !s.projectId
@@ -31,7 +33,7 @@ export function StatusBar() {
             <span className="status-sep" />
             <span className="status-page">已选 {s.selectedIds.length} 个图层</span>
           </>
-        ) : selected && (selected.type === 'frame' || selected.type === 'section' || selected.type === 'group') ? (
+        ) : selected && (selected.type === 'frame' || selected.type === 'section' || selected.type === 'group' || selected.type === 'boolean') ? (
           <>
             <span className="status-sep" />
             <span className="status-page">{selected.name}</span>
@@ -45,6 +47,29 @@ export function StatusBar() {
       </div>
 
       <div className="status-right">
+        {guideCount > 0 ? (
+          <span className="status-guides">
+            <span className="status-guide-count">{guideCount} 条参考线</span>
+            <button
+              type="button"
+              className={`status-guide-btn${s.guidesVisible ? '' : ' is-off'}`}
+              title={s.guidesVisible ? '隐藏参考线' : '显示参考线'}
+              aria-label={s.guidesVisible ? '隐藏参考线' : '显示参考线'}
+              onClick={() => editor.toggleGuidesVisible()}
+            >
+              {s.guidesVisible ? <IconEye size={12} /> : <IconEyeOff size={12} />}
+            </button>
+            <button
+              type="button"
+              className={`status-guide-btn${s.guidesLocked ? ' is-on' : ''}`}
+              title={s.guidesLocked ? '解锁参考线' : '锁定参考线'}
+              aria-label={s.guidesLocked ? '解锁参考线' : '锁定参考线'}
+              onClick={() => editor.toggleGuidesLocked()}
+            >
+              {s.guidesLocked ? <IconLock size={12} /> : <IconUnlock size={12} />}
+            </button>
+          </span>
+        ) : null}
         <span className={`status-save${s.saveState === 'error' ? ' is-error' : ''}`}>{saveLabel}</span>
         <span className="status-zoom">{Math.round(s.viewport.scale * 100)}%</span>
       </div>

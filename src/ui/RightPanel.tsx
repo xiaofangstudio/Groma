@@ -3,12 +3,12 @@ import { editor, useEditor } from '../state/editor';
 import { getAssetDataUrl, getImageProjectId, importImageAsset } from '../io/images';
 import { exportTextFile, loadProject } from '../io/project';
 import { styleTokensCss, styleTokensJson } from '../io/tokens';
-import type { AutoLayout, Constraints, Effect, LayoutAlign, LayoutJustify, Paint, PaintStop, SceneNode, StrokeCap, StrokeJoin, StyleKind } from '../core/types';
+import type { AutoLayout, Constraints, Effect, GromaDoc, LayoutAlign, LayoutJustify, Paint, PaintStop, SceneNode, StrokeCap, StrokeJoin, StyleKind } from '../core/types';
 import { defaultAutoLayout, supportsAutoLayout } from '../core/autoLayout';
 import { STYLE_KIND_LABEL, canCreateStyle, styleMatchesNode } from '../core/styles';
 import { nodeCss } from '../core/css';
 import { copyText } from './clipboard';
-import { DEFAULT_DROP_SHADOW, DEFAULT_LAYER_BLUR } from '../core/effects';
+import { DEFAULT_BACKGROUND_BLUR, DEFAULT_DROP_SHADOW, DEFAULT_INNER_SHADOW, DEFAULT_LAYER_BLUR } from '../core/effects';
 import {
   addGradientStop,
   isGradientPaint,
@@ -29,7 +29,7 @@ import { absolutePosition, absoluteRect, selectionBounds, topLevelSelection } fr
 import { countArtboards } from '../core/doc';
 import { framesInPage } from '../core/prototype';
 import { libraryComponents, variantFacets, variantLabel, variantMatchesFacet, variantOptions, variantPropertyNames, variantSetOf } from '../core/variants';
-import { componentTransferIssues } from '../core/library';
+import { componentSourceState, componentTransferIssues, type ComponentSourceState } from '../core/library';
 import { ancestorInstance, instancePath, overrideLabels } from '../core/instance';
 import { activeModeId, canBindVariable, VARIABLE_PROP_LABEL, variableBindingProps, variableCollections, type VariableProp } from '../core/variables';
 import { cornerRadiiOf, type CornerRadii } from '../core/corners';
@@ -41,6 +41,7 @@ import {
   IconAlignRight,
   IconAlignTop,
   IconAlignVCenter,
+  IconBoolean,
   IconChevronLeft,
   IconChevronRight,
   IconClose,
@@ -70,6 +71,13 @@ import {
 function fmt(n: number): string {
   return String(Math.round(n * 100) / 100);
 }
+
+const BOOLEAN_OP_OPTIONS: Array<{ op: 'union' | 'subtract' | 'intersect' | 'exclude'; label: string }> = [
+  { op: 'union', label: '并集' },
+  { op: 'subtract', label: '差集' },
+  { op: 'intersect', label: '交集' },
+  { op: 'exclude', label: '排除' },
+];
 
 interface NumFieldProps {
   label: string;
@@ -360,6 +368,7 @@ function typeLabel(type: SceneNode['type']): string {
   if (type === 'path') return '矢量';
   if (type === 'image') return '图片';
   if (type === 'group') return '分组';
+  if (type === 'boolean') return '布尔组';
   if (type === 'slice') return '切片';
   return '节点';
 }
@@ -373,6 +382,7 @@ function TypeIcon({ type, size = 14 }: { type: SceneNode['type']; size?: number 
   if (type === 'path') return <IconPath size={size} />;
   if (type === 'image') return <IconImage size={size} />;
   if (type === 'group') return <IconGroup size={size} />;
+  if (type === 'boolean') return <IconBoolean size={size} />;
   if (type === 'slice') return <IconSlice size={size} />;
   return <IconPage size={size} />;
 }
@@ -709,6 +719,11 @@ function FillEditor({
             style={{ background: paintPreview(gradient, node.w, node.h) }}
             aria-hidden="true"
           />
+          <p className="ins-note gradient-canvas-hint">
+            {gradient.type === 'linear'
+              ? '画布上拖两端改角度与范围，拖线上方圆环移动整条渐变，拖中间色标改色标位置。'
+              : '画布上拖圆心移动位置，拖外圈改半径。'}
+          </p>
           <div className="gradient-stop-head" aria-hidden="true">
             <span>颜色</span>
             <span>位置%</span>
@@ -784,7 +799,9 @@ function FillEditor({
             </>
           )}
           <p className="ins-note">
-            {gradient.type === 'linear' ? '角度 0° 指向右侧，色标位置按渐变长度计算。' : '色标位置按半径比例计算。'}
+            {gradient.type === 'linear'
+              ? '角度按顺时针计；Shift 按 15° 吸附，色标位置按渐变长度计算。'
+              : '色标位置按半径比例计算。'}
           </p>
         </>
       ) : (
@@ -990,7 +1007,15 @@ function EffectsEditor({ node }: { node: SceneNode }) {
         {effects.map((effect, index) => (
           <div className={`effect-card${effect.visible ? '' : ' is-off'}`} key={`${effect.type}-${index}`}>
             <div className="effect-head">
-              <span className="effect-type">{effect.type === 'drop-shadow' ? '投影' : '整层模糊'}</span>
+              <span className="effect-type">
+                {effect.type === 'drop-shadow'
+                  ? '投影'
+                  : effect.type === 'inner-shadow'
+                    ? '内阴影'
+                    : effect.type === 'layer-blur'
+                      ? '整层模糊'
+                      : '背景模糊'}
+              </span>
               <button
                 className="mini-action"
                 disabled={disabled}
@@ -1002,7 +1027,7 @@ function EffectsEditor({ node }: { node: SceneNode }) {
                 移除
               </button>
             </div>
-            {effect.type === 'drop-shadow' ? (
+            {effect.type === 'drop-shadow' || effect.type === 'inner-shadow' ? (
               <>
                 <ColorField
                   color={effect.color}
@@ -1048,7 +1073,7 @@ function EffectsEditor({ node }: { node: SceneNode }) {
             )}
           </div>
         ))}
-        {effects.length === 0 && <p className="ins-note">给图层加投影或整层模糊；效果会一起进入 PNG / SVG 导出。</p>}
+        {effects.length === 0 && <p className="ins-note">整层模糊糊图层自己，背景模糊糊身后的画面；内阴影画在图层内部。它们和填充是两回事。</p>}
         <div className="effect-add-row">
           <button
             className="mini-action"
@@ -1060,9 +1085,23 @@ function EffectsEditor({ node }: { node: SceneNode }) {
           <button
             className="mini-action"
             disabled={disabled}
+            onClick={() => addEffect({ ...DEFAULT_INNER_SHADOW })}
+          >
+            ＋ 内阴影
+          </button>
+          <button
+            className="mini-action"
+            disabled={disabled}
             onClick={() => addEffect({ ...DEFAULT_LAYER_BLUR })}
           >
             ＋ 模糊
+          </button>
+          <button
+            className="mini-action"
+            disabled={disabled}
+            onClick={() => addEffect({ ...DEFAULT_BACKGROUND_BLUR })}
+          >
+            ＋ 背景模糊
           </button>
         </div>
       </div>
@@ -1139,10 +1178,10 @@ function StylesSection({ node }: { node: SceneNode }) {
   const [exporting, setExporting] = useState(false);
   const styles = Object.values(s.doc.styles ?? {});
   const kinds: StyleKind[] = [];
-  if (node.type === 'rect' || node.type === 'ellipse' || node.type === 'text' || node.type === 'path' || node.type === 'frame' || node.type === 'section') {
+  if (node.type === 'rect' || node.type === 'ellipse' || node.type === 'text' || node.type === 'path' || node.type === 'boolean' || node.type === 'frame' || node.type === 'section') {
     kinds.push('fill');
   }
-  if (node.type === 'rect' || node.type === 'ellipse' || node.type === 'text' || node.type === 'path') kinds.push('stroke');
+  if (node.type === 'rect' || node.type === 'ellipse' || node.type === 'text' || node.type === 'path' || node.type === 'boolean') kinds.push('stroke');
   if (node.type !== 'slice') kinds.push('effect');
   if (node.type === 'text') kinds.push('text');
   if (kinds.length === 0) return null;
@@ -1301,6 +1340,83 @@ function CssSection({ node }: { node: SceneNode }) {
   );
 }
 
+function LayoutChildSection({ node }: { node: SceneNode }) {
+  const s = useEditor();
+  const parent = node.parentId ? s.doc.nodes[node.parentId] : undefined;
+  if (!parent?.layout) return null;
+  const horizontal = parent.layout.mode === 'horizontal';
+  const mainFill = Boolean(node.layoutGrow);
+  const crossFill = node.layoutAlignSelf === 'stretch' || (!node.layoutAlignSelf && parent.layout.align === 'stretch');
+  return (
+    <section className="ins-section">
+      <div className="ins-title-row">
+        <h3 className="ins-title">布局尺寸</h3>
+        <span className="type-chip">自动布局子层</span>
+      </div>
+      <div className="auto-layout-checks">
+        <label className="auto-layout-check">
+          <input
+            type="checkbox"
+            checked={mainFill}
+            disabled={node.locked}
+            onChange={(e) => {
+              const on = e.target.checked;
+              const nextBase = horizontal
+                ? { layoutBaseW: node.layoutBaseW ?? node.w }
+                : { layoutBaseH: node.layoutBaseH ?? node.h };
+              const restore = horizontal
+                ? node.layoutBaseW
+                  ? { w: node.layoutBaseW }
+                  : {}
+                : node.layoutBaseH
+                  ? { h: node.layoutBaseH }
+                  : {};
+              editor.applyPatch(node.id, on
+                ? { layoutGrow: true, ...nextBase }
+                : {
+                    layoutGrow: undefined,
+                    ...restore,
+                    ...(horizontal ? { layoutBaseW: undefined } : { layoutBaseH: undefined }),
+                  });
+            }}
+          />
+          <span>{horizontal ? '横向' : '纵向'}填满剩余</span>
+        </label>
+        <label className="auto-layout-check">
+          <input
+            type="checkbox"
+            checked={crossFill}
+            disabled={node.locked}
+            onChange={(e) => {
+              const on = e.target.checked;
+              const nextBase = horizontal
+                ? { layoutBaseH: node.layoutBaseH ?? node.h }
+                : { layoutBaseW: node.layoutBaseW ?? node.w };
+              const restore = horizontal
+                ? node.layoutBaseH
+                  ? { h: node.layoutBaseH, layoutBaseH: undefined }
+                  : {}
+                : node.layoutBaseW
+                  ? { w: node.layoutBaseW, layoutBaseW: undefined }
+                  : {};
+              editor.applyPatch(node.id, {
+                layoutAlignSelf: on
+                  ? 'stretch'
+                  : parent.layout?.align === 'stretch'
+                    ? 'start'
+                    : undefined,
+                ...(on ? nextBase : restore),
+              });
+            }}
+          />
+          <span>{horizontal ? '纵向' : '横向'}填满</span>
+        </label>
+      </div>
+      <p className="ins-note">Fill 吃掉父级剩余空间；父级“适应主轴”时，主轴 Fill 不生效。</p>
+    </section>
+  );
+}
+
 function AutoLayoutSection({ node }: { node: SceneNode }) {
   if (!supportsAutoLayout(node)) return null;
   const layout = node.layout;
@@ -1312,6 +1428,16 @@ function AutoLayoutSection({ node }: { node: SceneNode }) {
   const updatePadding = (side: 'top' | 'right' | 'bottom' | 'left', value: number) => {
     if (!layout) return;
     update({ padding: { ...layout.padding, [side]: value } });
+  };
+  const hugWidth = layout ? layout.hugWidth ?? (layout.mode === 'horizontal' && layout.hug) : false;
+  const hugHeight = layout ? layout.hugHeight ?? (layout.mode === 'vertical' && layout.hug) : false;
+  const updateHug = (axis: 'width' | 'height', value: boolean) => {
+    if (!layout) return;
+    update({
+      hug: false,
+      hugWidth: axis === 'width' ? value : hugWidth,
+      hugHeight: axis === 'height' ? value : hugHeight,
+    });
   };
 
   return (
@@ -1408,10 +1534,16 @@ function AutoLayoutSection({ node }: { node: SceneNode }) {
               onChange={(value) => update({ justify: value as LayoutJustify })}
             />
           </div>
-          <label className="auto-layout-check">
-            <input type="checkbox" checked={layout.hug} disabled={disabled} onChange={(e) => update({ hug: e.target.checked })} />
-            <span>适应内容主轴</span>
-          </label>
+          <div className="auto-layout-checks">
+            <label className="auto-layout-check">
+              <input type="checkbox" checked={hugWidth} disabled={disabled} onChange={(e) => updateHug('width', e.target.checked)} />
+              <span>适应宽度</span>
+            </label>
+            <label className="auto-layout-check">
+              <input type="checkbox" checked={hugHeight} disabled={disabled} onChange={(e) => updateHug('height', e.target.checked)} />
+              <span>适应高度</span>
+            </label>
+          </div>
           <p className="ins-note">子层顺序按图层从下到上；拖动子层不改坐标，改尺寸会立即重排。</p>
         </>
       )}
@@ -1693,29 +1825,86 @@ function ComponentSection({ node }: { node: SceneNode }) {
   const s = useEditor();
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceNotice, setSourceNotice] = useState('');
+  const [sourceState, setSourceState] = useState<ComponentSourceState | 'checking'>('checking');
+  const [sourceDoc, setSourceDoc] = useState<GromaDoc | null>(null);
+  const source = node.librarySource;
+  useEffect(() => {
+    if (!source) {
+      setSourceDoc(null);
+      return;
+    }
+    let live = true;
+    setSourceState('checking');
+    setSourceNotice('');
+    loadProject(source.projectId)
+      .then((doc) => {
+        if (!live) return;
+        setSourceDoc(doc);
+        setSourceState(componentSourceState(s.doc, node.id, doc, source.nodeId));
+      })
+      .catch(() => {
+        if (live) setSourceState('missing');
+      });
+    return () => {
+      live = false;
+    };
+  }, [node.id, source?.projectId, source?.nodeId]);
+  useEffect(() => {
+    if (!source || !sourceDoc) return;
+    setSourceState(componentSourceState(s.doc, node.id, sourceDoc, source.nodeId));
+  }, [s.doc, sourceDoc, node.id, source?.nodeId]);
   if (node.type !== 'frame') return null;
   const instanceCount = Object.values(s.doc.nodes).filter((item) => item.componentOf === node.id).length;
   const master = node.componentOf ? s.doc.nodes[node.componentOf] : null;
   const masterMissing = Boolean(node.componentOf && (!master || !master.isComponent));
   const variantSet = variantSetOf(s.doc, node);
+  const sourceStateText: Record<ComponentSourceState | 'checking', string> = {
+    checking: '正在检查来源…',
+    same: '已是最新',
+    changed: '内容有差异',
+    'source-updated': `来源已发布新版本（本地 v${source?.version ?? 0}）`,
+    missing: '来源工程不可用',
+    blocked: '来源含外部依赖',
+  };
 
   async function refreshFromSource() {
-    const source = node.librarySource;
     if (!source) return;
     setSourceBusy(true);
     setSourceNotice('');
+    let doc: GromaDoc;
     try {
-      const doc = await loadProject(source.projectId);
+      doc = await loadProject(source.projectId);
+    } catch {
+      setSourceState('missing');
+      setSourceNotice('来源工程不可用');
+      setSourceBusy(false);
+      return;
+    }
+    try {
       const issues = componentTransferIssues(doc, source.nodeId);
-      if (issues.length > 0) throw new Error(`来源含${issues.join('、')}，不能直接更新`);
+      if (issues.length > 0) {
+        setSourceState('blocked');
+        throw new Error(`来源含${issues.join('、')}，不能直接更新`);
+      }
+      setSourceDoc(doc);
       const ok = editor.refreshExternalComponent(doc, source.nodeId, node.id);
-      if (!ok) throw new Error('来源主组件已删除或更新失败');
+      if (!ok) {
+        setSourceState('missing');
+        throw new Error('来源主组件已删除或更新失败');
+      }
+      setSourceState('same');
       setSourceNotice('已从来源更新，实例同步完成');
     } catch (err) {
       setSourceNotice(err instanceof Error ? err.message : '更新失败');
     } finally {
       setSourceBusy(false);
     }
+  }
+
+  function detachSource() {
+    if (!source) return;
+    editor.applyPatch(node.id, { librarySource: undefined });
+    setSourceNotice('已断开本地库来源，主组件保留');
   }
 
   if (node.isVariantSet) {
@@ -1834,9 +2023,10 @@ function ComponentSection({ node }: { node: SceneNode }) {
         <span className="style-count">主组件</span>
       </div>
       <Row label="实例" value={`${instanceCount} 个`} />
-      {node.librarySource ? (
+      {source ? (
         <>
-          <Row label="本地库" value={`${node.librarySource.projectName} / ${node.librarySource.nodeName}`} />
+          <Row label="本地库" value={`${source.projectName} / ${source.nodeName}`} />
+          <Row label="来源状态" value={sourceStateText[sourceState]} />
           <button
             type="button"
             className="wide-action component-source-refresh"
@@ -1847,7 +2037,27 @@ function ComponentSection({ node }: { node: SceneNode }) {
             <span>{sourceBusy ? '正在读取来源…' : '从来源更新'}</span>
           </button>
           {sourceNotice ? <p className="ins-note component-source-note">{sourceNotice}</p> : null}
+          <div className="component-source-footer">
+            <button type="button" className="link-btn component-source-detach" onClick={detachSource}>
+              断开来源
+            </button>
+          </div>
         </>
+      ) : null}
+      {!source ? (
+        <div className="component-publish-row">
+          <span className="component-publish-state">
+            本机库 {node.libraryPublication ? `v${node.libraryPublication.version}` : '未发布'}
+          </span>
+          <button
+            type="button"
+            className="link-btn component-publish"
+            disabled={node.locked}
+            onClick={() => editor.publishComponent()}
+          >
+            {node.libraryPublication ? '发布新版本' : '发布到本机库'}
+          </button>
+        </div>
       ) : null}
       <div className="ins-action-row component-actions">
         <button type="button" className="wide-action" disabled={node.locked} onClick={() => editor.createComponentInstance()}>
@@ -1958,11 +2168,21 @@ function FrameInspector({ node }: { node: SceneNode }) {
 
       <section className="ins-section">
         <h3 className="ins-title">对齐与变换</h3>
+        <AlignRow disabled={node.locked} />
         <div className="field-grid">
           <NumField label="X" value={node.x} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { x: n })} />
           <NumField label="Y" value={node.y} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { y: n })} />
           <NumField label="W" value={node.w} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { w: n })} />
           <NumField label="H" value={node.h} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { h: n })} />
+          <NumField label="旋转" value={node.rotation} min={-360} max={360} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { rotation: n })} />
+          <NumField
+            label="圆角"
+            value={Math.max(...cornerRadiiOf(node))}
+            min={0}
+            max={Math.max(0, Math.round(Math.min(node.w, node.h) / 2))}
+            disabled={node.locked}
+            onCommit={(n) => editor.applyPatch(node.id, { cornerRadius: n, cornerRadii: undefined })}
+          />
         </div>
       </section>
 
@@ -1980,6 +2200,7 @@ function FrameInspector({ node }: { node: SceneNode }) {
       </section>
 
       <AutoLayoutSection node={node} />
+      <LayoutChildSection node={node} />
       <LayoutChildOrder node={node} />
 
       <EffectsEditor node={node} />
@@ -2004,6 +2225,7 @@ function SliceInspector({ node }: { node: SceneNode }) {
 
       <section className="ins-section">
         <h3 className="ins-title">对齐与变换</h3>
+        <AlignRow disabled={node.locked} />
         <div className="field-grid">
           <NumField label="X" value={node.x} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { x: n })} />
           <NumField label="Y" value={node.y} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { y: n })} />
@@ -2066,19 +2288,52 @@ function ShapeInspector({ node }: { node: SceneNode }) {
         <span className="type-chip">{isPen ? '钢笔' : typeLabel(node.type)}</span>
       </div>
 
+      {node.type === 'boolean' && (
+        <section className="ins-section boolean-group-section">
+          <h3 className="ins-title">布尔类型</h3>
+          <div className="boolean-op-grid">
+            {BOOLEAN_OP_OPTIONS.map((item) => (
+              <button
+                key={item.op}
+                type="button"
+                className={`boolean-op-btn${node.booleanOp === item.op ? ' is-active' : ''}`}
+                onClick={() => editor.setBooleanOp(item.op)}
+              >
+                <IconBoolean op={item.op} size={15} />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+          <p className="boolean-group-hint">展开图层可编辑子形状；切换运算会即时重算。拍平后变成单条矢量路径。</p>
+        </section>
+      )}
+
       <section className="ins-section">
         <h3 className="ins-title">对齐与变换</h3>
+        <AlignRow disabled={node.locked} />
         <div className="field-grid">
           <NumField label="X" value={node.x} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { x: n })} />
           <NumField label="Y" value={node.y} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { y: n })} />
           <NumField label="W" value={node.w} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { w: n })} />
           <NumField label="H" value={node.h} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { h: n })} />
+          <NumField label="旋转" value={node.rotation} min={-360} max={360} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { rotation: n })} />
+          {isRect && (
+            <NumField
+              label="圆角"
+              value={Math.max(...cornerRadiiOf(node))}
+              min={0}
+              max={Math.max(0, Math.round(Math.min(node.w, node.h) / 2))}
+              disabled={node.locked}
+              onCommit={(n) => editor.applyPatch(node.id, { cornerRadius: n, cornerRadii: undefined })}
+            />
+          )}
         </div>
       </section>
 
       <PrototypeSection node={node} />
 
       {node.type === 'section' && <AutoLayoutSection node={node} />}
+      <LayoutChildSection node={node} />
       <LayoutChildOrder node={node} />
 
       {node.type === 'path' && (node.shapeKind === 'polygon' || node.shapeKind === 'star') && (
@@ -2272,7 +2527,7 @@ function ShapeInspector({ node }: { node: SceneNode }) {
           fallbackColor={isText ? '#221C00' : node.type === 'section' ? '#FFFFFF' : '#D9D9D9'}
           note={node.type === 'section' && !node.fills[0] ? '区块默认透明；选择颜色后会写入填充。' : undefined}
         />
-        {(node.type === 'rect' || node.type === 'ellipse' || node.type === 'path') && <ImageFillEditor node={node} />}
+        {(node.type === 'rect' || node.type === 'ellipse' || node.type === 'path' || node.type === 'boolean') && <ImageFillEditor node={node} />}
       </section>
 
       <section className="ins-section">
@@ -2484,11 +2739,21 @@ function ImageInspector({ node }: { node: SceneNode }) {
 
       <section className="ins-section">
         <h3 className="ins-title">对齐与变换</h3>
+        <AlignRow disabled={node.locked} />
         <div className="field-grid">
           <NumField label="X" value={node.x} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { x: n })} />
           <NumField label="Y" value={node.y} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { y: n })} />
           <NumField label="W" value={node.w} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { w: n })} />
           <NumField label="H" value={node.h} min={1} max={100000} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { h: n })} />
+          <NumField label="旋转" value={node.rotation} min={-360} max={360} disabled={node.locked} onCommit={(n) => editor.applyPatch(node.id, { rotation: n })} />
+          <NumField
+            label="圆角"
+            value={Math.max(...cornerRadiiOf(node))}
+            min={0}
+            max={Math.max(0, Math.round(Math.min(node.w, node.h) / 2))}
+            disabled={node.locked}
+            onCommit={(n) => editor.applyPatch(node.id, { cornerRadius: n, cornerRadii: undefined })}
+          />
         </div>
       </section>
 
@@ -2594,6 +2859,30 @@ const ALIGN_ACTIONS = [
   { mode: 'vcenter', label: '垂直居中', icon: <IconAlignVCenter size={15} /> },
   { mode: 'bottom', label: '底部对齐', icon: <IconAlignBottom size={15} /> },
 ] as const;
+
+function AlignRow({ disabled }: { disabled?: boolean }) {
+  const s = useEditor();
+  const node = s.selectedId ? s.doc.nodes[s.selectedId] : null;
+  const parent = node?.parentId ? s.doc.nodes[node.parentId] : null;
+  const noArea = !node || !parent || parent.type === 'page';
+  return (
+    <div className="align-grid align-grid-single" role="group" aria-label="相对父级对齐">
+      {ALIGN_ACTIONS.map((action) => (
+        <button
+          key={action.mode}
+          type="button"
+          className="align-btn"
+          title={action.label}
+          aria-label={action.label}
+          disabled={disabled || noArea}
+          onClick={() => editor.alignSelection(action.mode)}
+        >
+          {action.icon}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function MultiInspector({ ids }: { ids: string[] }) {
   const s = useEditor();
@@ -2744,6 +3033,7 @@ function GroupInspector({ node }: { node: SceneNode }) {
 
       <section className="ins-section">
         <h3 className="ins-title">对齐与变换</h3>
+        <AlignRow disabled={node.locked} />
         <div className="field-grid">
           <NumField
             label="X"
@@ -2765,6 +3055,7 @@ function GroupInspector({ node }: { node: SceneNode }) {
       <PrototypeSection node={node} />
 
       <AutoLayoutSection node={node} />
+      <LayoutChildSection node={node} />
       <LayoutChildOrder node={node} />
       <EffectsEditor node={node} />
 
@@ -2820,6 +3111,34 @@ function PageInspector() {
   );
 }
 
+function LayerOrderBar() {
+  const s = useEditor();
+  const ids = topLevelSelection(s.doc, s.selectedIds).filter((id) => {
+    const node = s.doc.nodes[id];
+    return Boolean(node && !node.locked && node.parentId && s.doc.nodes[node.parentId]);
+  });
+  let canBack = false;
+  let canFront = false;
+  for (const id of ids) {
+    const node = s.doc.nodes[id];
+    const parent = node?.parentId ? s.doc.nodes[node.parentId] : null;
+    if (!node || !parent) continue;
+    const index = parent.children.indexOf(id);
+    if (index > 0) canBack = true;
+    if (index >= 0 && index < parent.children.length - 1) canFront = true;
+  }
+  if (ids.length === 0) return null;
+  return (
+    <div className="layer-order-bar" aria-label="图层排列">
+      <span className="layer-order-label">层级</span>
+      <button type="button" className="layer-order-btn" disabled={!canBack} title="置于底层 Ctrl+Shift+[" onClick={() => editor.moveSelectedToEdge('back')}>置底</button>
+      <button type="button" className="layer-order-btn" disabled={!canBack} title="下移一层 Ctrl+[" onClick={() => editor.moveSelectedLayer(-1)}>下移</button>
+      <button type="button" className="layer-order-btn" disabled={!canFront} title="上移一层 Ctrl+]" onClick={() => editor.moveSelectedLayer(1)}>上移</button>
+      <button type="button" className="layer-order-btn" disabled={!canFront} title="置于顶层 Ctrl+Shift+]" onClick={() => editor.moveSelectedToEdge('front')}>置顶</button>
+    </div>
+  );
+}
+
 export function RightPanel() {
   const s = useEditor();
   const node = s.selectedId ? (s.doc.nodes[s.selectedId] ?? null) : null;
@@ -2845,6 +3164,7 @@ export function RightPanel() {
           <IconChevronRight size={14} />
         </button>
       </div>
+      <LayerOrderBar />
       <div className="inspector-scroll">
         {!multiple && node && node.type !== 'page' && <InstanceOverrideSection node={node} />}
         {multiple ? (

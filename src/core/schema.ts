@@ -1,6 +1,6 @@
 import type { GromaDoc, Guide, ImageAsset, NodeType, Page, Paint, SceneNode, Style, StyleKind, Variable, VariableCollection, VariableMode } from './types';
 
-const NODE_TYPES: NodeType[] = ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'path', 'image', 'group', 'slice'];
+const NODE_TYPES: NodeType[] = ['page', 'frame', 'section', 'rect', 'ellipse', 'text', 'path', 'image', 'group', 'boolean', 'slice'];
 const NODE_TYPE_SET = new Set<string>(NODE_TYPES);
 const HORIZONTAL_CONSTRAINTS = new Set(['left', 'right', 'center', 'leftRight', 'scale']);
 const VERTICAL_CONSTRAINTS = new Set(['top', 'bottom', 'center', 'topBottom', 'scale']);
@@ -66,8 +66,8 @@ function validateEffect(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (!isFiniteNumber(value.blur) || value.blur < 0 || value.blur > 1000) return false;
   if (typeof value.visible !== 'boolean') return false;
-  if (value.type === 'layer-blur') return true;
-  if (value.type !== 'drop-shadow') return false;
+  if (value.type === 'layer-blur' || value.type === 'background-blur') return true;
+  if (value.type !== 'drop-shadow' && value.type !== 'inner-shadow') return false;
   return (
     isFiniteNumber(value.x) &&
     isFiniteNumber(value.y) &&
@@ -166,6 +166,8 @@ function validateAutoLayout(value: unknown): boolean {  if (!isRecord(value)) re
   if (!['start', 'center', 'end', 'stretch'].includes(String(value.align))) return false;
   if (!['start', 'center', 'end', 'space-between'].includes(String(value.justify))) return false;
   if (typeof value.hug !== 'boolean') return false;
+  if (value.hugWidth !== undefined && typeof value.hugWidth !== 'boolean') return false;
+  if (value.hugHeight !== undefined && typeof value.hugHeight !== 'boolean') return false;
   return true;
 }
 
@@ -287,6 +289,21 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
       issues.push(`节点 ${key} 的自动布局只支持画板/区块/分组`);
     }
   }
+  if (node.layoutGrow !== undefined && typeof node.layoutGrow !== 'boolean') {
+    issues.push(`节点 ${key} 的 layoutGrow 必须是布尔值`);
+  }
+  for (const field of ['layoutBaseW', 'layoutBaseH'] as const) {
+    const value = node[field];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+      issues.push(`节点 ${key} 的 ${field} 必须是大于 0 的有限数字`);
+    }
+  }
+  if (
+    node.layoutAlignSelf !== undefined &&
+    !['start', 'center', 'end', 'stretch'].includes(String(node.layoutAlignSelf))
+  ) {
+    issues.push(`节点 ${key} 的 layoutAlignSelf 必须是 start/center/end/stretch`);
+  }
   if (node.isComponent !== undefined) {
     if (typeof node.isComponent !== 'boolean') issues.push(`节点 ${key} 的 isComponent 必须是布尔值`);
     if (node.type !== 'frame') issues.push(`节点 ${key} 只有画板能作为主组件`);
@@ -313,6 +330,27 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
         if (typeof source[field] !== 'string') issues.push(`节点 ${key} 的 librarySource.${field} 必须是字符串`);
       }
       if (!node.isComponent) issues.push(`节点 ${key} 只有主组件能记录本地库来源`);
+      if (source.version !== undefined && (!Number.isInteger(source.version) || source.version < 0)) {
+        issues.push(`节点 ${key} 的 librarySource.version 必须是非负整数`);
+      }
+      if (source.publishedAt !== undefined && typeof source.publishedAt !== 'string') {
+        issues.push(`节点 ${key} 的 librarySource.publishedAt 必须是字符串`);
+      }
+    }
+  }
+  if (node.libraryPublication !== undefined) {
+    if (!isRecord(node.libraryPublication)) {
+      issues.push(`节点 ${key} 的 libraryPublication 必须是对象`);
+    } else {
+      const publication = node.libraryPublication;
+      if (!Number.isInteger(publication.version) || publication.version < 1) {
+        issues.push(`节点 ${key} 的 libraryPublication.version 必须是正整数`);
+      }
+      if (typeof publication.publishedAt !== 'string' || !publication.publishedAt) {
+        issues.push(`节点 ${key} 的 libraryPublication.publishedAt 必须是非空字符串`);
+      }
+      if (!node.isComponent) issues.push(`节点 ${key} 只有主组件能发布到本机库`);
+      if (node.isVariantSet || node.variantSetId) issues.push(`节点 ${key} 的变体组件暂不支持发布`);
     }
   }
   if (node.instanceOverrides !== undefined) {
@@ -395,7 +433,20 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
   ) {
     issues.push(`节点 ${key} 的 maskType 非法`);
   }
-  if (node.type === 'path') {
+  if (node.type === 'boolean') {
+    if (
+      node.booleanOp !== 'union' &&
+      node.booleanOp !== 'subtract' &&
+      node.booleanOp !== 'intersect' &&
+      node.booleanOp !== 'exclude'
+    ) {
+      issues.push(`布尔组 ${key} 的 booleanOp 非法`);
+    }
+    if (node.children.length < 1) issues.push(`布尔组 ${key} 至少需要一个子图层`);
+  } else if (node.booleanOp !== undefined) {
+    issues.push(`节点 ${key} 只有布尔组能设置 booleanOp`);
+  }
+  if (node.type === 'path' || node.type === 'boolean') {
     if (typeof node.pathData !== 'string' || node.pathData.trim().length === 0) {
       issues.push(`路径节点 ${key} 缺少 pathData`);
     }
@@ -421,6 +472,8 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
     if (node.fillRule !== undefined && node.fillRule !== 'nonzero' && node.fillRule !== 'evenodd') {
       issues.push(`路径节点 ${key} 的 fillRule 非法`);
     }
+  }
+  if (node.type === 'path') {
     if (node.shapeKind !== undefined && node.shapeKind !== 'polygon' && node.shapeKind !== 'star' && node.shapeKind !== 'arrow') {
       issues.push(`路径节点 ${key} 的 shapeKind 非法`);
     }
@@ -450,7 +503,7 @@ function validateNode(node: SceneNode, key: string, assets: Record<string, Image
   }
   if (node.imageFill !== undefined) {
     const fill = node.imageFill;
-    if (node.type !== 'rect' && node.type !== 'ellipse' && node.type !== 'path') {
+    if (node.type !== 'rect' && node.type !== 'ellipse' && node.type !== 'path' && node.type !== 'boolean') {
       issues.push(`节点 ${key} 的 imageFill 只允许形状节点`);
     } else if (
       !isRecord(fill) ||

@@ -35,6 +35,21 @@ export function alignDeltas(doc: GromaDoc, ids: string[], mode: AlignMode): Move
   });
 }
 
+/** 单选时相对直接父容器（画板/分组/区块）对齐；父级是页面时返回空 */
+export function alignToParentDeltas(doc: GromaDoc, id: string, mode: AlignMode): MoveDelta[] {
+  const node = doc.nodes[id];
+  const parent = node?.parentId ? doc.nodes[node.parentId] : null;
+  if (!node || !parent || parent.type === 'page') return [];
+  const area = absoluteRect(doc, parent.id);
+  const r = absoluteRect(doc, id);
+  if (mode === 'left') return [{ id, dx: area.x - r.x, dy: 0 }];
+  if (mode === 'hcenter') return [{ id, dx: area.x + (area.w - r.w) / 2 - r.x, dy: 0 }];
+  if (mode === 'right') return [{ id, dx: area.x + area.w - (r.x + r.w), dy: 0 }];
+  if (mode === 'top') return [{ id, dx: 0, dy: area.y - r.y }];
+  if (mode === 'vcenter') return [{ id, dx: 0, dy: area.y + (area.h - r.h) / 2 - r.y }];
+  return [{ id, dx: 0, dy: area.y + area.h - (r.y + r.h) }];
+}
+
 /**
  * 等间距分布：首尾贴住选区外接框，中间按“边界到边界”等 gap 排开。
  * 至少 3 个节点才有意义，少于 3 个返回空。

@@ -16,6 +16,22 @@ export const DEFAULT_LAYER_BLUR: Effect = {
   visible: true,
 };
 
+export const DEFAULT_INNER_SHADOW: Effect = {
+  type: 'inner-shadow',
+  x: 0,
+  y: 4,
+  blur: 10,
+  color: '#221C00',
+  opacity: 0.28,
+  visible: true,
+};
+
+export const DEFAULT_BACKGROUND_BLUR: Effect = {
+  type: 'background-blur',
+  blur: 12,
+  visible: true,
+};
+
 /** 只有可见效果参与渲染；旧工程没有 effects 时返回空表。 */
 export function activeEffects(node: SceneNode): Effect[] {
   return (node.effects ?? []).filter((effect) => effect.visible);
@@ -27,7 +43,7 @@ export function effectsPadding(effects: Effect[]): number {
   for (const effect of effects) {
     if (effect.type === 'drop-shadow') {
       pad = Math.max(pad, Math.abs(effect.x) + Math.abs(effect.y) + effect.blur * 2 + 8);
-    } else {
+    } else if (effect.type === 'layer-blur') {
       pad = Math.max(pad, effect.blur * 3 + 8);
     }
   }
@@ -41,7 +57,9 @@ export function effectsFilter(effects: Effect[]): string {
     .join(' ');
 }
 
-export function shadowColor(effect: Extract<Effect, { type: 'drop-shadow' }>): string {
+export function shadowColor(
+  effect: Extract<Effect, { type: 'drop-shadow' | 'inner-shadow' }>,
+): string {
   const alpha = Math.max(0, Math.min(1, effect.opacity));
   const match = /^#([0-9a-f]{6})$/i.exec(effect.color.trim());
   if (!match) return effect.color;

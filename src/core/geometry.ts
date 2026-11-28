@@ -18,7 +18,7 @@ export function absolutePosition(doc: GromaDoc, nodeId: string): { x: number; y:
 export function absoluteRect(doc: GromaDoc, nodeId: string): Rect {
   const node = doc.nodes[nodeId];
   if (!node) return { x: 0, y: 0, w: 0, h: 0 };
-  if (node.type === 'group' && node.children.length > 0) {
+  if ((node.type === 'group' || node.type === 'boolean') && node.children.length > 0) {
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -41,6 +41,27 @@ export function parentAbsolute(doc: GromaDoc, nodeId: string): { x: number; y: n
   const node = doc.nodes[nodeId];
   if (!node?.parentId) return { x: 0, y: 0 };
   return absolutePosition(doc, node.parentId);
+}
+
+function pointInBooleanPath(node: SceneNode, localX: number, localY: number): boolean {
+  const contours = node.pathContours ?? [];
+  if (contours.length === 0) return true;
+  const sx = node.w / Math.max(0.01, node.pathW ?? node.w);
+  const sy = node.h / Math.max(0.01, node.pathH ?? node.h);
+  let inside = false;
+  for (const contour of contours) {
+    if (!contour.closed || contour.anchors.length < 3) continue;
+    const points = contour.anchors.map((anchor) => ({ x: anchor.x * sx, y: anchor.y * sy }));
+    for (let i = 0; i < points.length; i += 1) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      const crosses = (a.y > localY) !== (b.y > localY);
+      if (!crosses) continue;
+      const edgeX = ((b.x - a.x) * (localY - a.y)) / (b.y - a.y) + a.x;
+      if (localX < edgeX) inside = !inside;
+    }
+  }
+  return inside;
 }
 
 function walkHit(
@@ -70,6 +91,7 @@ function walkHit(
     return node;
   }
   if (px < ax || py < ay || px > ax + node.w || py > ay + node.h) return null;
+  if (node.type === 'boolean' && !pointInBooleanPath(node, px - ax, py - ay)) return null;
 
   for (let i = node.children.length - 1; i >= 0; i -= 1) {
     if (i === maskIndex) continue;
@@ -105,7 +127,7 @@ export function hitTest(doc: GromaDoc, page: Page, px: number, py: number): Scen
   while (cursor && cursor.parentId && guard < 64) {
     const parent: SceneNode | undefined = doc.nodes[cursor.parentId];
     if (!parent || parent.type === 'page') break;
-    if (parent.type === 'group') outermostGroup = parent;
+    if (parent.type === 'group' || parent.type === 'boolean') outermostGroup = parent;
     cursor = parent;
     guard += 1;
   }
@@ -244,7 +266,7 @@ export function marqueeSelection(doc: GromaDoc, page: Page, rect: Rect): string[
     const ax = ox + node.x;
     const ay = oy + node.y;
     const abs: Rect =
-      node.type === 'group'
+      node.type === 'group' || node.type === 'boolean'
         ? absoluteRect(doc, node.id)
         : { x: ax, y: ay, w: node.w, h: node.h };
     if (!intersects(abs, rect)) return;
@@ -260,7 +282,9 @@ export function marqueeSelection(doc: GromaDoc, page: Page, rect: Rect): string[
       walk(child, ax, ay);
       if (out.length > before) childHits += 1;
     }
-    if (childHits === 0) out.push(node.id);
+    if (childHits === 0 && (node.children.length === 0 || node.children.every((id) => doc.nodes[id]?.locked))) {
+      out.push(node.id);
+    }
   };
 
   for (const childId of root.children) {

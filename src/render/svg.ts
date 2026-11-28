@@ -261,7 +261,7 @@ function emitNode(
         (attrs) => `<ellipse cx="${n(x + r.w / 2)}" cy="${n(y + r.h / 2)}" rx="${n(r.w / 2)}" ry="${n(r.h / 2)}" ${attrs} />`,
       );
     }
-    if (node.type === 'path') {
+    if (node.type === 'path' || node.type === 'boolean') {
       if (!node.pathData) return '';
       const sourceW = Math.max(0.01, node.pathW ?? r.w);
       const sourceH = Math.max(0.01, node.pathH ?? r.h);

@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState, type ChangeEvent } from 'react';
-import { editor, getState, useEditor } from '../state/editor';
-import { vectorActionEligibility, type BooleanOp, type VectorAction } from '../core/boolean';
+import { Fragment, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+import { editor, getState, useEditor, type Tool } from '../state/editor';
+import { vectorActionEligibility, type VectorAction } from '../core/boolean';
 import { renameProject } from '../io/project';
 import { parseSvgDrawing } from '../io/importSvg';
 import { applySvgImport } from '../io/applySvgImport';
@@ -50,6 +50,50 @@ const EXTRA_ACTIONS: Array<{ action: VectorAction; label: string; hint: string }
 
 const VECTOR_ACTIONS = [...BOOLEAN_ACTIONS, ...EXTRA_ACTIONS];
 
+interface ToolItem {
+  tool: Tool;
+  label: string;
+  key: string;
+  icon: ReactNode;
+}
+
+interface ToolGroup {
+  id: 'move' | 'frame' | 'shape';
+  label: string;
+  tools: ToolItem[];
+}
+
+const MOVE_TOOLS: ToolItem[] = [
+  { tool: 'move', label: '移动工具', key: 'V', icon: <IconCursor size={15} /> },
+  { tool: 'hand', label: '抓手工具', key: 'H', icon: <IconHand size={15} /> },
+];
+
+const FRAME_TOOLS: ToolItem[] = [
+  { tool: 'frame', label: '画板工具', key: 'F', icon: <IconFrame size={15} /> },
+  { tool: 'section', label: '区块工具', key: 'S', icon: <IconSection size={15} /> },
+  { tool: 'slice', label: '切片工具', key: 'K', icon: <IconSlice size={15} /> },
+];
+
+const SHAPE_TOOLS: ToolItem[] = [
+  { tool: 'rect', label: '矩形工具', key: 'R', icon: <IconRect size={15} /> },
+  { tool: 'line', label: '直线工具', key: 'L', icon: <IconLine size={15} /> },
+  { tool: 'arrow', label: '箭头工具', key: 'A', icon: <IconArrow size={15} /> },
+  { tool: 'ellipse', label: '椭圆工具', key: 'O', icon: <IconEllipse size={15} /> },
+  { tool: 'polygon', label: '多边形工具', key: 'G', icon: <IconPolygon size={15} /> },
+  { tool: 'star', label: '星形工具', key: 'Y', icon: <IconStar size={15} /> },
+];
+
+const TOOL_GROUPS: ToolGroup[] = [
+  { id: 'move', label: '移动与抓手', tools: MOVE_TOOLS },
+  { id: 'frame', label: '画板与区块', tools: FRAME_TOOLS },
+  { id: 'shape', label: '形状', tools: SHAPE_TOOLS },
+];
+
+const BARE_TOOLS: ToolItem[] = [
+  { tool: 'text', label: '文字工具', key: 'T', icon: <IconText size={15} /> },
+  { tool: 'pen', label: '钢笔工具', key: 'P', icon: <IconPen size={15} /> },
+];
+
 export function TopBar() {
   const s = useEditor();
   const page = s.doc.pages.find((item) => item.id === s.pageId) ?? s.doc.pages[0];
@@ -61,6 +105,7 @@ export function TopBar() {
   const [toast, setToast] = useState<{ title: string; detail: string } | null>(null);
   const [importing, setImporting] = useState(false);
   const [boolMenuOpen, setBoolMenuOpen] = useState(false);
+  const [toolMenuOpen, setToolMenuOpen] = useState<ToolGroup['id'] | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -92,7 +137,7 @@ export function TopBar() {
         .then(({ asset }) => {
           const current = getState();
           const target = current.selectedId ? current.doc.nodes[current.selectedId] : null;
-          if (target && !target.locked && (target.type === 'rect' || target.type === 'ellipse' || target.type === 'path')) {
+          if (target && !target.locked && (target.type === 'rect' || target.type === 'ellipse' || target.type === 'path' || target.type === 'boolean')) {
             editor.applyPatch(target.id, {
               imageFill: { assetId: asset.id, mode: 'fill', focusX: 0.5, focusY: 0.5, opacity: 1 },
             });
@@ -113,30 +158,54 @@ export function TopBar() {
 
   const scalePct = Math.round(s.viewport.scale * 100);
   const booleanReady = vectorActionEligibility(s.doc, s.selectedIds, 'union');
-  const showBoolean = s.selectedIds.length >= 2;
+  const selectedBooleanNode =
+    s.selectedIds.length === 1 && s.doc.nodes[s.selectedIds[0]]?.type === 'boolean'
+      ? s.doc.nodes[s.selectedIds[0]]
+      : null;
   const showVector = s.selectedIds.length >= 1;
   const readiness = (action: VectorAction) =>
-    action === 'divide' || action === 'flatten' || action === 'outline'
-      ? vectorActionEligibility(s.doc, s.selectedIds, action)
-      : booleanReady;
+    selectedBooleanNode &&
+    (action === 'union' || action === 'subtract' || action === 'intersect' || action === 'exclude')
+      ? { ok: true as const, reason: '' }
+      : action === 'divide' || action === 'flatten' || action === 'outline'
+        ? vectorActionEligibility(s.doc, s.selectedIds, action)
+        : booleanReady;
 
   useEffect(() => {
     if (!showVector) setBoolMenuOpen(false);
   }, [showVector]);
 
   useEffect(() => {
-    if (!boolMenuOpen) return;
+    if (!boolMenuOpen && toolMenuOpen === null) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setBoolMenuOpen(false);
+      if (event.key === 'Escape') {
+        setBoolMenuOpen(false);
+        setToolMenuOpen(null);
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [boolMenuOpen]);
+  }, [boolMenuOpen, toolMenuOpen]);
 
   function runVector(action: VectorAction) {
     const ready = readiness(action);
     if (!ready.ok) {
       setToast({ title: '无法执行矢量操作', detail: ready.reason });
+      return;
+    }
+    const booleanLabels: Record<'union' | 'subtract' | 'intersect' | 'exclude', string> = {
+      union: '并集',
+      subtract: '差集',
+      intersect: '交集',
+      exclude: '排除',
+    };
+    if (
+      selectedBooleanNode &&
+      (action === 'union' || action === 'subtract' || action === 'intersect' || action === 'exclude')
+    ) {
+      if (editor.setBooleanOp(action)) {
+        setToast({ title: `已切换为${booleanLabels[action]}`, detail: '子图层保留，可继续展开编辑' });
+      }
       return;
     }
     if (editor.vectorSelected(action)) {
@@ -150,10 +219,10 @@ export function TopBar() {
         outline: '描边转形状完成',
       };
       const details: Record<VectorAction, string> = {
-        union: '布尔结果已扁平化为折线',
-        subtract: '布尔结果已扁平化为折线',
-        intersect: '布尔结果已扁平化为折线',
-        exclude: '布尔结果已扁平化为折线',
+        union: '已生成可展开布尔组',
+        subtract: '已生成可展开布尔组',
+        intersect: '已生成可展开布尔组',
+        exclude: '已生成可展开布尔组',
         divide: '已拆成独立区域路径',
         flatten: '已合并为单个多轮廓路径',
         outline: '描边已转为填色路径',
@@ -164,8 +233,36 @@ export function TopBar() {
     }
   }
 
-  function runBoolean(op: BooleanOp) {
-    runVector(op);
+  function renderToolMenu(group: ToolGroup) {
+    if (toolMenuOpen !== group.id) return null;
+    return (
+      <>
+        <button
+          className="bool-menu-shade"
+          aria-label={`关闭${group.label}菜单`}
+          tabIndex={-1}
+          onClick={() => setToolMenuOpen(null)}
+        />
+        <div className={`bool-menu tool-menu tool-menu-${group.id}`} role="menu" aria-label={group.label}>
+          {group.tools.map((item) => (
+            <button
+              key={item.tool}
+              className={`bool-menu-item tool-menu-item${s.tool === item.tool ? ' is-on' : ''}`}
+              role="menuitem"
+              data-tool={item.tool}
+              onClick={() => {
+                editor.setTool(item.tool);
+                setToolMenuOpen(null);
+              }}
+            >
+              <span className="tool-menu-glyph">{item.icon}</span>
+              <span>{item.label.replace('工具', '')}</span>
+              <kbd>{item.key}</kbd>
+            </button>
+          ))}
+        </div>
+      </>
+    );
   }
 
   function renderVectorMenu(actions: typeof VECTOR_ACTIONS, label: string) {
@@ -282,111 +379,48 @@ export function TopBar() {
         </div>
 
         <div className="topbar-tools" role="toolbar" aria-label="工具">
-          <button
-            className={`tool-btn${s.tool === 'move' ? ' is-active' : ''}`}
-            title="移动工具 V"
-            aria-label="移动工具"
-            onClick={() => editor.setTool('move')}
-          >
-            <IconCursor size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'frame' ? ' is-active' : ''}`}
-            title="画板工具 F"
-            aria-label="画板工具"
-            onClick={() => editor.setTool('frame')}
-          >
-            <IconFrame size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'section' ? ' is-active' : ''}`}
-            title="区块工具 S"
-            aria-label="区块工具"
-            onClick={() => editor.setTool('section')}
-          >
-            <IconSection size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'rect' ? ' is-active' : ''}`}
-            title="矩形工具 R"
-            aria-label="矩形工具"
-            onClick={() => editor.setTool('rect')}
-          >
-            <IconRect size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'ellipse' ? ' is-active' : ''}`}
-            title="椭圆工具 O"
-            aria-label="椭圆工具"
-            onClick={() => editor.setTool('ellipse')}
-          >
-            <IconEllipse size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'line' ? ' is-active' : ''}`}
-            title="直线工具 L"
-            aria-label="直线工具"
-            onClick={() => editor.setTool('line')}
-          >
-            <IconLine size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'arrow' ? ' is-active' : ''}`}
-            title="箭头工具 A"
-            aria-label="箭头工具"
-            onClick={() => editor.setTool('arrow')}
-          >
-            <IconArrow size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'polygon' ? ' is-active' : ''}`}
-            title="多边形工具 G"
-            aria-label="多边形工具"
-            onClick={() => editor.setTool('polygon')}
-          >
-            <IconPolygon size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'star' ? ' is-active' : ''}`}
-            title="星形工具 Y"
-            aria-label="星形工具"
-            onClick={() => editor.setTool('star')}
-          >
-            <IconStar size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'pen' ? ' is-active' : ''}`}
-            title="钢笔工具 P"
-            aria-label="钢笔工具"
-            onClick={() => editor.setTool('pen')}
-          >
-            <IconPen size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'slice' ? ' is-active' : ''}`}
-            title="切片工具 K"
-            aria-label="切片工具"
-            onClick={() => editor.setTool('slice')}
-          >
-            <IconSlice size={15} />
-          </button>
-          <button
-            className={`tool-btn${s.tool === 'text' ? ' is-active' : ''}`}
-            title="文字工具 T"
-            aria-label="文字工具"
-            onClick={() => editor.setTool('text')}
-          >
-            <IconText size={15} />
-          </button>
-          <span className="tool-sep" />
-          <button
-            className={`tool-btn${s.tool === 'hand' ? ' is-active' : ''}`}
-            title="抓手工具 H"
-            aria-label="抓手工具"
-            onClick={() => editor.setTool('hand')}
-          >
-            <IconHand size={15} />
-          </button>
+          {TOOL_GROUPS.map((group) => {
+            const current = group.tools.find((item) => item.tool === s.tool) ?? group.tools[0];
+            const groupActive = group.tools.some((item) => item.tool === s.tool);
+            const open = toolMenuOpen === group.id;
+            return (
+              <span key={group.id} className={`tool-split${groupActive ? ' is-active' : ''}`}>
+                <button
+                  className="tool-btn tool-split-main"
+                  title={`${current.label} ${current.key}`}
+                  aria-label={current.label}
+                  onClick={() => editor.setTool(current.tool)}
+                >
+                  {current.icon}
+                </button>
+                <button
+                  className="tool-split-caret"
+                  title={`${group.label}下拉菜单`}
+                  aria-label={`${group.label}菜单`}
+                  aria-haspopup="menu"
+                  aria-expanded={open}
+                  onClick={() => {
+                    setBoolMenuOpen(false);
+                    setToolMenuOpen(open ? null : group.id);
+                  }}
+                >
+                  <span className="tool-caret" aria-hidden="true" />
+                </button>
+                {renderToolMenu(group)}
+              </span>
+            );
+          })}
+          {BARE_TOOLS.map((item) => (
+            <button
+              key={item.tool}
+              className={`tool-btn${s.tool === item.tool ? ' is-active' : ''}`}
+              title={`${item.label} ${item.key}`}
+              aria-label={item.label}
+              onClick={() => editor.setTool(item.tool)}
+            >
+              {item.icon}
+            </button>
+          ))}
           <span className="tool-sep" />
           <button
             className="tool-btn"
@@ -409,49 +443,22 @@ export function TopBar() {
           {showVector && (
             <>
               <span className="tool-sep" />
-              <span className="bool-wide">
-                {showBoolean && BOOLEAN_ACTIONS.map((item) => (
-                  <button
-                    key={item.action}
-                    className="tool-btn bool-btn"
-                    title={booleanReady.ok ? `${item.label}：${item.hint}` : `${item.label}：${booleanReady.reason}`}
-                    aria-label={item.label}
-                    disabled={!booleanReady.ok}
-                    onClick={() => runBoolean(item.action as BooleanOp)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-                <span className="bool-menu-wrap">
-                  <button
-                    className="tool-btn bool-btn bool-more"
-                    title="分割 / 拍平 / 描边转形状"
-                    aria-label="更多矢量操作"
-                    aria-expanded={boolMenuOpen}
-                    onClick={() => setBoolMenuOpen((open) => !open)}
-                  >
-                    更多 ▾
-                  </button>
-                  {renderVectorMenu(EXTRA_ACTIONS, '更多矢量操作')}
-                </span>
-              </span>
-              <span className="bool-menu-wrap bool-compact-wrap">
+              <span className="bool-menu-wrap">
                 <button
-                  className="tool-btn bool-btn bool-compact"
-                  title="并集 / 差集 / 交集 / 排除 / 分割 / 拍平 / 描边"
-                  aria-label="矢量运算"
+                  className="tool-btn bool-btn"
+                  title="布尔与矢量运算"
+                  aria-label="布尔与矢量运算"
                   aria-expanded={boolMenuOpen}
-                  onClick={() => setBoolMenuOpen((open) => !open)}
+                  onClick={() => {
+                    setToolMenuOpen(null);
+                    setBoolMenuOpen((open) => !open);
+                  }}
                 >
-                  矢量 ▾
+                  <span>{booleanReady.ok || selectedBooleanNode ? '布尔' : '矢量'}</span>
+                  <span className="tool-caret" aria-hidden="true" />
                 </button>
-                {renderVectorMenu(VECTOR_ACTIONS, '矢量运算')}
+                {renderVectorMenu(VECTOR_ACTIONS, '布尔与矢量运算')}
               </span>
-              {showBoolean && !booleanReady.ok && (
-                <span className="bool-reason" title={booleanReady.reason}>
-                  需≥2 同父对象
-                </span>
-              )}
             </>
           )}
         </div>

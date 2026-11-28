@@ -3,6 +3,7 @@ import { absolutePosition, topLevelSelection } from './geometry';
 import { applyConstraintsOnResize } from './constraints';
 import { needsAutoLayoutReflow, reflowPageFrom } from './autoLayout';
 import { applyInstanceOverrides, remapOverridesForSwap } from './instance';
+import { booleanGroupBuild, refreshBooleanChain, refreshBooleanNode, type BooleanOp } from './boolean';
 
 /** 只允许改表现属性，结构字段（id/parentId/children/type）不能从这里穿透 */
 export type NodePatch = Partial<Omit<SceneNode, 'id' | 'parentId' | 'children' | 'type'>>;
@@ -21,8 +22,10 @@ export type SceneCommand =
       nameSuffix?: string;
     }
   | { type: 'group'; ids: string[]; makeId: (type: NodeType) => string; name?: string }
+  | { type: 'boolean'; ids: string[]; op: BooleanOp; makeId: (type: NodeType) => string; name?: string }
   | { type: 'ungroup'; id: string }
   | { type: 'reorder'; id: string; toIndex: number }
+  | { type: 'reparent'; id: string; parentId: string; toIndex: number }
   | { type: 'create-instance'; id: string; makeId: (type: NodeType) => string; dx?: number; dy?: number }
   | { type: 'sync-instance'; id: string; makeId: (type: NodeType) => string }
   | { type: 'swap-instance'; id: string; targetId: string; makeId: (type: NodeType) => string }
@@ -100,12 +103,14 @@ function insertNode(doc: GromaDoc, parentId: string, node: SceneNode, index?: nu
   const at = insertionIndex(parent, index);
   const children = [...parent.children];
   children.splice(at, 0, node.id);
+  let nextDoc: GromaDoc = {
+    ...doc,
+    nodes: { ...doc.nodes, [parentId]: { ...parent, children }, [node.id]: node },
+  };
+  if (needsAutoLayoutReflow(nextDoc, node.id)) nextDoc = reflowPageFrom(nextDoc, node.id);
   return {
-    doc: {
-      ...doc,
-      nodes: { ...doc.nodes, [parentId]: { ...parent, children }, [node.id]: node },
-    },
-    node,
+    doc: nextDoc,
+    node: nextDoc.nodes[node.id] ?? node,
     parentId,
     index: at,
   };
@@ -121,8 +126,10 @@ function removeNode(doc: GromaDoc, id: string): CommandResult {
   const nodes = { ...doc.nodes };
   for (const key of Object.keys(subtree)) delete nodes[key];
   nodes[parent.id] = { ...parent, children: parent.children.filter((childId) => childId !== id) };
+  let nextDoc: GromaDoc = { ...doc, nodes };
+  if (needsAutoLayoutReflow(nextDoc, parent.id)) nextDoc = reflowPageFrom(nextDoc, parent.id);
   return {
-    doc: { ...doc, nodes },
+    doc: nextDoc,
     parentId: parent.id,
     index,
     subtree,
@@ -138,22 +145,73 @@ function sanitizePatch(patch: NodePatch): NodePatch {
   return safe;
 }
 
+function scaleContainerChildren(
+  nodes: Record<string, SceneNode>,
+  id: string,
+  sx: number,
+  sy: number,
+): void {
+  const node = nodes[id];
+  if (!node) return;
+  for (const childId of node.children) {
+    const child = nodes[childId];
+    if (!child) continue;
+    nodes[childId] = {
+      ...child,
+      x: Math.round(child.x * sx * 100) / 100,
+      y: Math.round(child.y * sy * 100) / 100,
+      w: Math.round(child.w * sx * 100) / 100,
+      h: Math.round(child.h * sy * 100) / 100,
+    };
+    if (child.type === 'boolean' || child.type === 'group') {
+      scaleContainerChildren(nodes, childId, sx, sy);
+    }
+  }
+}
+
+function scaleBooleanGroup(
+  doc: GromaDoc,
+  id: string,
+  before: SceneNode,
+  after: SceneNode,
+): GromaDoc {
+  const sx = after.w / Math.max(0.01, before.w);
+  const sy = after.h / Math.max(0.01, before.h);
+  const nodes: Record<string, SceneNode> = { ...doc.nodes, [id]: after };
+  scaleContainerChildren(nodes, id, sx, sy);
+  return { ...doc, nodes };
+}
+
 function patchNode(doc: GromaDoc, id: string, patch: NodePatch): CommandResult {
   const before = requireNode(doc, id);
   const afterBase: SceneNode = { ...before, ...sanitizePatch(patch) };
+  const resized = before.w !== afterBase.w || before.h !== afterBase.h;
   let nextDoc: GromaDoc =
-    (afterBase.type === 'frame' || afterBase.type === 'section') && (before.w !== afterBase.w || before.h !== afterBase.h)
-      ? applyConstraintsOnResize(doc, id, before, afterBase)
-      : { ...doc, nodes: { ...doc.nodes, [id]: afterBase } };
+    afterBase.type === 'boolean' && resized
+      ? scaleBooleanGroup(doc, id, before, afterBase)
+      : (afterBase.type === 'frame' || afterBase.type === 'section') && resized
+        ? applyConstraintsOnResize(doc, id, before, afterBase)
+        : { ...doc, nodes: { ...doc.nodes, [id]: afterBase } };
 
   // 自动布局：容器自身或父容器开启时，任何尺寸/内容补丁后都重排同一页。
   const afterBeforeReflow = nextDoc.nodes[id] ?? afterBase;
   const layoutChanged = needsAutoLayoutReflow(nextDoc, id);
   if (layoutChanged) nextDoc = reflowPageFrom(nextDoc, id);
+  const refreshed = refreshBooleanChain(nextDoc, id);
+  nextDoc = refreshed.doc;
   const after = nextDoc.nodes[id] ?? afterBeforeReflow;
 
   const beforeNodes: Record<string, SceneNode> = { [id]: before };
   const afterNodes: Record<string, SceneNode> = { [id]: after };
+  for (const changedId of refreshed.changedIds) {
+    const prev = doc.nodes[changedId];
+    const next = nextDoc.nodes[changedId];
+    if (!prev || !next) continue;
+    if (JSON.stringify(prev) !== JSON.stringify(next)) {
+      beforeNodes[changedId] = prev;
+      afterNodes[changedId] = next;
+    }
+  }
   if (layoutChanged) {
     for (const key of Object.keys(doc.nodes)) {
       const prev = doc.nodes[key];
@@ -188,7 +246,9 @@ function restoreNode(
   const children = [...parent.children];
   children.splice(insertionIndex(parent, index), 0, root.id);
   nodes[parentId] = { ...parent, children };
-  return { doc: { ...doc, nodes }, node: root, parentId, index, subtree };
+  let nextDoc: GromaDoc = { ...doc, nodes };
+  if (needsAutoLayoutReflow(nextDoc, root.id)) nextDoc = reflowPageFrom(nextDoc, root.id);
+  return { doc: nextDoc, node: nextDoc.nodes[root.id] ?? root, parentId, index, subtree };
 }
 
 function cloneNode(
@@ -223,12 +283,14 @@ function cloneNode(
   const root = clones[idMap.get(id) as string];
   const at = parent.children.length;
   const children = [...parent.children, root.id];
+  let nextDoc: GromaDoc = {
+    ...doc,
+    nodes: { ...doc.nodes, ...clones, [parent.id]: { ...parent, children } },
+  };
+  if (needsAutoLayoutReflow(nextDoc, root.id)) nextDoc = reflowPageFrom(nextDoc, root.id);
   return {
-    doc: {
-      ...doc,
-      nodes: { ...doc.nodes, ...clones, [parent.id]: { ...parent, children } },
-    },
-    node: root,
+    doc: nextDoc,
+    node: nextDoc.nodes[root.id] ?? root,
     parentId: parent.id,
     index: at,
     subtree: clones,
@@ -279,7 +341,23 @@ export function importComponentFromDoc(
       id: cloneId,
       parentId: isRoot ? parentId : (idMap.get(node.parentId ?? '') ?? parentId),
       children: node.children.map((childId) => idMap.get(childId)).filter((v): v is string => Boolean(v)),
-      ...(isRoot ? { x, y, isComponent: true, librarySource: sourceRef } : { isComponent: undefined, librarySource: undefined }),
+      ...(isRoot
+        ? {
+            x,
+            y,
+            isComponent: true,
+            librarySource: sourceRef
+              ? {
+                  ...sourceRef,
+                  nodeId: sourceId,
+                  nodeName: sourceRoot.name,
+                  version: sourceRoot.libraryPublication?.version ?? 0,
+                  publishedAt: sourceRoot.libraryPublication?.publishedAt,
+                }
+              : undefined,
+            libraryPublication: undefined,
+          }
+        : { isComponent: undefined, librarySource: undefined, libraryPublication: undefined }),
       variantSetId: undefined,
       variantProps: undefined,
       componentOf: undefined,
@@ -361,9 +439,12 @@ export function refreshComponentFromDoc(
               ...target.librarySource,
               nodeId: sourceId,
               nodeName: sourceRoot.name,
+              version: sourceRoot.libraryPublication?.version ?? 0,
+              publishedAt: sourceRoot.libraryPublication?.publishedAt,
             },
+            libraryPublication: undefined,
           }
-        : { isComponent: undefined, librarySource: undefined }),
+        : { isComponent: undefined, librarySource: undefined, libraryPublication: undefined }),
       variantSetId: undefined,
       variantProps: undefined,
       componentOf: undefined,
@@ -383,6 +464,26 @@ export function refreshComponentFromDoc(
     parentId: target.parentId,
     index: parent.children.indexOf(targetId),
     subtree: clones,
+  };
+}
+
+/**
+ * 把当前独立主组件发布到本机库，版本号递增。
+ * 只写发布记录，不改组件内容；订阅方靠版本号判断有没有新版本。
+ */
+export function publishComponent(doc: GromaDoc, id: string, publishedAt = new Date().toISOString()): CommandResult {
+  const node = doc.nodes[id];
+  if (!node || node.type !== 'frame' || !node.isComponent) throw new Error('只有主组件能发布到本机库');
+  if (node.variantSetId || node.isVariantSet) throw new Error('变体组件暂不支持发布到本机库');
+  if (node.librarySource) throw new Error('从本机库导入的组件不能再次发布');
+  if (!publishedAt) throw new Error('发布时间不能为空');
+  const version = (node.libraryPublication?.version ?? 0) + 1;
+  const after: SceneNode = { ...node, libraryPublication: { version, publishedAt } };
+  return {
+    doc: { ...doc, nodes: { ...doc.nodes, [id]: after } },
+    node: after,
+    before: node,
+    after,
   };
 }
 
@@ -478,9 +579,56 @@ function groupNodes(
   };
 }
 
+function booleanGroupNodes(
+  doc: GromaDoc,
+  ids: string[],
+  op: BooleanOp,
+  makeId: (type: NodeType) => string,
+  name?: string,
+): CommandResult {
+  const unique = [...new Set(ids)];
+  if (unique.length < 2) throw new Error('布尔组至少需要两个对象');
+  const nodes = unique.map((id) => requireNode(doc, id));
+  if (nodes.some((node) => node.type === 'page' || node.parentId === null)) throw new Error('页面根节点不能参与布尔');
+  if (nodes.some((node) => node.locked)) throw new Error('锁定节点不能参与布尔');
+  const parentId = nodes[0].parentId as string;
+  if (nodes.some((node) => node.parentId !== parentId)) throw new Error('布尔对象必须在同一父级');
+  const parent = requireNode(doc, parentId);
+  const orderedSourceIds = parent.children.filter((id) => unique.includes(id));
+  if (orderedSourceIds.length < 2) throw new Error('布尔对象必须都在父级 children 中');
+
+  const boolId = makeId('boolean');
+  if (doc.nodes[boolId]) throw new Error(`节点 id 已存在：${boolId}`);
+  const build = booleanGroupBuild(doc, orderedSourceIds, op, boolId, name);
+  if ('error' in build) throw new Error(build.error);
+
+  const beforeNodes: Record<string, SceneNode> = { [parent.id]: parent };
+  for (const sourceId of orderedSourceIds) beforeNodes[sourceId] = requireNode(doc, sourceId);
+
+  const firstIndex = parent.children.indexOf(orderedSourceIds[0]);
+  const children = parent.children.filter((id) => !orderedSourceIds.includes(id));
+  const insertAt = parent.children.filter((id, index) => !orderedSourceIds.includes(id) && index < firstIndex).length;
+  children.splice(insertAt, 0, boolId);
+
+  const afterNodes: Record<string, SceneNode> = {
+    [parent.id]: { ...parent, children },
+    [boolId]: build.node,
+    ...build.sourcePatches,
+  };
+  return {
+    doc: { ...doc, nodes: { ...doc.nodes, ...afterNodes } },
+    node: build.node,
+    parentId,
+    index: insertAt,
+    beforeNodes,
+    afterNodes,
+    undoRemove: [boolId],
+  };
+}
+
 function ungroupNode(doc: GromaDoc, id: string): CommandResult {
   const group = requireNode(doc, id);
-  if (group.type !== 'group') throw new Error('只能解散分组节点');
+  if (group.type !== 'group' && group.type !== 'boolean') throw new Error('只能解散分组或布尔组节点');
   if (!group.parentId) throw new Error('分组没有父节点');
   const parent = requireNode(doc, group.parentId);
   const groupIndex = parent.children.indexOf(group.id);
@@ -522,7 +670,6 @@ function reorderNode(doc: GromaDoc, id: string, toIndex: number): CommandResult 
   const node = requireNode(doc, id);
   if (!node.parentId) throw new Error('页面根节点不能重排');
   const parent = requireNode(doc, node.parentId);
-  if (parent.type === 'page') throw new Error('页面根节点不能重排');
   const current = parent.children.indexOf(id);
   if (current < 0) throw new Error('节点不在父节点 children 中');
   const target = Math.max(0, Math.min(Math.round(toIndex), parent.children.length - 1));
@@ -549,6 +696,62 @@ function reorderNode(doc: GromaDoc, id: string, toIndex: number): CommandResult 
     }
   }
   return { doc: nextDoc, parentId: parent.id, index: target, beforeNodes, afterNodes, childIds: children };
+}
+
+function reparentNode(doc: GromaDoc, id: string, parentId: string, toIndex: number): CommandResult {
+  const node = requireNode(doc, id);
+  if (!node.parentId) throw new Error('页面根节点不能移动');
+  if (id === parentId) throw new Error('不能移动到自己里面');
+  const targetParent = requireNode(doc, parentId);
+  if (node.parentId === parentId) return reorderNode(doc, id, toIndex);
+
+  let walker: SceneNode | undefined = targetParent;
+  while (walker) {
+    if (walker.id === id) throw new Error('不能把父级移进自己的子树');
+    walker = walker.parentId ? doc.nodes[walker.parentId] : undefined;
+  }
+
+  const oldParent = requireNode(doc, node.parentId);
+  if (node.locked) throw new Error('锁定的图层不能移动');
+
+  const abs = absolutePosition(doc, id);
+  const targetAbs = targetParent.type === 'page' ? { x: 0, y: 0 } : absolutePosition(doc, targetParent.id);
+  const targetIndex = Math.max(0, Math.min(Math.round(toIndex), targetParent.children.length));
+
+  const oldChildren = oldParent.children.filter((childId) => childId !== id);
+  const newChildren = [...targetParent.children];
+  newChildren.splice(targetIndex, 0, id);
+  const moved: SceneNode = {
+    ...node,
+    parentId,
+    x: Math.round(abs.x - targetAbs.x),
+    y: Math.round(abs.y - targetAbs.y),
+  };
+
+  let nextDoc: GromaDoc = {
+    ...doc,
+    nodes: {
+      ...doc.nodes,
+      [oldParent.id]: { ...oldParent, children: oldChildren },
+      [targetParent.id]: { ...targetParent, children: newChildren },
+      [id]: moved,
+    },
+  };
+  if (oldParent.layout) nextDoc = reflowPageFrom(nextDoc, oldParent.id);
+  if (targetParent.layout) nextDoc = reflowPageFrom(nextDoc, targetParent.id);
+
+  const beforeNodes: Record<string, SceneNode> = {};
+  const afterNodes: Record<string, SceneNode> = {};
+  for (const key of Object.keys(doc.nodes)) {
+    const prev = doc.nodes[key];
+    const next = nextDoc.nodes[key];
+    if (!next || prev === next) continue;
+    if (JSON.stringify(prev) !== JSON.stringify(next)) {
+      beforeNodes[key] = prev;
+      afterNodes[key] = next;
+    }
+  }
+  return { doc: nextDoc, parentId, index: targetIndex, beforeNodes, afterNodes, childIds: newChildren };
 }
 
 function createComponentInstance(
@@ -691,6 +894,45 @@ function syncComponentInstance(
     undoRemove: Object.keys(clones),
     redoRemove: Object.keys(oldSubtree).filter((oldId) => oldId !== root.id),
   };
+}
+
+/**
+ * 找到被编辑节点所属的最近主组件；编辑实例内部时返回 null，避免把实例改动反灌主组件。
+ */
+export function masterOfEditedNode(doc: GromaDoc, id: string): string | null {
+  let current: SceneNode | undefined = doc.nodes[id];
+  while (current) {
+    if (current.componentOf) return null;
+    if (current.isComponent) return current.id;
+    current = current.parentId ? doc.nodes[current.parentId] : undefined;
+  }
+  return null;
+}
+
+/**
+ * 主组件发生改动后，把所有实例重新按主组件生成一遍，保留实例自身的覆盖。
+ * 单个实例失败不拖垮其它实例。
+ */
+export function syncInstancesOfMaster(
+  doc: GromaDoc,
+  masterId: string,
+  makeId: (type: NodeType) => string,
+): GromaDoc {
+  const master = doc.nodes[masterId];
+  if (!master?.isComponent) return doc;
+  const instanceIds = Object.values(doc.nodes)
+    .filter((node) => node.type === 'frame' && node.componentOf === masterId)
+    .map((node) => node.id);
+  let next = doc;
+  for (const instanceId of instanceIds) {
+    if (!next.nodes[instanceId]) continue;
+    try {
+      next = applyCommand(next, { type: 'sync-instance', id: instanceId, makeId }).doc;
+    } catch {
+      // 单个失效实例不影响其余实例
+    }
+  }
+  return next;
 }
 
 function createVariantSet(
@@ -984,6 +1226,39 @@ function swapComponentInstance(
   return result;
 }
 export function applyCommand(doc: GromaDoc, command: SceneCommand): CommandResult {
+  const result = dispatchCommand(doc, command);
+  if (!Object.values(result.doc.nodes).some((node) => node.type === 'boolean')) return result;
+  return { ...result, doc: normalizeBooleanGroups(result.doc) };
+}
+
+function booleanDepth(doc: GromaDoc, id: string): number {
+  let depth = 0;
+  let cursor = doc.nodes[id]?.parentId ?? null;
+  let guard = 0;
+  while (cursor && guard < 64) {
+    depth += 1;
+    cursor = doc.nodes[cursor]?.parentId ?? null;
+    guard += 1;
+  }
+  return depth;
+}
+
+/** 结构类命令后统一重算布尔缓存，删除/恢复/重排子层也能保持画面正确。 */
+function normalizeBooleanGroups(doc: GromaDoc): GromaDoc {
+  let next = doc;
+  const ids = Object.values(next.nodes)
+    .filter((node) => node.type === 'boolean')
+    .map((node) => node.id)
+    .sort((a, b) => booleanDepth(next, b) - booleanDepth(next, a));
+  for (const id of ids) {
+    const refreshed = refreshBooleanNode(next, id);
+    if (!refreshed) continue;
+    next = { ...next, nodes: { ...next.nodes, [id]: refreshed.node, ...refreshed.childPatches } };
+  }
+  return next;
+}
+
+function dispatchCommand(doc: GromaDoc, command: SceneCommand): CommandResult {
   switch (command.type) {
     case 'insert':
       return insertNode(doc, command.parentId, command.node, command.index);
@@ -997,10 +1272,14 @@ export function applyCommand(doc: GromaDoc, command: SceneCommand): CommandResul
       return cloneNode(doc, command.id, command.makeId, command.dx, command.dy, command.nameSuffix);
     case 'group':
       return groupNodes(doc, command.ids, command.makeId, command.name);
+    case 'boolean':
+      return booleanGroupNodes(doc, command.ids, command.op, command.makeId, command.name);
     case 'ungroup':
       return ungroupNode(doc, command.id);
     case 'reorder':
       return reorderNode(doc, command.id, command.toIndex);
+    case 'reparent':
+      return reparentNode(doc, command.id, command.parentId, command.toIndex);
     case 'create-instance':
       return createComponentInstance(doc, command.id, command.makeId, command.dx, command.dy);
     case 'sync-instance':

@@ -23,6 +23,18 @@ export async function listProjects(): Promise<ProjectEntry[]> {
   return invoke<ProjectEntry[]>('groma_list_projects');
 }
 
+/** 只从欢迎页的最近列表移除，工程目录与文件保持原样。 */
+export async function hideRecentProject(id: string): Promise<void> {
+  if (!isDesktop()) return;
+  await invoke('groma_hide_recent_project', { id });
+}
+
+/** 撤销「从最近移除」，把工程放回最近列表。 */
+export async function restoreRecentProject(id: string): Promise<void> {
+  if (!isDesktop()) return;
+  await invoke('groma_restore_recent_project', { id });
+}
+
 export async function createProject(name: string): Promise<string> {
   if (!isDesktop()) throw new Error('当前不在桌面端，无法落盘');
   return invoke<string>('groma_create_project', { name });

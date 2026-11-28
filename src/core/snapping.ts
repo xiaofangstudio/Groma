@@ -4,6 +4,12 @@ import type { GromaDoc, Guide, Page, Rect } from './types';
 /** x 表示一条竖线（对齐某个横坐标），y 表示一条横线。 */
 export type SnapAxis = 'x' | 'y';
 
+export interface SnapMark {
+  x: number;
+  y: number;
+  kind: 'edge' | 'center';
+}
+
 export interface SnapGuide {
   axis: SnapAxis;
   position: number;
@@ -11,6 +17,8 @@ export interface SnapGuide {
   end: number;
   /** 吸附到页级手动参考线时标记，UI 可加高亮。 */
   manual?: boolean;
+  /** 目标图层的极值/中心交点，UI 画成小圆标记。 */
+  marks?: SnapMark[];
 }
 
 export interface SnapResult {
@@ -121,6 +129,20 @@ function nearestEdgeHit(
 }
 
 function guideFor(axis: SnapAxis, candidate: Candidate, moved: Rect): SnapGuide {
+  const target = candidate.target;
+  const marks: SnapMark[] | undefined = target
+    ? axis === 'x'
+      ? [
+          { x: candidate.value, y: target.y, kind: 'edge' },
+          { x: candidate.value, y: target.y + target.h / 2, kind: 'center' },
+          { x: candidate.value, y: target.y + target.h, kind: 'edge' },
+        ]
+      : [
+          { x: target.x, y: candidate.value, kind: 'edge' },
+          { x: target.x + target.w / 2, y: candidate.value, kind: 'center' },
+          { x: target.x + target.w, y: candidate.value, kind: 'edge' },
+        ]
+    : undefined;
   if (axis === 'x') {
     const start = candidate.target ? Math.min(moved.y, candidate.target.y) : moved.y;
     const end = candidate.target
@@ -132,6 +154,7 @@ function guideFor(axis: SnapAxis, candidate: Candidate, moved: Rect): SnapGuide 
       start,
       end,
       ...(candidate.manual ? { manual: true } : {}),
+      ...(marks ? { marks } : {}),
     };
   }
   const start = candidate.target ? Math.min(moved.x, candidate.target.x) : moved.x;
@@ -144,6 +167,7 @@ function guideFor(axis: SnapAxis, candidate: Candidate, moved: Rect): SnapGuide 
     start,
     end,
     ...(candidate.manual ? { manual: true } : {}),
+    ...(marks ? { marks } : {}),
   };
 }
 

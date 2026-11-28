@@ -44,14 +44,15 @@ function styleValue(style: Style): string {
   }
   if (style.kind === 'effect') {
     const effects = style.effects.filter((effect) => effect.visible);
-    if (effects.length === 0) return 'none';
-    return effects
-      .map((effect) =>
-        effect.type === 'layer-blur'
-          ? `blur(${Math.round(effect.blur * 100) / 100}px)`
-          : `${Math.round(effect.x * 100) / 100}px ${Math.round(effect.y * 100) / 100}px ${Math.round(effect.blur * 100) / 100}px ${alpha(effect.color, effect.opacity)}`,
-      )
-      .join(', ');
+    const parts: string[] = [];
+    for (const effect of effects) {
+      if (effect.type === 'layer-blur' || effect.type === 'background-blur') {
+        parts.push(`blur(${Math.round(effect.blur * 100) / 100}px)`);
+      } else {
+        parts.push(`${Math.round(effect.x * 100) / 100}px ${Math.round(effect.y * 100) / 100}px ${Math.round(effect.blur * 100) / 100}px ${alpha(effect.color, effect.opacity)}`);
+      }
+    }
+    return parts.length > 0 ? parts.join(', ') : 'none';
   }
   const text = style.textStyle;
   return `${text.fontWeight} ${text.fontSize}px/${text.lineHeight} ${text.fontFamily}`;

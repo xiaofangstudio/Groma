@@ -74,14 +74,23 @@ export function nodeCss(doc: GromaDoc, nodeId: string): string {
   }
   const stroke = node.strokes?.[0];
   if (stroke && stroke.width > 0) lines.push(`border: ${strokeValue(stroke)};`);
-  const shadows = activeEffects(node).filter((effect) => effect.type === 'drop-shadow');
+  const shadows = activeEffects(node).filter(
+    (effect) => effect.type === 'drop-shadow' || effect.type === 'inner-shadow',
+  );
   if (shadows.length > 0) {
     lines.push(
-      `box-shadow: ${shadows.map((effect) => `${round(effect.x)}px ${round(effect.y)}px ${round(effect.blur)}px ${rgba(effect.color, effect.opacity)}`).join(', ')};`,
+      `box-shadow: ${shadows
+        .map(
+          (effect) =>
+            `${effect.type === 'inner-shadow' ? 'inset ' : ''}${round(effect.x)}px ${round(effect.y)}px ${round(effect.blur)}px ${rgba(effect.color, effect.opacity)}`,
+        )
+        .join(', ')};`,
     );
   }
   const blurs = activeEffects(node).filter((effect) => effect.type === 'layer-blur');
   if (blurs.length > 0) lines.push(`filter: blur(${blurs.map((effect) => `${round(effect.blur)}px`).join(' ')});`);
+  const backdrop = activeEffects(node).find((effect) => effect.type === 'background-blur');
+  if (backdrop) lines.push(`backdrop-filter: blur(${round(backdrop.blur)}px);`);
   if (node.type === 'text') {
     const fs = node.fontSize ?? 24;
     lines.push(`font-family: ${node.fontFamily ?? 'sans-serif'};`);

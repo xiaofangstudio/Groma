@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import {
   IconChevronRight,
   IconCursor,
@@ -9,6 +10,7 @@ import {
   IconPlus,
   IconRect,
   IconText,
+  IconTrash,
 } from './icons';
 import { AboutDialog } from './AboutDialog';
 import type { ProjectEntry } from '../io/project';
@@ -23,9 +25,17 @@ interface Props {
   onCreate: (options?: CreateOptions) => void;
   onOpen: (id: string) => void;
   onImportSvg: (file: File) => Promise<void>;
+  onRemoveRecent: (id: string) => Promise<void>;
+  onRestoreRecent: (id: string) => Promise<void>;
   projects: ProjectEntry[];
   loading: boolean;
   error: string | null;
+}
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  project: ProjectEntry | null;
 }
 
 interface Preset {
@@ -97,13 +107,27 @@ function previewBox(width: number, height: number, maxW = 30, maxH = 22): { widt
   return { width: Math.max(6, Math.round(maxH * ratio)), height: maxH };
 }
 
-export function Welcome({ onCreate, onOpen, onImportSvg, projects, loading, error }: Props) {
+export function Welcome({
+  onCreate,
+  onOpen,
+  onImportSvg,
+  onRemoveRecent,
+  onRestoreRecent,
+  projects,
+  loading,
+  error,
+}: Props) {
   const [about, setAbout] = useState(false);
   const [preset, setPreset] = useState('desktop');
   const [widthText, setWidthText] = useState('1440');
   const [heightText, setHeightText] = useState('900');
   const [importing, setImporting] = useState(false);
+  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const [removed, setRemoved] = useState<ProjectEntry | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const currentWidth = clampSize(widthText, 1440);
   const currentHeight = clampSize(heightText, 900);
   const preview = previewBox(currentWidth, currentHeight);
@@ -145,8 +169,87 @@ export function Welcome({ onCreate, onOpen, onImportSvg, projects, loading, erro
     }
   }
 
+  function openContextMenu(e: ReactMouseEvent, project: ProjectEntry | null) {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ x: e.clientX, y: e.clientY, project });
+  }
+
+  async function removeFromRecent(p: ProjectEntry) {
+    setMenu(null);
+    if (removingId) return;
+    setRemovingId(p.id);
+    setActionError(null);
+    try {
+      await onRemoveRecent(p.id);
+      setRemoved(p);
+    } catch (err) {
+      setActionError(`移除失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
+  async function undoRemove() {
+    if (!removed) return;
+    const entry = removed;
+    setRemoved(null);
+    setActionError(null);
+    try {
+      await onRestoreRecent(entry.id);
+    } catch (err) {
+      setActionError(`撤销失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => {
+      if (e.target instanceof Node && menuRef.current?.contains(e.target)) return;
+      setMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenu(null);
+    };
+    const onBlur = () => setMenu(null);
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', close);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    if (!menu) return;
+    const frame = window.requestAnimationFrame(() => {
+      menuRef.current?.querySelector<HTMLButtonElement>('.canvas-context-item')?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [menu]);
+
+  useEffect(() => {
+    if (!removed) return;
+    const timer = window.setTimeout(() => setRemoved(null), 9000);
+    return () => window.clearTimeout(timer);
+  }, [removed]);
+
+  useEffect(() => {
+    if (!actionError) return;
+    const timer = window.setTimeout(() => setActionError(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [actionError]);
+
   return (
-    <div className="welcome">
+    <div
+      className="welcome"
+      onContextMenu={(e) => openContextMenu(e, null)}
+      onMouseDown={() => { if (menu) setMenu(null); }}
+    >
       <svg className="home-paper" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
         <path
           d="M-90 636C210 540 394 706 742 658S1168 430 1530 506"
@@ -352,10 +455,24 @@ export function Welcome({ onCreate, onOpen, onImportSvg, projects, loading, erro
             ) : projects.length > 0 ? (
               <div className="shelf-list" id="recent">
                 {projects.map((p, index) => (
-                  <button
-                    className="recent-card"
+                  <div
+                    className={`recent-card${removingId === p.id ? ' is-removing' : ''}`}
                     key={p.id}
-                    onClick={() => onOpen(p.id)}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`打开工程 ${p.name}`}
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest('.recent-delete')) return;
+                      onOpen(p.id);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onOpen(p.id);
+                      }
+                    }}
+                    onContextMenu={(e) => openContextMenu(e, p)}
                     style={{ animationDelay: `${80 + Math.min(index, 7) * 40}ms` }}
                   >
                     <span className="recent-thumb" aria-hidden="true">
@@ -369,8 +486,26 @@ export function Welcome({ onCreate, onOpen, onImportSvg, projects, loading, erro
                       </span>
                       <span className="recent-sub">{formatTime(p.updatedAt)} · {formatBytes(p.bytes)}</span>
                     </span>
-                    <span className="recent-go" aria-hidden="true"><IconChevronRight size={14} /></span>
-                  </button>
+                    <span className="recent-tail">
+                      <span className="recent-go" aria-hidden="true"><IconChevronRight size={14} /></span>
+                      <button
+                        type="button"
+                        className="recent-delete"
+                        title="从最近移除（不删除工程文件）"
+                        aria-label={`从最近移除 ${p.name}`}
+                        disabled={removingId === p.id}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void removeFromRecent(p);
+                        }}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        onContextMenu={(e) => openContextMenu(e, p)}
+                      >
+                        <IconTrash size={14} />
+                      </button>
+                    </span>
+                  </div>
                 ))}
 
                 {projects.length <= 2 && (
@@ -443,6 +578,103 @@ export function Welcome({ onCreate, onOpen, onImportSvg, projects, loading, erro
           <span>Groma 不会上传你的设计</span>
         </footer>
       </div>
+
+      {menu && (
+        <div
+          ref={menuRef}
+          className="canvas-context-menu home-context-menu"
+          role="menu"
+          aria-label={menu.project ? '最近工程右键菜单' : '欢迎页右键菜单'}
+          style={{
+            left: Math.max(8, Math.min(menu.x, window.innerWidth - 244)),
+            top: Math.max(8, Math.min(menu.y, window.innerHeight - (menu.project ? 168 : 196))),
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {menu.project ? (
+            <>
+              <div className="canvas-context-head">{menu.project.name}</div>
+              <button
+                type="button"
+                className="canvas-context-item"
+                onClick={() => {
+                  setMenu(null);
+                  onOpen(menu.project!.id);
+                }}
+              >
+                <span>打开工程</span><kbd>Enter</kbd>
+              </button>
+              <div className="canvas-context-sep" />
+              <button
+                type="button"
+                className="canvas-context-item is-danger"
+                disabled={removingId === menu.project.id}
+                onClick={() => void removeFromRecent(menu.project!)}
+              >
+                <span>从最近移除</span>
+              </button>
+              <div className="canvas-context-note">
+                只移除最近记录，工程文件仍保留在 Documents\Groma
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="canvas-context-head">欢迎页</div>
+              <button
+                type="button"
+                className="canvas-context-item"
+                onClick={() => {
+                  setMenu(null);
+                  createCurrent();
+                }}
+              >
+                <span>新建画板</span><kbd>Ctrl N</kbd>
+              </button>
+              <button
+                type="button"
+                className="canvas-context-item"
+                onClick={() => {
+                  setMenu(null);
+                  importRef.current?.click();
+                }}
+              >
+                <span>导入 SVG</span>
+              </button>
+              <div className="canvas-context-sep" />
+              <button
+                type="button"
+                className="canvas-context-item"
+                onClick={() => {
+                  setMenu(null);
+                  setAbout(true);
+                }}
+              >
+                <span>关于 Groma</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {(removed || actionError) && (
+        <div className="home-toasts">
+          {removed && (
+            <div className="home-toast" role="status">
+              <span>已从最近移除「<b>{removed.name}</b>」</span>
+              <button type="button" onClick={() => void undoRemove()}>撤销</button>
+            </div>
+          )}
+          {actionError && (
+            <div className="home-toast is-error" role="alert">
+              <span>{actionError}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {about && <AboutDialog onClose={() => setAbout(false)} />}
     </div>

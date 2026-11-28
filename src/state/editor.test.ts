@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { editor, getState } from './editor';
+import { absolutePosition, hitTest } from '../core/geometry';
 
 function rootId(): string {
   const s = getState();
@@ -9,6 +10,29 @@ function rootId(): string {
 describe('editor 命令与历史', () => {
   beforeEach(() => {
     editor.newDoc('测试工程');
+  });
+
+  it('改主组件子层后实例即时联动，并可一步撤销', () => {
+    const master = editor.addNode({ type: 'frame', parentId: rootId(), x: 40, y: 40, w: 160, h: 48 });
+    const child = editor.addNode({ type: 'rect', parentId: master, x: 10, y: 10, w: 100, h: 20 });
+    editor.select(master);
+    editor.createComponent();
+    editor.createComponentInstance();
+    const instance = getState().selectedId as string;
+    const firstInstanceChild = getState().doc.nodes[instance].children[0];
+    expect(getState().doc.nodes[firstInstanceChild].w).toBe(100);
+
+    editor.select(child);
+    editor.applyPatch(child, { w: 120 });
+    const syncedChild = getState().doc.nodes[instance].children[0];
+    expect(getState().doc.nodes[child].w).toBe(120);
+    expect(getState().doc.nodes[syncedChild].w).toBe(120);
+    expect(syncedChild).not.toBe(firstInstanceChild);
+
+    editor.undo();
+    expect(getState().doc.nodes[child].w).toBe(100);
+    const undoneChild = getState().doc.nodes[instance].children[0];
+    expect(getState().doc.nodes[undoneChild].w).toBe(100);
   });
 
   it('新增节点、撤销、重做', () => {
@@ -24,29 +48,133 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[id].x).toBe(10);
   });
 
-  it('布尔并集落成单个路径节点，并一步撤销/重做', () => {
+  it('布尔并集生成可展开布尔组，源层保留并可一步撤销/重做', () => {
     const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
     const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 50, y: 0, w: 100, h: 100 });
     editor.select(a);
     editor.select(b, true);
     expect(editor.booleanSelected('union')).toBe(true);
     const resultId = getState().selectedId;
+    const group = getState().doc.nodes[resultId!];
     expect(resultId).toBeTruthy();
-    expect(getState().doc.nodes[a]).toBeUndefined();
-    expect(getState().doc.nodes[b]).toBeUndefined();
-    expect(getState().doc.nodes[resultId!].pathContours?.length).toBe(1);
+    expect(group.type).toBe('boolean');
+    expect(group.booleanOp).toBe('union');
+    expect(group.children).toEqual([a, b]);
+    expect(getState().doc.nodes[a].parentId).toBe(resultId);
+    expect(getState().doc.nodes[b].parentId).toBe(resultId);
+    expect(group.pathContours?.length).toBe(1);
 
     editor.undo();
-    expect(getState().doc.nodes[a]).toBeTruthy();
-    expect(getState().doc.nodes[b]).toBeTruthy();
+    expect(getState().doc.nodes[a].parentId).toBe(rootId());
+    expect(getState().doc.nodes[b].parentId).toBe(rootId());
     expect(getState().doc.nodes[resultId!]).toBeUndefined();
 
     editor.redo();
-    expect(getState().doc.nodes[a]).toBeUndefined();
-    expect(getState().doc.nodes[resultId!]).toBeTruthy();
+    expect(getState().doc.nodes[a].parentId).toBe(resultId);
+    expect(getState().doc.nodes[b].parentId).toBe(resultId);
+    expect(getState().doc.nodes[resultId!].type).toBe('boolean');
   });
 
-  it('三对象布尔合并为一条历史，一步撤销恢复全部源对象', () => {
+  it('布尔组保持源对象世界位置，缓存重算不会让结果漂移', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 120, y: 120, w: 220, h: 200 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 240, y: 180, w: 220, h: 200 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.booleanSelected('subtract')).toBe(true);
+    const groupId = getState().selectedId!;
+    const group = getState().doc.nodes[groupId];
+    expect(group.x).toBe(120);
+    expect(group.y).toBe(120);
+    expect(group.w).toBe(220);
+    expect(group.h).toBe(200);
+    expect(getState().doc.nodes[a].x).toBe(0);
+    expect(getState().doc.nodes[a].y).toBe(0);
+    expect(getState().doc.nodes[b].x).toBe(120);
+    expect(getState().doc.nodes[b].y).toBe(60);
+
+    editor.applyPatch(a, { x: -20 });
+    const moved = getState().doc.nodes[groupId];
+    expect(moved.x).toBe(100);
+    expect(getState().doc.nodes[a].x).toBe(0);
+    expect(getState().doc.nodes[b].x).toBe(140);
+  });
+
+  it('缩放布尔组会同步缩放全部子形状，并可撤销', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 120, y: 120, w: 220, h: 200 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 240, y: 180, w: 220, h: 200 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.booleanSelected('subtract')).toBe(true);
+    const groupId = getState().selectedId!;
+    editor.applyPatch(groupId, { w: 440 });
+    expect(getState().doc.nodes[groupId].w).toBe(440);
+    expect(getState().doc.nodes[a].w).toBe(440);
+    expect(getState().doc.nodes[b].w).toBe(440);
+    expect(getState().doc.nodes[a].x).toBe(0);
+    expect(getState().doc.nodes[b].x).toBe(240);
+    editor.undo();
+    expect(getState().doc.nodes[groupId].w).toBe(220);
+    expect(getState().doc.nodes[a].w).toBe(220);
+    expect(getState().doc.nodes[b].x).toBe(120);
+  });
+
+  it('布尔组的洞与子形状溢出区域不参与命中', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 20, y: 20, w: 30, h: 30 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.booleanSelected('subtract')).toBe(true);
+    const groupId = getState().selectedId!;
+    const page = getState().doc.pages[0];
+    expect(hitTest(getState().doc, page, 10, 10)?.id).toBe(groupId);
+    expect(hitTest(getState().doc, page, 30, 30)?.id).not.toBe(groupId);
+  });
+
+  it('布尔组可以作为另一个布尔组的源，嵌套后缓存仍按层级重算', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 50, y: 0, w: 100, h: 100 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.booleanSelected('union')).toBe(true);
+    const inner = getState().selectedId!;
+    const c = editor.addNode({ type: 'rect', parentId: rootId(), x: 120, y: 40, w: 60, h: 60 });
+    editor.select(inner);
+    editor.select(c, true);
+    expect(editor.booleanSelected('union')).toBe(true);
+    const outer = getState().selectedId!;
+    expect(getState().doc.nodes[outer].children).toEqual([inner, c]);
+    expect(getState().doc.nodes[inner].parentId).toBe(outer);
+    expect(getState().doc.nodes[inner].type).toBe('boolean');
+    expect(getState().doc.nodes[outer].pathContours?.length).toBe(1);
+    expect(getState().doc.nodes[outer].w).toBe(180);
+    editor.applyPatch(c, { x: 160 });
+    expect(getState().doc.nodes[outer].w).toBe(220);
+    expect(getState().doc.nodes[inner].x).toBe(0);
+  });
+
+  it('复制粘贴布尔组保留子形状与运算类型，并可撤销', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 30, y: 30, w: 40, h: 40 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.booleanSelected('subtract')).toBe(true);
+    const groupId = getState().selectedId!;
+    editor.select(groupId);
+    expect(editor.copySelected()).toBe(true);
+    expect(editor.pasteClipboard()).toBe(true);
+    const copyId = getState().selectedId as string;
+    const copy = getState().doc.nodes[copyId];
+    expect(copy.type).toBe('boolean');
+    expect(copy.booleanOp).toBe('subtract');
+    expect(copy.children).toHaveLength(2);
+    expect(copy.children[0]).not.toBe(a);
+    expect(getState().doc.nodes[copy.children[0]].parentId).toBe(copyId);
+    expect(copy.pathContours?.length).toBe(2);
+    editor.undo();
+    expect(getState().doc.nodes[copyId]).toBeUndefined();
+  });
+
+  it('三对象布尔合并为一个可展开布尔组，一步撤销恢复全部源对象', () => {
     const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
     const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 50, y: 0, w: 100, h: 100 });
     const c = editor.addNode({ type: 'rect', parentId: rootId(), x: 75, y: 0, w: 100, h: 100 });
@@ -56,22 +184,73 @@ describe('editor 命令与历史', () => {
     expect(getState().selectedIds).toHaveLength(3);
     expect(editor.booleanSelected('union')).toBe(true);
     const resultId = getState().selectedId;
-    expect(getState().doc.nodes[a]).toBeUndefined();
-    expect(getState().doc.nodes[b]).toBeUndefined();
-    expect(getState().doc.nodes[c]).toBeUndefined();
-    expect(getState().doc.nodes[resultId!].pathContours?.length).toBe(1);
+    const group = getState().doc.nodes[resultId!];
+    expect(group.type).toBe('boolean');
+    expect(group.children).toEqual([a, b, c]);
+    expect(group.pathContours?.length).toBe(1);
 
     editor.undo();
-    expect(getState().doc.nodes[a]).toBeTruthy();
-    expect(getState().doc.nodes[b]).toBeTruthy();
-    expect(getState().doc.nodes[c]).toBeTruthy();
+    expect(getState().doc.nodes[a].parentId).toBe(rootId());
+    expect(getState().doc.nodes[b].parentId).toBe(rootId());
+    expect(getState().doc.nodes[c].parentId).toBe(rootId());
     expect(getState().doc.nodes[resultId!]).toBeUndefined();
 
     editor.redo();
+    expect(getState().doc.nodes[a].parentId).toBe(resultId);
+    expect(getState().doc.nodes[b].parentId).toBe(resultId);
+    expect(getState().doc.nodes[c].parentId).toBe(resultId);
+    expect(getState().doc.nodes[resultId!].type).toBe('boolean');
+  });
+
+  it('切换布尔运算与移动子层会即时重算缓存，且能撤销', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 50, y: 0, w: 100, h: 100 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.booleanSelected('exclude')).toBe(true);
+    const resultId = getState().selectedId!;
+    expect(getState().doc.nodes[resultId].booleanOp).toBe('exclude');
+    const beforeHole = getState().doc.nodes[resultId].pathContours?.length ?? 0;
+
+    expect(editor.setBooleanOp('union')).toBe(true);
+    expect(getState().doc.nodes[resultId].booleanOp).toBe('union');
+    expect(getState().doc.nodes[resultId].pathContours?.length ?? 0).toBeLessThan(beforeHole);
+
+    editor.select(b);
+    editor.applyPatch(b, { x: 60 });
+    const moved = getState().doc.nodes[resultId];
+    expect(moved.pathContours?.length ?? 1).toBe(1);
+    expect(moved.w).toBeGreaterThan(150);
+
+    editor.undo();
+    expect(getState().doc.nodes[b].x).toBe(50);
+    expect(getState().doc.nodes[resultId].w).toBe(150);
+  });
+
+  it('布尔组可解散与拍平，拍平后不留子层', () => {
+    const a = editor.addNode({ type: 'rect', parentId: rootId(), x: 0, y: 0, w: 100, h: 100 });
+    const b = editor.addNode({ type: 'rect', parentId: rootId(), x: 50, y: 0, w: 100, h: 100 });
+    editor.select(a);
+    editor.select(b, true);
+    expect(editor.booleanSelected('union')).toBe(true);
+    const groupId = getState().selectedId!;
+    editor.ungroupSelected();
+    expect(getState().doc.nodes[groupId]).toBeUndefined();
+    expect(getState().doc.nodes[a].parentId).toBe(rootId());
+    expect(getState().doc.nodes[b].parentId).toBe(rootId());
+    editor.undo();
+    expect(getState().doc.nodes[groupId]?.type).toBe('boolean');
+
+    editor.select(groupId);
+    expect(editor.vectorSelected('flatten')).toBe(true);
+    const flatId = getState().selectedId!;
+    expect(getState().doc.nodes[flatId].type).toBe('path');
     expect(getState().doc.nodes[a]).toBeUndefined();
     expect(getState().doc.nodes[b]).toBeUndefined();
-    expect(getState().doc.nodes[c]).toBeUndefined();
-    expect(getState().doc.nodes[resultId!]).toBeTruthy();
+    editor.undo();
+    expect(getState().doc.nodes[groupId]?.type).toBe('boolean');
+    expect(getState().doc.nodes[a]).toBeTruthy();
+    expect(getState().doc.nodes[b]).toBeTruthy();
   });
 
   it('分割生成多个区域并一步撤销全部恢复', () => {
@@ -454,6 +633,109 @@ describe('editor 命令与历史', () => {
     expect(getState().doc.nodes[cloneId]).toBeTruthy();
     expect(getState().doc.nodes[clone.children[0]]).toBeTruthy();
     expect(getState().doc.nodes[child].parentId).toBe(frame);
+  });
+
+  it('复制粘贴保留子树并偏移，可撤销与再次粘贴', () => {
+    const frame = editor.addNode({ type: 'frame', parentId: rootId(), x: 40, y: 60, w: 400, h: 300 });
+    const child = editor.addNode({ type: 'rect', parentId: frame, x: 20, y: 20, w: 80, h: 60 });
+    editor.select(frame);
+    expect(editor.copySelected()).toBe(true);
+
+    expect(editor.pasteClipboard()).toBe(true);
+    const firstId = getState().selectedId as string;
+    const first = getState().doc.nodes[firstId];
+    expect(first.parentId).toBe(rootId());
+    expect(first.x).toBe(52);
+    expect(first.y).toBe(72);
+    expect(first.children.length).toBe(1);
+    expect(first.children[0]).not.toBe(child);
+    expect(getState().doc.nodes[first.children[0]].parentId).toBe(firstId);
+
+    expect(editor.pasteClipboard()).toBe(true);
+    const secondId = getState().selectedId as string;
+    expect(getState().doc.nodes[secondId].x).toBe(64);
+    expect(getState().doc.nodes[secondId].y).toBe(84);
+
+    editor.undo();
+    editor.undo();
+    expect(getState().doc.nodes[firstId]).toBeUndefined();
+    expect(getState().doc.nodes[secondId]).toBeUndefined();
+    expect(getState().doc.nodes[child].parentId).toBe(frame);
+  });
+
+  it('剪切会把节点移入剪贴板并删除，空选区不写入剪贴板', () => {
+    const rect = editor.addNode({ type: 'rect', parentId: rootId(), x: 10, y: 10, w: 50, h: 50 });
+    editor.select(rect);
+    expect(editor.copySelected()).toBe(true);
+    editor.deleteSelected();
+    expect(getState().doc.nodes[rect]).toBeUndefined();
+    expect(editor.pasteClipboard()).toBe(true);
+    const pasted = getState().selectedId as string;
+    expect(pasted).not.toBe(rect);
+    expect(getState().doc.nodes[pasted].x).toBe(22);
+
+    editor.clearSelection();
+    expect(editor.copySelected()).toBe(false);
+  });
+
+
+  it('置顶置底保持同级多选顺序并可撤销', () => {
+    const frame = editor.addNode({ type: 'frame', parentId: rootId(), x: 0, y: 0, w: 300, h: 200 });
+    const a = editor.addNode({ type: 'rect', parentId: frame, x: 0, y: 0, w: 40, h: 40 });
+    const b = editor.addNode({ type: 'rect', parentId: frame, x: 50, y: 0, w: 40, h: 40 });
+    const c = editor.addNode({ type: 'rect', parentId: frame, x: 100, y: 0, w: 40, h: 40 });
+    expect(getState().doc.nodes[frame].children).toEqual([a, b, c]);
+
+    editor.selectMany([a, b]);
+    editor.moveSelectedToEdge('front');
+    expect(getState().doc.nodes[frame].children).toEqual([c, a, b]);
+    editor.undo();
+    expect(getState().doc.nodes[frame].children).toEqual([a, b, c]);
+
+    editor.selectMany([b, c]);
+    editor.moveSelectedToEdge('back');
+    expect(getState().doc.nodes[frame].children).toEqual([b, c, a]);
+    editor.undo();
+    expect(getState().doc.nodes[frame].children).toEqual([a, b, c]);
+  });
+
+  it('上移下移一层保持同级多选顺序并可撤销', () => {
+    const frame = editor.addNode({ type: 'frame', parentId: rootId(), x: 0, y: 0, w: 300, h: 200 });
+    const a = editor.addNode({ type: 'rect', parentId: frame, x: 0, y: 0, w: 40, h: 40 });
+    const b = editor.addNode({ type: 'rect', parentId: frame, x: 50, y: 0, w: 40, h: 40 });
+    const c = editor.addNode({ type: 'rect', parentId: frame, x: 100, y: 0, w: 40, h: 40 });
+    expect(getState().doc.nodes[frame].children).toEqual([a, b, c]);
+
+    editor.selectMany([a, b]);
+    editor.moveSelectedLayer(1);
+    expect(getState().doc.nodes[frame].children).toEqual([c, a, b]);
+    editor.undo();
+    expect(getState().doc.nodes[frame].children).toEqual([a, b, c]);
+
+    editor.selectMany([b, c]);
+    editor.moveSelectedLayer(-1);
+    expect(getState().doc.nodes[frame].children).toEqual([b, c, a]);
+    editor.undo();
+    expect(getState().doc.nodes[frame].children).toEqual([a, b, c]);
+  });
+
+  it('图层换父级保持世界位置并可撤销', () => {
+    const a = editor.addNode({ type: 'frame', parentId: rootId(), x: 0, y: 0, w: 300, h: 200 });
+    const b = editor.addNode({ type: 'frame', parentId: rootId(), x: 300, y: 0, w: 300, h: 200 });
+    const rect = editor.addNode({ type: 'rect', parentId: a, x: 20, y: 20, w: 40, h: 40 });
+    expect(absolutePosition(getState().doc, rect)).toEqual({ x: 20, y: 20 });
+
+    editor.reparentNode(rect, b, 0);
+    expect(getState().doc.nodes[rect].parentId).toBe(b);
+    expect(getState().doc.nodes[a].children).toEqual([]);
+    expect(getState().doc.nodes[b].children).toEqual([rect]);
+    expect(getState().doc.nodes[rect].x).toBe(-280);
+    expect(absolutePosition(getState().doc, rect)).toEqual({ x: 20, y: 20 });
+
+    editor.undo();
+    expect(getState().doc.nodes[rect].parentId).toBe(a);
+    expect(getState().doc.nodes[rect].x).toBe(20);
+    expect(getState().doc.nodes[b].children).toEqual([]);
   });
 
   it('Shift 追加选择、再次点击取消，primary 跟随选区', () => {

@@ -38,7 +38,17 @@ describe('snapping', () => {
     expect(result.dx).toBe(4);
     expect(result.dy).toBe(0);
     expect(result.guides).toHaveLength(1);
-    expect(result.guides[0]).toEqual({ axis: 'x', position: 100, start: 100, end: 240 });
+    expect(result.guides[0]).toEqual({
+      axis: 'x',
+      position: 100,
+      start: 100,
+      end: 240,
+      marks: [
+        { x: 100, y: 200, kind: 'edge' },
+        { x: 100, y: 220, kind: 'center' },
+        { x: 100, y: 240, kind: 'edge' },
+      ],
+    });
   });
 
   it('拖动时中心贴中心', () => {
@@ -49,7 +59,17 @@ describe('snapping', () => {
     );
     expect(result.dx).toBe(0);
     expect(result.dy).toBe(0);
-    expect(result.guides).toEqual([{ axis: 'x', position: 140, start: 100, end: 340 }]);
+    expect(result.guides).toEqual([{
+      axis: 'x',
+      position: 140,
+      start: 100,
+      end: 340,
+      marks: [
+        { x: 140, y: 300, kind: 'edge' },
+        { x: 140, y: 320, kind: 'center' },
+        { x: 140, y: 340, kind: 'edge' },
+      ],
+    }]);
   });
 
   it('超过阈值不吸附', () => {

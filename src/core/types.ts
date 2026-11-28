@@ -1,7 +1,7 @@
 import type { ImageFill } from './imageFill';
 import type { CornerRadii } from './corners';
 
-export type NodeType = 'page' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'path' | 'image' | 'group' | 'slice';
+export type NodeType = 'page' | 'frame' | 'section' | 'rect' | 'ellipse' | 'text' | 'path' | 'image' | 'group' | 'boolean' | 'slice';
 
 export type GuideAxis = 'x' | 'y';
 
@@ -93,7 +93,7 @@ export interface ImageCrop {
   h: number;
 }
 
-/** 图层效果；先支持投影与整层模糊，内阴影/背景模糊留后续。 */
+/** 图层效果：投影、内阴影、整层模糊与背景模糊。 */
 export type Effect =
   | {
       type: 'drop-shadow';
@@ -104,7 +104,17 @@ export type Effect =
       opacity: number;
       visible: boolean;
     }
-  | { type: 'layer-blur'; blur: number; visible: boolean };
+  | {
+      type: 'inner-shadow';
+      x: number;
+      y: number;
+      blur: number;
+      color: string;
+      opacity: number;
+      visible: boolean;
+    }
+  | { type: 'layer-blur'; blur: number; visible: boolean }
+  | { type: 'background-blur'; blur: number; visible: boolean };
 
 /** 约束：子图层在父画板缩放时如何跟随。 */
 export type HorizontalConstraint = 'left' | 'right' | 'center' | 'leftRight' | 'scale';
@@ -126,7 +136,12 @@ export interface AutoLayout {
   padding: { top: number; right: number; bottom: number; left: number };
   align: LayoutAlign;
   justify: LayoutJustify;
+  /** 旧字段：适应主轴内容；新工程改用 hugWidth / hugHeight。 */
   hug: boolean;
+  /** 宽度适应内容；缺省沿用 hug（横向布局时）。 */
+  hugWidth?: boolean;
+  /** 高度适应内容；缺省沿用 hug（纵向布局时）。 */
+  hugHeight?: boolean;
 }
 
 export type StyleKind = 'fill' | 'stroke' | 'effect' | 'text';
@@ -222,6 +237,15 @@ export interface LibrarySource {
   projectName: string;
   nodeId: string;
   nodeName: string;
+  /** 导入时来源组件已发布的版本；0 表示来源尚未发布。 */
+  version?: number;
+  publishedAt?: string;
+}
+
+/** 主组件发布到本机库时记录的版本；每次发布递增。 */
+export interface LibraryPublication {
+  version: number;
+  publishedAt: string;
 }
 
 export interface SceneNode {
@@ -243,10 +267,20 @@ export interface SceneNode {
   constraints?: Constraints;
   /** 容器自动布局；缺省无，手动坐标生效。 */
   layout?: AutoLayout;
+  /** 在父自动布局中，主轴填满剩余空间（Fill）。 */
+  layoutGrow?: boolean;
+  /** 开启主轴 Fill 前的固定宽度；关闭 Fill 或父级改为适应主轴时用于回退。 */
+  layoutBaseW?: number;
+  /** 开启交叉轴 Fill 前的固定高度；关闭 Fill 或父级改为适应交叉轴时用于回退。 */
+  layoutBaseH?: number;
+  /** 在父自动布局中，交叉轴对齐覆盖；stretch 即交叉轴 Fill。 */
+  layoutAlignSelf?: LayoutAlign;
   /** 该画板是主组件；实例通过 componentOf 指回它。 */
   isComponent?: boolean;
   /** 组件来自本机另一个工程时的来源；导入后仍是本地主组件。 */
   librarySource?: LibrarySource;
+  /** 主组件已发布到本机库时的版本记录；只有普通主组件可发布。 */
+  libraryPublication?: LibraryPublication;
   /** 变体集画板：只装变体主组件，不参与实例。 */
   isVariantSet?: boolean;
   /** 变体主组件所属的变体集 id；实例从主组件推导。 */
@@ -285,6 +319,8 @@ export interface SceneNode {
   shapeKind?: 'polygon' | 'star' | 'arrow';
   shapeSides?: number;
   shapeInnerRatio?: number;
+  /** 布尔组运算；type 为 boolean 时必填，子图层按 children 顺序从底到顶参与。 */
+  booleanOp?: 'union' | 'subtract' | 'intersect' | 'exclude';
   /** 箭头的填充三角头路径，和 pathData 共用局部坐标系。 */
   arrowHeadData?: string;
   strokes?: Stroke[];

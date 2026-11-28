@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createDoc } from './doc';
-import { applyCommand } from './commands';
+import { applyCommand, masterOfEditedNode, syncInstancesOfMaster } from './commands';
 import { validateDoc } from './schema';
 import { ancestorInstance, applyInstanceOverrides, instancePath } from './instance';
 import type { GromaDoc, SceneNode } from './types';
@@ -146,6 +146,22 @@ describe('实例覆盖', () => {
     expect(root.instanceOverrides).toBeUndefined();
     const child = swapped.doc.nodes[root.children[0]];
     expect(child.text).not.toBe('实例覆盖');
+  });
+
+  it('改主组件子层后自动同步实例，并保留实例覆盖', () => {
+    const { doc, master, instance } = instanceDoc();
+    expect(masterOfEditedNode(doc, 'label')).toBe(master);
+    expect(masterOfEditedNode(doc, doc.nodes[instance].children[0])).toBeNull();
+    const withOverride: GromaDoc = {
+      ...doc,
+      nodes: { ...doc.nodes, [instance]: { ...doc.nodes[instance], instanceOverrides: { '0': { text: '实例覆盖' } } } },
+    };
+    const edited = applyCommand(withOverride, { type: 'patch', id: 'label', patch: { text: '主组件新文案' } }).doc;
+    const synced = syncInstancesOfMaster(edited, master, makeId);
+    const syncedChild = synced.nodes[instance].children[0];
+    expect(synced.nodes['label'].text).toBe('主组件新文案');
+    expect(synced.nodes[syncedChild].text).toBe('实例覆盖');
+    expect(syncedChild).not.toBe(doc.nodes[instance].children[0]);
   });
 
   it('schema 拒绝非实例携带覆盖与非法路径', () => {

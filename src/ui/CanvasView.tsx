@@ -42,10 +42,150 @@ import { subscribeImages } from '../io/images';
 import type { Guide, ImageCrop, Rect, SceneNode } from '../core/types';
 import { imageCropOf, MIN_IMAGE_CROP } from '../core/image';
 import { isAutoLayoutChild } from '../core/autoLayout';
+import { linearGradientOffsetAt, linearGradientPoint, moveLinearGradient, setGradientStopOffset, setLinearGradientEndpoint } from '../core/paint';
+import { vectorActionEligibility, type BooleanOp } from '../core/boolean';
 
 type Handle = 'tl' | 'tr' | 'bl' | 'br';
 
 const SNAP_PX = 8;
+
+const BOOLEAN_QUICK: Array<{ op: BooleanOp; label: string; hint: string }> = [
+  { op: 'union', label: '并集', hint: '合并所有轮廓' },
+  { op: 'subtract', label: '差集', hint: '上层减去下层' },
+  { op: 'intersect', label: '交集', hint: '只保留重叠部分' },
+  { op: 'exclude', label: '排除', hint: '去掉重叠部分' },
+];
+
+const BOOLEAN_GLYPH: Record<BooleanOp, string> = {
+  union: 'M2 5H7V2H14V9H9V12H2Z',
+  subtract: 'M2 5H7V9H9V12H2Z',
+  intersect: 'M7 5H9V9H7Z',
+  exclude: 'M2 5H7V9H9V12H2Z',
+};
+
+function BooleanGlyph({ op }: { op: BooleanOp }) {
+  return (
+    <svg className="boolean-glyph" viewBox="0 0 18 16" width="16" height="14" aria-hidden="true">
+      <rect className="boolean-glyph-ghost" x="2" y="5" width="7" height="7" />
+      <rect className="boolean-glyph-ghost" x="7" y="2" width="7" height="7" />
+      <path className="boolean-glyph-solid" d={BOOLEAN_GLYPH[op]} />
+      {op === 'exclude' && <path className="boolean-glyph-solid" d="M7 2H14V9H9V5H7Z" />}
+    </svg>
+  );
+}
+
+/**
+ * Figma 式 Shift 约束：以按下点为锚，把拖拽框收成正圆 / 正方形。
+ * 取主轴较长的一边作为边长，方向跟随鼠标所在的象限。
+ */
+function drawRectOf(draft: DrawDrag, shiftKey: boolean): { x: number; y: number; w: number; h: number } {
+  const dx = draft.currentWorld.x - draft.startWorld.x;
+  const dy = draft.currentWorld.y - draft.startWorld.y;
+  if (shiftKey) {
+    const size = Math.max(Math.abs(dx), Math.abs(dy));
+    const x2 = draft.startWorld.x + (dx < 0 ? -size : size);
+    const y2 = draft.startWorld.y + (dy < 0 ? -size : size);
+    return {
+      x: Math.min(draft.startWorld.x, x2),
+      y: Math.min(draft.startWorld.y, y2),
+      w: size,
+      h: size,
+    };
+  }
+  return {
+    x: Math.min(draft.startWorld.x, draft.currentWorld.x),
+    y: Math.min(draft.startWorld.y, draft.currentWorld.y),
+    w: Math.abs(dx),
+    h: Math.abs(dy),
+  };
+}
+
+/** 直线 / 箭头按住 Shift 时按 45° 步进锁定方向。 */
+function snapLinePoint(start: { x: number; y: number }, end: { x: number; y: number }, shiftKey: boolean) {
+  if (!shiftKey) return end;
+  const angle = Math.atan2(end.y - start.y, end.x - start.x);
+  const step = Math.PI / 4;
+  const snapped = Math.round(angle / step) * step;
+  const length = Math.hypot(end.x - start.x, end.y - start.y);
+  return {
+    x: start.x + Math.cos(snapped) * length,
+    y: start.y + Math.sin(snapped) * length,
+  };
+}
+
+type FillPaint = NonNullable<SceneNode['fills']>[number];
+type GradientFill = Extract<FillPaint, { type: 'linear' | 'radial' }>;
+
+/** 取当前节点最上层的可见渐变，画布手柄只操作这一层。 */
+function firstGradientFill(node: SceneNode | null): { index: number; fill: GradientFill } | null {
+  if (!node?.fills?.length) return null;
+  const index = node.fills.findIndex((fill) => (fill.type === 'linear' || fill.type === 'radial') && fill.visible !== false);
+  if (index < 0) return null;
+  return { index, fill: node.fills[index] as GradientFill };
+}
+
+/** 节点局部坐标 → 世界坐标；绕节点中心应用自己的旋转，和画布渲染一致。 */
+function nodeLocalToWorld(
+  abs: Rect,
+  rotation: number,
+  point: { x: number; y: number },
+): { x: number; y: number } {
+  const angle = (rotation * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const cx = abs.x + abs.w / 2;
+  const cy = abs.y + abs.h / 2;
+  const dx = point.x - abs.w / 2;
+  const dy = point.y - abs.h / 2;
+  return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos };
+}
+
+/** 世界坐标 → 节点局部坐标，供拖渐变手柄时反算 x1/y1、cx/cy。 */
+function worldToNodeLocal(
+  abs: Rect,
+  rotation: number,
+  point: { x: number; y: number },
+): { x: number; y: number } {
+  const angle = (rotation * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const cx = abs.x + abs.w / 2;
+  const cy = abs.y + abs.h / 2;
+  const dx = point.x - cx;
+  const dy = point.y - cy;
+  return { x: abs.w / 2 + dx * cos + dy * sin, y: abs.h / 2 - dx * sin + dy * cos };
+}
+
+function pointToViewport(
+  abs: Rect,
+  rotation: number,
+  viewport: Viewport,
+  point: { x: number; y: number },
+): { x: number; y: number } {
+  const world = nodeLocalToWorld(abs, rotation, point);
+  return { x: world.x * viewport.scale + viewport.x, y: world.y * viewport.scale + viewport.y };
+}
+
+interface GradientDrag {
+  pointerId: number;
+  id: string;
+  fillIndex: number;
+  kind: 'linear' | 'radial';
+  handle: 'start' | 'end' | 'line' | 'stop' | 'center' | 'radius';
+  stopIndex?: number;
+  abs: Rect;
+  rotation: number;
+  fill: GradientFill;
+  pointerLocal: { x: number; y: number };
+}
+
+interface RotateDrag {
+  pointerId: number;
+  id: string;
+  centerWorld: { x: number; y: number };
+  startAngle: number;
+  startRotation: number;
+}
 
 
 interface PanDrag {
@@ -64,6 +204,8 @@ interface MoveDrag {
   origins: Record<string, { x: number; y: number }>;
   startBounds: Rect;
   snapTargets: Rect[];
+  altClone?: boolean;
+  cloned?: boolean;
 }
 
 interface ResizeDrag {
@@ -149,6 +291,8 @@ interface MarqueeDrag {
   current: { x: number; y: number };
   additive: boolean;
   base: string[];
+  /** 从容器空白处按下：拖动变成框选，原地松手则选容器本身。 */
+  pendingId?: string;
 }
 
 interface Preview {
@@ -156,6 +300,7 @@ interface Preview {
   y: number;
   w: number;
   h: number;
+  tool: DrawDrag['tool'];
 }
 
 interface ScreenRect {
@@ -182,6 +327,8 @@ export function CanvasView() {
   const moveRef = useRef<MoveDrag | null>(null);
   const resizeRef = useRef<ResizeDrag | null>(null);
   const cropRef = useRef<CropDrag | null>(null);
+  const gradientRef = useRef<GradientDrag | null>(null);
+  const rotateRef = useRef<RotateDrag | null>(null);
   const drawRef = useRef<DrawDrag | null>(null);
   const penRef = useRef<PenSession | null>(null);
   const penHandleRef = useRef<PenHandleDrag | null>(null);
@@ -247,6 +394,12 @@ export function CanvasView() {
       const node = doc.nodes[id];
       return Boolean(node && node.type !== 'page' && node.parentId === ctxParentId && !node.locked);
     });
+  const booleanReady = selectedIds.length >= 2 ? vectorActionEligibility(doc, selectedIds, 'union') : null;
+  const selectedBoolean =
+    selectedIds.length === 1 && doc.nodes[selectedIds[0]]?.type === 'boolean'
+      ? doc.nodes[selectedIds[0]]
+      : null;
+  const booleanBarActive = Boolean(selectedBoolean) || Boolean(booleanReady?.ok);
   const activePenNodeId = selectedIds.length === 1 ? selectedIds[0] : null;
 
   useEffect(() => {
@@ -267,9 +420,29 @@ export function CanvasView() {
     penHintTimerRef.current = window.setTimeout(() => setPenHint(null), 2600);
   }
 
+  function runQuickBoolean(op: BooleanOp) {
+    const current = getState();
+    const label = BOOLEAN_QUICK.find((item) => item.op === op)?.label ?? '布尔';
+    const ready = vectorActionEligibility(current.doc, current.selectedIds, op);
+    if (!ready.ok) {
+      flashPenHint(`${label}不可用：${ready.reason}`);
+      return;
+    }
+    if (editor.vectorSelected(op)) {
+      flashPenHint(`${label}完成 · 已生成可展开布尔组`);
+    } else {
+      flashPenHint(`${label}失败：轮廓为空`);
+    }
+  }
+
+  function switchBooleanOp(op: BooleanOp) {
+    const label = BOOLEAN_QUICK.find((item) => item.op === op)?.label ?? '布尔';
+    if (editor.setBooleanOp(op)) flashPenHint(`已切换为${label}`);
+  }
+
   function showSnapGuides(next: SnapGuide[]) {
     const key = next
-      .map((guide) => `${guide.axis}:${guide.position}:${guide.start}:${guide.end}`)
+      .map((guide) => `${guide.axis}:${guide.position}:${guide.start}:${guide.end}:${guide.manual ? 1 : 0}:${(guide.marks ?? []).map((mark) => `${mark.x}/${mark.y}/${mark.kind}`).join(',')}`)
       .join('|');
     if (key === guidesKeyRef.current) return;
     guidesKeyRef.current = key;
@@ -283,6 +456,7 @@ export function CanvasView() {
   }
 
   function pageGuides(current = getState()): Guide[] {
+    if (!current.guidesVisible) return [];
     const currentPage = current.doc.pages.find((pg) => pg.id === current.pageId) ?? current.doc.pages[0];
     return currentPage?.guides ?? [];
   }
@@ -294,7 +468,7 @@ export function CanvasView() {
   }
 
   function guideAt(p: { x: number; y: number }, current = getState()): { index: number; guide: Guide } | null {
-    if (current.tool !== 'move') return null;
+    if (current.tool !== 'move' || current.guidesLocked) return null;
     return hitTestGuide(pageGuides(current), p, current.viewport);
   }
 
@@ -727,6 +901,70 @@ export function CanvasView() {
     return { x: e.clientX - r.left - RULER, y: e.clientY - r.top - RULER };
   }
 
+  /** 画布上的渐变手柄：线性拖端点改角度、拖整条线移位置；径向拖圆心 / 外圈。 */
+  function gradientGeometry() {
+    const current = getState();
+    if (current.tool !== 'move' || current.selectedIds.length !== 1) return null;
+    const id = current.selectedIds[0];
+    const node = current.doc.nodes[id];
+    if (!node || node.locked || node.visible === false) return null;
+    const found = firstGradientFill(node);
+    if (!found) return null;
+    const abs = absoluteRect(current.doc, id);
+    const rotation = node.rotation ?? 0;
+    const v = current.viewport;
+    const base = { id, abs, rotation, fillIndex: found.index, fill: found.fill };
+    if (found.fill.type === 'linear') {
+      const paint = found.fill;
+      const start = pointToViewport(abs, rotation, v, { x: paint.x1, y: paint.y1 });
+      const end = pointToViewport(abs, rotation, v, { x: paint.x2, y: paint.y2 });
+      const stops = paint.stops.map((stop, index) => ({
+        index,
+        stop,
+        point: pointToViewport(abs, rotation, v, linearGradientPoint(paint, stop.offset)),
+      }));
+      const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+      const length = Math.hypot(end.x - start.x, end.y - start.y);
+      const normalX = length > 0.001 ? (end.y - start.y) / length : 0;
+      const normalY = length > 0.001 ? -(end.x - start.x) / length : -1;
+      const move = { x: mid.x + normalX * 20, y: mid.y + normalY * 20 };
+      return { ...base, kind: 'linear' as const, start, end, mid, move, stops };
+    }
+    const center = pointToViewport(abs, rotation, v, { x: found.fill.cx, y: found.fill.cy });
+    const edge = pointToViewport(abs, rotation, v, { x: found.fill.cx + Math.max(1, found.fill.r), y: found.fill.cy });
+    return { ...base, kind: 'radial' as const, center, edge, mid: center };
+  }
+
+  function gradientHandleAt(point: { x: number; y: number }) {
+    const geometry = gradientGeometry();
+    if (!geometry) return null;
+    if (geometry.kind === 'linear') {
+      if (Math.hypot(point.x - geometry.start.x, point.y - geometry.start.y) <= 9) {
+        return { geometry, handle: 'start' as const };
+      }
+      if (Math.hypot(point.x - geometry.end.x, point.y - geometry.end.y) <= 9) {
+        return { geometry, handle: 'end' as const };
+      }
+      for (const item of geometry.stops) {
+        if (item.index === 0 || item.index === geometry.stops.length - 1) continue;
+        if (Math.hypot(point.x - item.point.x, point.y - item.point.y) <= 8) {
+          return { geometry, handle: 'stop' as const, stopIndex: item.index };
+        }
+      }
+      if (Math.hypot(point.x - geometry.move.x, point.y - geometry.move.y) <= 9) {
+        return { geometry, handle: 'line' as const };
+      }
+      return null;
+    }
+    if (Math.hypot(point.x - geometry.edge.x, point.y - geometry.edge.y) <= 9) {
+      return { geometry, handle: 'radius' as const };
+    }
+    if (Math.hypot(point.x - geometry.center.x, point.y - geometry.center.y) <= 9) {
+      return { geometry, handle: 'center' as const };
+    }
+    return null;
+  }
+
   function handleAt(worldX: number, worldY: number): Handle | null {
     const current = getState();
     if (current.selectedIds.length !== 1) return null;
@@ -735,18 +973,51 @@ export function CanvasView() {
     if (!node || node.locked || node.type === 'group') return null;
     const r = absoluteRect(current.doc, sel);
     const v = current.viewport;
-    const corners: Array<[Handle, number, number]> = [
-      ['tl', r.x * v.scale + v.x, r.y * v.scale + v.y],
-      ['tr', (r.x + r.w) * v.scale + v.x, r.y * v.scale + v.y],
-      ['bl', r.x * v.scale + v.x, (r.y + r.h) * v.scale + v.y],
-      ['br', (r.x + r.w) * v.scale + v.x, (r.y + r.h) * v.scale + v.y],
-    ];
     const sx = worldX * v.scale + v.x;
     const sy = worldY * v.scale + v.y;
-    for (const [name, cx, cy] of corners) {
-      if (Math.abs(sx - cx) <= 7 && Math.abs(sy - cy) <= 7) return name;
+    const cx = (r.x + r.w / 2) * v.scale + v.x;
+    const cy = (r.y + r.h / 2) * v.scale + v.y;
+    const angle = ((node.rotation ?? 0) * Math.PI) / 180;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const lx = (sx - cx) * cos + (sy - cy) * sin + cx;
+    const ly = -(sx - cx) * sin + (sy - cy) * cos + cy;
+    const corners: Array<[Handle, number, number]> = [
+      ['tl', cx - (r.w * v.scale) / 2, cy - (r.h * v.scale) / 2],
+      ['tr', cx + (r.w * v.scale) / 2, cy - (r.h * v.scale) / 2],
+      ['bl', cx - (r.w * v.scale) / 2, cy + (r.h * v.scale) / 2],
+      ['br', cx + (r.w * v.scale) / 2, cy + (r.h * v.scale) / 2],
+    ];
+    for (const [name, hx, hy] of corners) {
+      if (Math.abs(lx - hx) <= 7 && Math.abs(ly - hy) <= 7) return name;
     }
     return null;
+  }
+
+  /** 选中框上方的旋转手柄，位置跟着节点角度一起转。 */
+  function rotationGeometry() {
+    const current = getState();
+    if (current.tool !== 'move' || current.selectedIds.length !== 1) return null;
+    const id = current.selectedIds[0];
+    const node = current.doc.nodes[id];
+    if (!node || node.locked || node.type === 'group' || node.type === 'page') return null;
+    const r = absoluteRect(current.doc, id);
+    const v = current.viewport;
+    const center = { x: (r.x + r.w / 2) * v.scale + v.x, y: (r.y + r.h / 2) * v.scale + v.y };
+    const top = { x: center.x, y: center.y - (r.h * v.scale) / 2 };
+    const angle = ((node.rotation ?? 0) * Math.PI) / 180;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const dx = 0;
+    const dy = -24;
+    const handle = { x: top.x + dx * cos - dy * sin, y: top.y + dx * sin + dy * cos };
+    return { id, node, abs: r, center, top, handle, angle };
+  }
+
+  function rotationHandleAt(point: { x: number; y: number }) {
+    const geometry = rotationGeometry();
+    if (!geometry) return null;
+    return Math.hypot(point.x - geometry.handle.x, point.y - geometry.handle.y) <= 9 ? geometry : null;
   }
 
   function cropHitAt(current: ReturnType<typeof getState>, worldX: number, worldY: number): Handle | 'move' | null {
@@ -1190,6 +1461,50 @@ export function CanvasView() {
       }
     }
 
+    if (current.tool === 'move') {
+      const rotateHit = rotationHandleAt(p);
+      if (rotateHit) {
+        e.preventDefault();
+        const centerWorld = {
+          x: rotateHit.abs.x + rotateHit.abs.w / 2,
+          y: rotateHit.abs.y + rotateHit.abs.h / 2,
+        };
+        rotateRef.current = {
+          pointerId: e.pointerId,
+          id: rotateHit.id,
+          centerWorld,
+          startAngle: Math.atan2(world.y - centerWorld.y, world.x - centerWorld.x),
+          startRotation: rotateHit.node.rotation ?? 0,
+        };
+        setHoverGuideIndex(null);
+        editor.beginTransaction(rotateHit.id);
+        setInteracting(true);
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+      const gradientHit = gradientHandleAt(p);
+      if (gradientHit) {
+        e.preventDefault();
+        gradientRef.current = {
+          pointerId: e.pointerId,
+          id: gradientHit.geometry.id,
+          fillIndex: gradientHit.geometry.fillIndex,
+          kind: gradientHit.geometry.kind,
+          handle: gradientHit.handle,
+          stopIndex: gradientHit.handle === 'stop' ? gradientHit.stopIndex : undefined,
+          abs: gradientHit.geometry.abs,
+          rotation: gradientHit.geometry.rotation,
+          fill: gradientHit.geometry.fill,
+          pointerLocal: worldToNodeLocal(gradientHit.geometry.abs, gradientHit.geometry.rotation, world),
+        };
+        setHoverGuideIndex(null);
+        editor.beginTransaction(gradientHit.geometry.id);
+        setInteracting(true);
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+    }
+
     if (current.tool === 'pen' && !penRef.current) {
       const editNode = selectedPenPath(current);
       if (editNode) {
@@ -1275,15 +1590,30 @@ export function CanvasView() {
         return;
       }
 
+      if (hit && (hit.type === 'frame' || hit.type === 'group' || hit.type === 'boolean' || hit.type === 'section')) {
+        // 容器空白处按下：先按框选待定，拖动才框，原地松手才选容器本身。
+        setHoverGuideIndex(null);
+        marqueeRef.current = {
+          pointerId: e.pointerId,
+          start: p,
+          current: p,
+          additive: false,
+          base: [],
+          pendingId: hit.id,
+        };
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+
       if (hit) {
-        let ids = current.selectedIds.includes(hit.id) ? current.selectedIds : [hit.id];
         if (!current.selectedIds.includes(hit.id)) editor.select(hit.id);
+        let ids = current.selectedIds.includes(hit.id) ? current.selectedIds : [hit.id];
+        if (ids.some((id) => isAutoLayoutChild(current.doc, id))) return;
         ids = topLevelSelection(current.doc, ids).filter((id) => {
           const node = current.doc.nodes[id];
           return Boolean(node && node.type !== 'page' && !node.locked);
         });
         if (ids.length > 0) {
-          if (ids.some((id) => isAutoLayoutChild(current.doc, id))) return;
           const origins: Record<string, { x: number; y: number }> = {};
           for (const id of ids) {
             const node = current.doc.nodes[id];
@@ -1299,8 +1629,10 @@ export function CanvasView() {
             origins,
             startBounds: bounds,
             snapTargets: collectSnapTargets(current.doc, statePage, ids),
+            altClone: e.altKey,
+            cloned: false,
           };
-          editor.beginTransaction(ids);
+          if (!e.altKey) editor.beginTransaction(ids);
           setInteracting(true);
           setDragSnapHint(true);
           clearSnapGuides();
@@ -1360,7 +1692,7 @@ export function CanvasView() {
         setPreview(null);
         setLinePreview({ x1: p.x, y1: p.y, x2: p.x, y2: p.y });
       } else {
-        setPreview({ x: p.x, y: p.y, w: 0, h: 0 });
+        setPreview({ x: p.x, y: p.y, w: 0, h: 0, tool: current.tool });
       }
       e.currentTarget.setPointerCapture(e.pointerId);
     }
@@ -1373,6 +1705,72 @@ export function CanvasView() {
       const p = contentPoint(e);
       const world = screenToWorld(current.viewport, p.x, p.y);
       editor.updateSilent(cropDrag.id, { imageCrop: cropRound(cropNext(cropDrag, world.x, world.y)) });
+      return;
+    }
+    const rotateDrag = rotateRef.current;
+    if (rotateDrag && rotateDrag.pointerId === e.pointerId) {
+      const p = contentPoint(e);
+      const world = screenToWorld(current.viewport, p.x, p.y);
+      const angle = Math.atan2(world.y - rotateDrag.centerWorld.y, world.x - rotateDrag.centerWorld.x);
+      let next = rotateDrag.startRotation + ((angle - rotateDrag.startAngle) * 180) / Math.PI;
+      if (e.shiftKey) next = Math.round(next / 15) * 15;
+      else next = Math.round(next * 10) / 10;
+      next = ((next % 360) + 360) % 360;
+      editor.updateSilent(rotateDrag.id, { rotation: next });
+      return;
+    }
+    const gradientDrag = gradientRef.current;
+    if (gradientDrag && gradientDrag.pointerId === e.pointerId) {
+      const p = contentPoint(e);
+      const world = screenToWorld(current.viewport, p.x, p.y);
+      const local = worldToNodeLocal(gradientDrag.abs, gradientDrag.rotation, world);
+      const base = gradientDrag.fill;
+      let next = base;
+      if (base.type === 'linear') {
+        if (gradientDrag.handle === 'start' || gradientDrag.handle === 'end') {
+          const anchor = gradientDrag.handle === 'start' ? { x: base.x2, y: base.y2 } : { x: base.x1, y: base.y1 };
+          let point = { x: local.x, y: local.y };
+          if (e.shiftKey) {
+            const distance = Math.hypot(point.x - anchor.x, point.y - anchor.y);
+            const angle = Math.atan2(point.y - anchor.y, point.x - anchor.x);
+            const step = Math.PI / 12;
+            const snapped = Math.round(angle / step) * step;
+            point = { x: anchor.x + Math.cos(snapped) * distance, y: anchor.y + Math.sin(snapped) * distance };
+          }
+          next = setLinearGradientEndpoint(base, gradientDrag.handle, point.x, point.y);
+        } else if (gradientDrag.handle === 'line') {
+          next = moveLinearGradient(
+            base,
+            local.x - gradientDrag.pointerLocal.x,
+            local.y - gradientDrag.pointerLocal.y,
+          );
+        } else if (gradientDrag.handle === 'stop' && gradientDrag.stopIndex !== undefined) {
+          next = setGradientStopOffset(base, gradientDrag.stopIndex, linearGradientOffsetAt(base, local.x, local.y));
+        }
+        const linear = next as Extract<GradientFill, { type: 'linear' }>;
+        const round = (value: number) => Math.round(value * 10) / 10;
+        const rounded = {
+          ...linear,
+          x1: round(linear.x1),
+          y1: round(linear.y1),
+          x2: round(linear.x2),
+          y2: round(linear.y2),
+          stops: linear.stops.map((stop) => ({ ...stop, offset: Math.round(stop.offset * 1000) / 1000 })),
+        };
+        const fills = current.doc.nodes[gradientDrag.id]?.fills ? [...current.doc.nodes[gradientDrag.id].fills] : [];
+        fills[gradientDrag.fillIndex] = rounded;
+        editor.updateSilent(gradientDrag.id, { fills });
+      } else {
+        const round = (value: number) => Math.round(value * 10) / 10;
+        if (gradientDrag.handle === 'center') {
+          next = { ...base, cx: round(local.x), cy: round(local.y) };
+        } else if (gradientDrag.handle === 'radius') {
+          next = { ...base, r: Math.max(1, round(Math.hypot(local.x - base.cx, local.y - base.cy))) };
+        }
+        const fills = current.doc.nodes[gradientDrag.id]?.fills ? [...current.doc.nodes[gradientDrag.id].fills] : [];
+        fills[gradientDrag.fillIndex] = next;
+        editor.updateSilent(gradientDrag.id, { fills });
+      }
       return;
     }
     const edit = penEditRef.current;
@@ -1500,6 +1898,8 @@ export function CanvasView() {
     const marq = marqueeRef.current;
     if (marq && marq.pointerId === e.pointerId) {
       marq.current = p;
+      const distance = Math.hypot(p.x - marq.start.x, p.y - marq.start.y);
+      if (marq.pendingId && distance < 4) return;
       const x = Math.min(marq.start.x, p.x);
       const y = Math.min(marq.start.y, p.y);
       setMarquee({ x, y, w: Math.abs(p.x - marq.start.x), h: Math.abs(p.y - marq.start.y) });
@@ -1510,6 +1910,21 @@ export function CanvasView() {
     if (move && move.pointerId === e.pointerId) {
       const rawDx = world.x - move.startWorld.x;
       const rawDy = world.y - move.startWorld.y;
+      if (move.altClone && !move.cloned) {
+        if (Math.hypot(rawDx, rawDy) * current.viewport.scale < 4) return;
+        editor.duplicateSelected(0, 0);
+        const cloned = getState();
+        move.ids = cloned.selectedIds;
+        move.origins = {};
+        for (const id of move.ids) {
+          const node = cloned.doc.nodes[id];
+          if (node) move.origins[id] = { x: node.x, y: node.y };
+        }
+        const dragPage = cloned.doc.pages.find((pg) => pg.id === cloned.pageId) ?? cloned.doc.pages[0];
+        move.snapTargets = collectSnapTargets(cloned.doc, dragPage, move.ids);
+        move.cloned = true;
+        editor.beginTransaction(move.ids);
+      }
       const proposed = {
         ...move.startBounds,
         x: move.startBounds.x + rawDx,
@@ -1522,8 +1937,12 @@ export function CanvasView() {
         e.altKey,
         pageGuides(current),
       );
-      const dx = rawDx + snap.dx;
-      const dy = rawDy + snap.dy;
+      let dx = rawDx + snap.dx;
+      let dy = rawDy + snap.dy;
+      if (e.shiftKey) {
+        if (Math.abs(rawDx) >= Math.abs(rawDy)) dy = 0;
+        else dx = 0;
+      }
       showSnapGuides(snap.guides);
       const patches: Array<{ id: string; patch: { x: number; y: number } }> = [];
       for (const id of move.ids) {
@@ -1568,6 +1987,15 @@ export function CanvasView() {
       y = snap.rect.y;
       w = snap.rect.w;
       h = snap.rect.h;
+      if (e.shiftKey && resize.abs.w > 0 && resize.abs.h > 0) {
+        const ratio = resize.abs.w / resize.abs.h;
+        const widthChange = Math.abs(w / resize.abs.w - 1);
+        const heightChange = Math.abs(h / resize.abs.h - 1);
+        if (widthChange >= heightChange) h = Math.max(1, w / ratio);
+        else w = Math.max(1, h * ratio);
+        if (resize.handle.includes('l')) x = resize.abs.x + resize.abs.w - w;
+        if (resize.handle.includes('t')) y = resize.abs.y + resize.abs.h - h;
+      }
       showSnapGuides(snap.guides);
       editor.updateSilent(resize.id, {
         x: Math.round(x - resize.parentAbs.x),
@@ -1582,28 +2010,45 @@ export function CanvasView() {
     if (draft && draft.pointerId === e.pointerId) {
       draft.currentWorld = world;
       if (draft.tool === 'line' || draft.tool === 'arrow') {
+        const end = snapLinePoint(draft.startWorld, world, e.shiftKey);
         setLinePreview({
           x1: draft.startWorld.x * current.viewport.scale + current.viewport.x,
           y1: draft.startWorld.y * current.viewport.scale + current.viewport.y,
-          x2: world.x * current.viewport.scale + current.viewport.x,
-          y2: world.y * current.viewport.scale + current.viewport.y,
+          x2: end.x * current.viewport.scale + current.viewport.x,
+          y2: end.y * current.viewport.scale + current.viewport.y,
         });
         return;
       }
-      const sx = Math.min(draft.startWorld.x, world.x);
-      const sy = Math.min(draft.startWorld.y, world.y);
-      const ex = Math.max(draft.startWorld.x, world.x);
-      const ey = Math.max(draft.startWorld.y, world.y);
+      const rect = drawRectOf(draft, e.shiftKey);
       setPreview({
-        x: sx * current.viewport.scale + current.viewport.x,
-        y: sy * current.viewport.scale + current.viewport.y,
-        w: (ex - sx) * current.viewport.scale,
-        h: (ey - sy) * current.viewport.scale,
+        x: rect.x * current.viewport.scale + current.viewport.x,
+        y: rect.y * current.viewport.scale + current.viewport.y,
+        w: rect.w * current.viewport.scale,
+        h: rect.h * current.viewport.scale,
+        tool: draft.tool,
       });
     }
   }
 
   function finish(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (rotateRef.current?.pointerId === e.pointerId) {
+      rotateRef.current = null;
+      editor.endTransaction();
+      setInteracting(false);
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      return;
+    }
+    if (gradientRef.current?.pointerId === e.pointerId) {
+      gradientRef.current = null;
+      editor.endTransaction();
+      setInteracting(false);
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      return;
+    }
     if (cropRef.current?.pointerId === e.pointerId) {
       cropRef.current = null;
       editor.endTransaction();
@@ -1680,25 +2125,30 @@ export function CanvasView() {
     if (marq && marq.pointerId === e.pointerId) {
       const current = getState();
       const statePage = current.doc.pages.find((pg) => pg.id === current.pageId) ?? current.doc.pages[0];
-      const a = screenToWorld(current.viewport, marq.start.x, marq.start.y);
-      const b = screenToWorld(current.viewport, marq.current.x, marq.current.y);
-      const rect = {
-        x: Math.min(a.x, b.x),
-        y: Math.min(a.y, b.y),
-        w: Math.abs(b.x - a.x),
-        h: Math.abs(b.y - a.y),
-      };
-      const found = marqueeSelection(current.doc, statePage, rect);
-      const ids = marq.additive ? [...marq.base, ...found] : found;
-      if (ids.length > 0) editor.selectMany(ids);
-      else if (!marq.additive) editor.clearSelection();
+      const movedPx = Math.hypot(marq.current.x - marq.start.x, marq.current.y - marq.start.y);
+      if (marq.pendingId && movedPx < 4) {
+        editor.select(marq.pendingId);
+      } else {
+        const a = screenToWorld(current.viewport, marq.start.x, marq.start.y);
+        const b = screenToWorld(current.viewport, marq.current.x, marq.current.y);
+        const rect = {
+          x: Math.min(a.x, b.x),
+          y: Math.min(a.y, b.y),
+          w: Math.abs(b.x - a.x),
+          h: Math.abs(b.y - a.y),
+        };
+        const found = marqueeSelection(current.doc, statePage, rect);
+        const ids = marq.additive ? [...marq.base, ...found] : found;
+        if (ids.length > 0) editor.selectMany(ids);
+        else if (!marq.additive) editor.clearSelection();
+      }
       marqueeRef.current = null;
       setMarquee(null);
     }
 
     const draft = drawRef.current;
     if (draft && draft.pointerId === e.pointerId) {
-      const cw = draft.currentWorld;
+      const cw = snapLinePoint(draft.startWorld, draft.currentWorld, e.shiftKey);
       if (draft.tool === 'line') {
         const line = lineGeometry(draft.startWorld, cw);
         editor.addNode({
@@ -1729,10 +2179,11 @@ export function CanvasView() {
         });
       } else if (draft.tool === 'polygon' || draft.tool === 'star') {
         const kind = draft.tool;
-        let sx = Math.min(draft.startWorld.x, cw.x);
-        let sy = Math.min(draft.startWorld.y, cw.y);
-        let w = Math.abs(cw.x - draft.startWorld.x);
-        let h = Math.abs(cw.y - draft.startWorld.y);
+        const box = drawRectOf(draft, e.shiftKey);
+        let sx = box.x;
+        let sy = box.y;
+        let w = box.w;
+        let h = box.h;
         if (w < 3 || h < 3) {
           w = 120;
           h = 120;
@@ -1757,10 +2208,11 @@ export function CanvasView() {
           strokes: [],
         });
       } else {
-        let sx = Math.min(draft.startWorld.x, cw.x);
-        let sy = Math.min(draft.startWorld.y, cw.y);
-        let w = Math.abs(cw.x - draft.startWorld.x);
-        let h = Math.abs(cw.y - draft.startWorld.y);
+        const box = drawRectOf(draft, e.shiftKey);
+        let sx = box.x;
+        let sy = box.y;
+        let w = box.w;
+        let h = box.h;
 
         if (w < 3 || h < 3) {
           w = draft.tool === 'frame' ? 1440 : draft.tool === 'section' ? 800 : draft.tool === 'slice' ? 160 : 120;
@@ -1794,6 +2246,16 @@ export function CanvasView() {
   }
 
   function cancel(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (rotateRef.current) {
+      rotateRef.current = null;
+      editor.cancelTransaction();
+      setInteracting(false);
+    }
+    if (gradientRef.current) {
+      gradientRef.current = null;
+      editor.cancelTransaction();
+      setInteracting(false);
+    }
     if (cropRef.current) {
       cropRef.current = null;
       editor.cancelTransaction();
@@ -1901,6 +2363,11 @@ export function CanvasView() {
   const guideLabel = (guide: Guide | GuideDraft) =>
     `${guide.axis === 'x' ? 'X' : 'Y'} ${Math.round(guide.position)}`;
 
+  const gradientOverlay = gradientGeometry();
+  const rotateOverlay = rotationGeometry();
+  const gradientOverlayW = Math.max(0, viewSize.w - RULER);
+  const gradientOverlayH = Math.max(0, viewSize.h - RULER);
+
   return (
     <div className="canvas-host" ref={hostRef}>
       <canvas
@@ -1933,7 +2400,7 @@ export function CanvasView() {
           aria-label="图层右键菜单"
           style={{
             left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 238)),
-            top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 420)),
+            top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 520)),
           }}
           onContextMenu={(e) => e.preventDefault()}
         >
@@ -1983,11 +2450,49 @@ export function CanvasView() {
                   <span>成组</span><kbd>Ctrl+G</kbd>
                 </button>
               ) : null}
-              {ctxNode?.type === 'group' ? (
+              {(ctxNode?.type === 'group' || ctxNode?.type === 'boolean') ? (
                 <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.ungroupSelected(); }}>
-                  <span>解散分组</span>
+                  <span>{ctxNode.type === 'boolean' ? '解散布尔组' : '解散分组'}</span>
                 </button>
               ) : null}
+              {ctxNode?.type === 'boolean' ? (
+                <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.vectorSelected('flatten'); }}>
+                  <span>拍平为路径</span>
+                </button>
+              ) : null}
+              {booleanReady?.ok ? (
+                <>
+                  <div className="canvas-context-sep" />
+                  <div className="canvas-context-head">布尔运算 · 合成 1 个图层</div>
+                  {BOOLEAN_QUICK.map((item) => (
+                    <button
+                      key={item.op}
+                      type="button"
+                      className="canvas-context-item canvas-context-boolean"
+                      title={item.hint}
+                      onClick={() => {
+                        setContextMenu(null);
+                        runQuickBoolean(item.op);
+                      }}
+                    >
+                      <span><BooleanGlyph op={item.op} />{item.label}</span>
+                    </button>
+                  ))}
+                  <div className="canvas-context-sep" />
+                </>
+              ) : null}
+              <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.moveSelectedToEdge('front'); }}>
+                <span>置于顶层</span><kbd>Ctrl+Shift+]</kbd>
+              </button>
+              <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.moveSelectedLayer(1); }}>
+                <span>上移一层</span><kbd>Ctrl+]</kbd>
+              </button>
+              <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.moveSelectedLayer(-1); }}>
+                <span>下移一层</span><kbd>Ctrl+[</kbd>
+              </button>
+              <button type="button" className="canvas-context-item" onClick={() => { setContextMenu(null); editor.moveSelectedToEdge('back'); }}>
+                <span>置于底层</span><kbd>Ctrl+Shift+[</kbd>
+              </button>
               <div className="canvas-context-sep" />
               {ctxNode ? (
                 <>
@@ -2019,7 +2524,7 @@ export function CanvasView() {
           <strong>{penHint}</strong>
         </div>
       )}
-      {(page.guides ?? []).map((guide, index) => {
+      {s.guidesVisible && (page.guides ?? []).map((guide, index) => {
         const dragging = guideDraft?.mode === 'move' && guideDraft.index === index;
         const deleting = dragging && guideDraft?.deleting;
         if (dragging && !deleting) return null;
@@ -2080,6 +2585,18 @@ export function CanvasView() {
           />
         );
       })}
+      {snapGuides.flatMap((guide, guideIndex) =>
+        (guide.marks ?? []).map((mark, markIndex) => (
+          <div
+            key={`snap-mark-${guideIndex}-${markIndex}`}
+            className={`snap-mark${mark.kind === 'center' ? ' is-center' : ''}`}
+            style={{
+              left: RULER + mark.x * viewport.scale + viewport.x,
+              top: RULER + mark.y * viewport.scale + viewport.y,
+            }}
+          />
+        )),
+      )}
       {activeCrop && cropAbs && (() => {
         const left = cropAbs.x * viewport.scale + viewport.x;
         const top = cropAbs.y * viewport.scale + viewport.y;
@@ -2131,6 +2648,118 @@ export function CanvasView() {
           </svg>
         );
       })()}
+      {gradientOverlay && (
+        <svg
+          className="gradient-overlay"
+          aria-hidden="true"
+          width={gradientOverlayW}
+          height={gradientOverlayH}
+          viewBox={`0 0 ${gradientOverlayW} ${gradientOverlayH}`}
+          style={{ left: RULER, top: RULER }}
+        >
+          {gradientOverlay.kind === 'linear' ? (
+            <>
+              <line
+                className="gradient-line"
+                x1={gradientOverlay.start.x}
+                y1={gradientOverlay.start.y}
+                x2={gradientOverlay.end.x}
+                y2={gradientOverlay.end.y}
+              />
+              <line
+                className="gradient-move-tether"
+                x1={gradientOverlay.mid.x}
+                y1={gradientOverlay.mid.y}
+                x2={gradientOverlay.move.x}
+                y2={gradientOverlay.move.y}
+              />
+              <circle
+                className="gradient-move-handle"
+                data-gradient-handle="move"
+                cx={gradientOverlay.move.x}
+                cy={gradientOverlay.move.y}
+                r={4.5}
+              />
+              <circle
+                className="gradient-start-handle"
+                data-gradient-handle="start"
+                cx={gradientOverlay.start.x}
+                cy={gradientOverlay.start.y}
+                r={5.5}
+              />
+              <circle
+                className="gradient-end-handle"
+                data-gradient-handle="end"
+                cx={gradientOverlay.end.x}
+                cy={gradientOverlay.end.y}
+                r={5.5}
+              />
+              {gradientOverlay.stops.map((item) =>
+                item.index === 0 || item.index === gradientOverlay.stops.length - 1 ? null : (
+                  <circle
+                    key={`gradient-stop-${item.index}`}
+                    className="gradient-stop-handle"
+                    data-gradient-handle={`stop-${item.index}`}
+                    cx={item.point.x}
+                    cy={item.point.y}
+                    r={4.5}
+                    fill={item.stop.color}
+                    fillOpacity={Math.max(0.45, item.stop.opacity)}
+                  />
+                ),
+              )}
+            </>
+          ) : (
+            <>
+              <line
+                className="gradient-spoke"
+                x1={gradientOverlay.center.x}
+                y1={gradientOverlay.center.y}
+                x2={gradientOverlay.edge.x}
+                y2={gradientOverlay.edge.y}
+              />
+              <circle
+                className="gradient-center-handle"
+                data-gradient-handle="center"
+                cx={gradientOverlay.center.x}
+                cy={gradientOverlay.center.y}
+                r={5.5}
+              />
+              <circle
+                className="gradient-radius-handle"
+                data-gradient-handle="radius"
+                cx={gradientOverlay.edge.x}
+                cy={gradientOverlay.edge.y}
+                r={5}
+              />
+            </>
+          )}
+        </svg>
+      )}
+      {rotateOverlay && (
+        <svg
+          className="rotate-overlay"
+          aria-hidden="true"
+          width={gradientOverlayW}
+          height={gradientOverlayH}
+          viewBox={`0 0 ${gradientOverlayW} ${gradientOverlayH}`}
+          style={{ left: RULER, top: RULER }}
+        >
+          <line
+            className="rotate-tether"
+            x1={rotateOverlay.top.x}
+            y1={rotateOverlay.top.y}
+            x2={rotateOverlay.handle.x}
+            y2={rotateOverlay.handle.y}
+          />
+          <circle
+            className="rotate-handle"
+            cx={rotateOverlay.handle.x}
+            cy={rotateOverlay.handle.y}
+            r={5}
+          />
+        </svg>
+      )}
       {(penRef.current || selectedPenNode) && (() => {
         const session = penRef.current;
         const localContours: PenContour[] = session
@@ -2258,15 +2887,37 @@ export function CanvasView() {
         );
       })()}
       {preview && (
-        <div
-          className="draw-preview"
+        <svg
+          className="draw-shape-preview"
           style={{
             left: RULER + preview.x,
             top: RULER + preview.y,
             width: Math.max(1, preview.w),
             height: Math.max(1, preview.h),
           }}
-        />
+          viewBox={`0 0 ${Math.max(1, preview.w)} ${Math.max(1, preview.h)}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          {preview.tool === 'ellipse' ? (
+            <ellipse
+              cx={Math.max(1, preview.w) / 2}
+              cy={Math.max(1, preview.h) / 2}
+              rx={Math.max(0.5, preview.w / 2)}
+              ry={Math.max(0.5, preview.h / 2)}
+            />
+          ) : preview.tool === 'polygon' || preview.tool === 'star' ? (
+            <path d={shapePath(preview.tool, Math.max(1, preview.w), Math.max(1, preview.h), 5)} />
+          ) : (
+            <rect
+              x={0.75}
+              y={0.75}
+              width={Math.max(0.5, preview.w - 1.5)}
+              height={Math.max(0.5, preview.h - 1.5)}
+              rx={preview.tool === 'frame' ? 1 : 0}
+            />
+          )}
+        </svg>
       )}
       {marquee && (
         <div
@@ -2279,7 +2930,28 @@ export function CanvasView() {
           }}
         />
       )}
-      <div className="canvas-tip">
+      {booleanBarActive && (
+        <div className={`boolean-bar${selectedBoolean ? ' is-switch' : ''}`} role="toolbar" aria-label="布尔运算">
+          <span className="boolean-bar-label">{selectedBoolean ? '布尔类型' : '布尔'}</span>
+          {BOOLEAN_QUICK.map((item) => (
+            <button
+              key={item.op}
+              type="button"
+              className={`boolean-bar-item${selectedBoolean?.booleanOp === item.op ? ' is-active' : ''}`}
+              title={item.hint}
+              onClick={() => {
+                if (selectedBoolean) switchBooleanOp(item.op);
+                else runQuickBoolean(item.op);
+              }}
+            >
+              <BooleanGlyph op={item.op} />
+              <span>{item.label}</span>
+            </button>
+          ))}
+          <span className="boolean-bar-note">{selectedBoolean ? '展开可编辑子形状' : '合成 1 个布尔组'}</span>
+        </div>
+      )}
+      <div className={`canvas-tip${booleanBarActive ? ' has-boolean-bar' : ''}`}>
         {activeCrop
           ? '拖动裁剪框移动 · 拖四角改可见区域 · Esc 退出'
           : hand

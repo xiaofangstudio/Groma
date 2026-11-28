@@ -96,13 +96,37 @@ export function EditorShell() {
       }
 
       if (mod) {
-        if (key === 'z') {
+        if (e.shiftKey && e.code === 'BracketRight') {
+          e.preventDefault();
+          editor.moveSelectedToEdge('front');
+        } else if (e.shiftKey && e.code === 'BracketLeft') {
+          e.preventDefault();
+          editor.moveSelectedToEdge('back');
+        } else if (!e.shiftKey && e.code === 'BracketRight') {
+          e.preventDefault();
+          editor.moveSelectedLayer(1);
+        } else if (!e.shiftKey && e.code === 'BracketLeft') {
+          e.preventDefault();
+          editor.moveSelectedLayer(-1);
+        } else if (key === 'z') {
           e.preventDefault();
           if (e.shiftKey) editor.redo();
           else editor.undo();
         } else if (key === 'y') {
           e.preventDefault();
           editor.redo();
+        } else if (key === 'a') {
+          e.preventDefault();
+          editor.selectAll();
+        } else if (key === 'c') {
+          if (editor.copySelected()) e.preventDefault();
+        } else if (key === 'x') {
+          if (editor.copySelected()) {
+            e.preventDefault();
+            editor.deleteSelected();
+          }
+        } else if (key === 'v') {
+          if (editor.pasteClipboard()) e.preventDefault();
         } else if (key === 'd') {
           e.preventDefault();
           editor.duplicateSelected();

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createDoc } from './doc';
-import { applyCommand, importComponentFromDoc, refreshComponentFromDoc } from './commands';
+import { applyCommand, importComponentFromDoc, publishComponent, refreshComponentFromDoc } from './commands';
 import { validateDoc } from './schema';
-import { componentTransferIssues, externalComponents } from './library';
+import { componentSourceState, componentTransferIssues, externalComponents } from './library';
 import type { GromaDoc, SceneNode } from './types';
 
 let seq = 0;
@@ -178,5 +178,82 @@ describe('跨工程组件库', () => {
     const refreshed = refreshComponentFromDoc(imported.doc, master.id, source.doc, source.rootId, makeId);
     expect((refreshed.node as SceneNode).assetId).toBeUndefined();
     expect(validateDoc(refreshed.doc).ok).toBe(true);
+  });
+
+  it('来源状态能区分最新/更新/缺失/依赖', () => {
+    const source = sourceComponent();
+    const target = createDoc('目标', 600, 400);
+    const targetPage = target.nodes[target.pages[0].rootId];
+    const imported = importComponentFromDoc(
+      target,
+      source.doc,
+      source.rootId,
+      makeId,
+      targetPage.id,
+      0,
+      0,
+      { projectId: 'p', projectName: '来源', nodeId: source.rootId, nodeName: '徽章' },
+    );
+    const master = imported.node as SceneNode;
+    expect(componentSourceState(imported.doc, master.id, source.doc, source.rootId)).toBe('same');
+    // 本地移动和锁定主组件不算来源变化。
+    imported.doc.nodes[master.id] = { ...imported.doc.nodes[master.id], x: 50, locked: true };
+    expect(componentSourceState(imported.doc, master.id, source.doc, source.rootId)).toBe('same');
+
+    source.doc.nodes['badge-label'] = { ...source.doc.nodes['badge-label'], text: '改过' };
+    expect(componentSourceState(imported.doc, master.id, source.doc, source.rootId)).toBe('changed');
+
+    source.doc.nodes[source.rootId] = { ...source.doc.nodes[source.rootId], assetId: 'photo' };
+    expect(componentSourceState(imported.doc, master.id, source.doc, source.rootId)).toBe('blocked');
+
+    delete source.doc.nodes[source.rootId];
+    expect(componentSourceState(imported.doc, master.id, source.doc, source.rootId)).toBe('missing');
+
+    const detached = applyCommand(imported.doc, { type: 'patch', id: master.id, patch: { librarySource: undefined } });
+    expect(detached.doc.nodes[master.id].librarySource).toBeUndefined();
+    expect(validateDoc(detached.doc).ok).toBe(true);
+  });
+
+  it('发布版本递增，订阅方导入 v1，来源再发布后识别为 v2', () => {
+    const source = sourceComponent();
+    const published = publishComponent(source.doc, source.rootId, '2026-11-28T06:00:00.000Z');
+    expect(published.node?.libraryPublication?.version).toBe(1);
+    source.doc = published.doc;
+    const external = externalComponents(source.doc, 'p', '来源').find((item) => item.id === source.rootId);
+    expect(external?.publishedVersion).toBe(1);
+    expect(validateDoc(source.doc).ok).toBe(true);
+
+    const target = createDoc('目标', 600, 400);
+    const targetPage = target.nodes[target.pages[0].rootId];
+    const imported = importComponentFromDoc(
+      target,
+      source.doc,
+      source.rootId,
+      makeId,
+      targetPage.id,
+      0,
+      0,
+      { projectId: 'p', projectName: '来源', nodeId: source.rootId, nodeName: '徽章' },
+    );
+    const master = imported.node as SceneNode;
+    expect(master.librarySource?.version).toBe(1);
+    expect(master.libraryPublication).toBeUndefined();
+    expect(componentSourceState(imported.doc, master.id, source.doc, source.rootId)).toBe('same');
+
+    source.doc.nodes['badge-label'] = { ...source.doc.nodes['badge-label'], text: 'v2 徽章' };
+    source.doc = publishComponent(source.doc, source.rootId, '2026-11-28T07:00:00.000Z').doc;
+    expect(componentSourceState(imported.doc, master.id, source.doc, source.rootId)).toBe('source-updated');
+
+    const refreshed = refreshComponentFromDoc(imported.doc, master.id, source.doc, source.rootId, makeId);
+    const nextMaster = refreshed.node as SceneNode;
+    expect(nextMaster.librarySource?.version).toBe(2);
+    expect(componentSourceState(refreshed.doc, master.id, source.doc, source.rootId)).toBe('same');
+    expect(validateDoc(refreshed.doc).ok).toBe(true);
+
+    source.doc.nodes[source.rootId] = {
+      ...source.doc.nodes[source.rootId],
+      libraryPublication: { version: 0, publishedAt: 'bad' },
+    };
+    expect(validateDoc(source.doc).ok).toBe(false);
   });
 });

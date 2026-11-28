@@ -4,7 +4,15 @@ import { Splash } from './ui/Splash';
 import { Welcome } from './ui/Welcome';
 import { EditorShell } from './ui/EditorShell';
 import { editor } from './state/editor';
-import { createProject, isDesktop, listProjects, loadProject, type ProjectEntry } from './io/project';
+import {
+  createProject,
+  hideRecentProject,
+  isDesktop,
+  listProjects,
+  loadProject,
+  restoreRecentProject,
+  type ProjectEntry,
+} from './io/project';
 import { hydrateDocImages, importImageAsset, setImageProject } from './io/images';
 import { parseSvgDrawing } from './io/importSvg';
 import { applySvgImport } from './io/applySvgImport';
@@ -64,6 +72,16 @@ export default function App() {
 
   useEffect(() => {
     refreshProjects();
+  }, [refreshProjects]);
+
+  const onRemoveRecent = useCallback(async (id: string) => {
+    await hideRecentProject(id);
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+  }, []);
+
+  const onRestoreRecent = useCallback(async (id: string) => {
+    await restoreRecentProject(id);
+    await refreshProjects();
   }, [refreshProjects]);
 
   const onCreate = useCallback(async (options?: NewDesignOptions) => {
@@ -227,6 +245,8 @@ export default function App() {
         onCreate={onCreate}
         onOpen={onOpen}
         onImportSvg={onImportSvg}
+        onRemoveRecent={onRemoveRecent}
+        onRestoreRecent={onRestoreRecent}
         projects={projects}
         loading={loading}
         error={error}

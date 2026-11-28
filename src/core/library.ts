@@ -6,6 +6,9 @@ export interface ExternalComponent extends LibraryComponent {
   projectName: string;
   issues: string[];
   transferable: boolean;
+  /** 来源组件已发布到本机库的版本；0 表示尚未发布。 */
+  publishedVersion: number;
+  publishedAt?: string;
 }
 
 /**
@@ -37,12 +40,59 @@ export function componentTransferIssues(doc: GromaDoc, id: string): string[] {
 export function externalComponents(doc: GromaDoc, projectId: string, projectName: string): ExternalComponent[] {
   return libraryComponents(doc).map((item) => {
     const issues = componentTransferIssues(doc, item.id);
+    const publication = doc.nodes[item.id]?.libraryPublication;
     return {
       ...item,
       projectId,
       projectName,
       issues,
       transferable: issues.length === 0,
+      publishedVersion: publication?.version ?? 0,
+      publishedAt: publication?.publishedAt,
     };
   });
 }
+
+export type ComponentSourceState = 'same' | 'changed' | 'source-updated' | 'missing' | 'blocked';
+
+/** 只比较会随来源更新的内容：id、父级、库来源和根节点位置都是本地坐标。 */
+function comparableSubtree(doc: GromaDoc, id: string, root: boolean): unknown {
+  const node = doc.nodes[id];
+  if (!node) return null;
+  const copy: Partial<typeof node> = { ...node };
+  delete copy.id;
+  delete copy.parentId;
+  delete copy.librarySource;
+  delete copy.locked;
+  delete copy.libraryPublication;
+  return {
+    ...copy,
+    x: root ? 0 : node.x,
+    y: root ? 0 : node.y,
+    children: node.children.map((childId) => comparableSubtree(doc, childId, false)),
+  };
+}
+
+/**
+ * 判断导入主组件相对来源是否已变化。
+ * missing 表示来源工程/组件已被删；blocked 表示来源本身含外部依赖，更新会留下悬空引用。
+ */
+export function componentSourceState(
+  doc: GromaDoc,
+  targetId: string,
+  sourceDoc: GromaDoc,
+  sourceId: string,
+): ComponentSourceState {
+  const target = doc.nodes[targetId];
+  if (!target?.librarySource) return 'missing';
+  const sourceRoot = sourceDoc.nodes[sourceId];
+  if (!sourceRoot || sourceRoot.type !== 'frame' || !sourceRoot.isComponent) return 'missing';
+  if (componentTransferIssues(sourceDoc, sourceId).length > 0) return 'blocked';
+  const sourceVersion = sourceRoot.libraryPublication?.version ?? 0;
+  const localVersion = target.librarySource.version ?? 0;
+  if (sourceVersion > localVersion) return 'source-updated';
+  const a = JSON.stringify(comparableSubtree(doc, targetId, true));
+  const b = JSON.stringify(comparableSubtree(sourceDoc, sourceId, true));
+  return a === b ? 'same' : 'changed';
+}
+

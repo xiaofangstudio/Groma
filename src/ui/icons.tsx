@@ -366,6 +366,24 @@ export function IconGroup(props: IconProps) {
   );
 }
 
+export function IconBoolean({ op = 'union', ...props }: IconProps & { op?: 'union' | 'subtract' | 'intersect' | 'exclude' }) {
+  return (
+    <svg {...base(props)}>
+      <rect x="2" y="5" width="7" height="7" rx="0.6" opacity={0.32} />
+      <rect x="7" y="2" width="7" height="7" rx="0.6" opacity={0.32} />
+      {op === 'union' && <path d="M2 5h5v-3h7v7h-5v3h-7z" fill="currentColor" fillOpacity={0.24} stroke="none" />}
+      {op === 'subtract' && <path d="M2 5h5v4h2v3h-7z" fill="currentColor" fillOpacity={0.24} stroke="none" />}
+      {op === 'intersect' && <path d="M7 5h2v4h-2z" fill="currentColor" fillOpacity={0.4} stroke="none" />}
+      {op === 'exclude' && (
+        <>
+          <path d="M2 5h5v4h2v3h-7z" fill="currentColor" fillOpacity={0.24} stroke="none" />
+          <path d="M7 2h7v7h-5v-4h-2z" fill="currentColor" fillOpacity={0.24} stroke="none" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 export function IconUngroup(props: IconProps) {
   return (
     <svg {...base(props)}>

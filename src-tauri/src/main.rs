@@ -68,6 +68,46 @@ fn project_dir(id: &str) -> Result<PathBuf, String> {
     Ok(projects_root()?.join(format!("{id}.groma")))
 }
 
+fn recent_hidden_path() -> Result<PathBuf, String> {
+    Ok(projects_root()?.join("recent-hidden.json"))
+}
+
+fn read_hidden_projects() -> Vec<String> {
+    let Ok(path) = recent_hidden_path() else {
+        return Vec::new();
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_hidden_projects(ids: &[String]) -> Result<(), String> {
+    let path = recent_hidden_path()?;
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_vec_pretty(ids).map_err(|e| format!("整理最近工程记录失败：{e}"))?;
+    fs::write(&tmp, body).map_err(|e| format!("写入最近工程记录失败：{e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("保存最近工程记录失败：{e}"))
+}
+
+fn hide_recent_project(id: &str) -> Result<(), String> {
+    let mut ids = read_hidden_projects();
+    if ids.iter().any(|x| x == id) {
+        return Ok(());
+    }
+    ids.push(id.to_string());
+    write_hidden_projects(&ids)
+}
+
+fn show_recent_project(id: &str) -> Result<(), String> {
+    let ids = read_hidden_projects();
+    if !ids.iter().any(|x| x == id) {
+        return Ok(());
+    }
+    let next: Vec<String> = ids.into_iter().filter(|x| x != id).collect();
+    write_hidden_projects(&next)
+}
+
 fn sanitize_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -194,6 +234,8 @@ fn groma_load_project(id: String) -> Result<String, String> {
     if !scene.exists() {
         return Err("工程还没有场景文件".to_string());
     }
+    // 真正打开过就重新回到最近列表，避免「移除」变成找不到的永久隐藏。
+    let _ = show_recent_project(&id);
     fs::read_to_string(scene).map_err(|e| format!("读取工程失败：{e}"))
 }
 
@@ -286,6 +328,7 @@ fn groma_restore_snapshot(id: String, timestamp: u64) -> Result<String, String> 
 #[tauri::command]
 fn groma_list_projects() -> Result<Vec<ProjectEntry>, String> {
     let root = projects_root()?;
+    let hidden = read_hidden_projects();
     let mut out = Vec::new();
     for entry in fs::read_dir(root).map_err(|e| format!("读取工程目录失败：{e}"))? {
         let entry = match entry {
@@ -303,6 +346,9 @@ fn groma_list_projects() -> Result<Vec<ProjectEntry>, String> {
             Some(s) => s.to_string(),
             None => continue,
         };
+        if hidden.iter().any(|x| x == &id) {
+            continue;
+        }
         let meta_path = path.join("project.json");
         let meta: Option<ProjectMeta> = fs::read_to_string(meta_path)
             .ok()
@@ -331,6 +377,25 @@ fn groma_list_projects() -> Result<Vec<ProjectEntry>, String> {
     }
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(out)
+}
+
+#[tauri::command]
+fn groma_hide_recent_project(id: String) -> Result<(), String> {
+    let dir = project_dir(&id)?;
+    if !dir.is_dir() {
+        return Err("工程不存在".to_string());
+    }
+    // 只从最近列表移除，工程目录、场景和快照都原地保留。
+    hide_recent_project(&id)
+}
+
+#[tauri::command]
+fn groma_restore_recent_project(id: String) -> Result<(), String> {
+    let dir = project_dir(&id)?;
+    if !dir.is_dir() {
+        return Err("工程不存在".to_string());
+    }
+    show_recent_project(&id)
 }
 
 #[tauri::command]
@@ -870,6 +935,8 @@ fn main() {
             groma_save_project,
             groma_load_project,
             groma_list_projects,
+            groma_hide_recent_project,
+            groma_restore_recent_project,
             groma_rename_project,
             groma_export_png,
             groma_export_file,
